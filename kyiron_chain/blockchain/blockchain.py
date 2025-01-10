@@ -1,0 +1,1 @@
+# Manages the blockchain (chain structure, validation)
