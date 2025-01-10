@@ -1,0 +1,1 @@
+# Implements Proof-of-Work (mining and validation)
