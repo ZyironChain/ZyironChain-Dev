@@ -1,3 +1,8 @@
+WHITE PAPER VERISON 1.0 DEV VERISON HIGH OVERVIEW 
+
+
+
+
 Zyiron Chain - PQC Payment System
 Overview
 Zyiron Chain is a Post-Quantum Cryptography (PQC) resistant payment system designed to provide secure, scalable, and efficient transactions. It leverages SHA3-384 for hashing and Falcon 1024 for digital signatures, ensuring quantum-resistant security. The system is structured into three layers:
