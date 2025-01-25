@@ -1,0 +1,14 @@
+[
+    {
+        "miner_public_key": "example_hashed_public_key",
+        "network_prefix": "KCT",
+        "timestamp": 1737088841.7946799,
+        "tx_out": {
+            "script_pub_key": "KCTexamplehash",
+            "amount": 50.0,
+            "tx_out_id": "81db4a6ab637b32eae1ab343ad865b783af986efc6cabc7880d2b801ff79acdf0f6a22d66e590a0147407c60b7e0323d",
+            "locked": false
+        },
+        "tx_id": "example_tx_id"
+    }
+]

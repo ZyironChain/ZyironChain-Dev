@@ -1,1 +1,0 @@
-# Defines transaction structure and validation

@@ -41,7 +41,7 @@ class cSHAKETest(unittest.TestCase):
         from Crypto.Hash.cSHAKE128 import _left_encode
         self.assertEqual(_left_encode(0), b'\x01\x00')
         self.assertEqual(_left_encode(1), b'\x01\x01')
-        self.assertEqual(_left_encode(256), b'\x02\x00\x01')
+        self.assertEqual(_left_encode(256), b'\x02\x01\x00')
 
     def test_bytepad(self):
         from Crypto.Hash.cSHAKE128 import _bytepad
@@ -98,7 +98,7 @@ class cSHAKETest(unittest.TestCase):
         digest = h.read(90)
 
         # read returns a byte string of the right length
-        self.failUnless(isinstance(digest, type(b("digest"))))
+        self.assertTrue(isinstance(digest, type(b("digest"))))
         self.assertEqual(len(digest), 90)
 
     def test_update_after_read(self):
@@ -130,7 +130,10 @@ class cSHAKEVectors(unittest.TestCase):
 
 
 vector_files = [("ShortMsgSamples_cSHAKE128.txt", "Short Message Samples cSHAKE128", "128_cshake", cSHAKE128),
-                ("ShortMsgSamples_cSHAKE256.txt", "Short Message Samples cSHAKE256", "256_cshake", cSHAKE256)]
+                ("ShortMsgSamples_cSHAKE256.txt", "Short Message Samples cSHAKE256", "256_cshake", cSHAKE256),
+                ("CustomMsgSamples_cSHAKE128.txt", "Custom Message Samples cSHAKE128", "custom_128_cshake", cSHAKE128),
+                ("CustomMsgSamples_cSHAKE256.txt", "Custom Message Samples cSHAKE256", "custom_256_cshake", cSHAKE256),
+                ]
 
 for file, descr, tag, test_class in vector_files:
 

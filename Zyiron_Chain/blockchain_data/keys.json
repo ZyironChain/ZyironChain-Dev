@@ -1,0 +1,10 @@
+{
+    "testnet": {
+        "keys": {},
+        "defaults": {}
+    },
+    "mainnet": {
+        "keys": {},
+        "defaults": {}
+    }
+}

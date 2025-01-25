@@ -1,1 +1,0 @@
-# Defines block structure (hashing, timestamp, nonce)

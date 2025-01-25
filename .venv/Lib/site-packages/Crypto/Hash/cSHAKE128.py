@@ -28,12 +28,14 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # ===================================================================
 
-from Crypto.Util.py3compat import bchr
+from Crypto.Util.py3compat import bchr, concat_buffers
 
 from Crypto.Util._raw_api import (VoidPointer, SmartPointer,
                                   create_string_buffer,
                                   get_raw_buffer, c_size_t,
-                                  c_uint8_ptr)
+                                  c_uint8_ptr, c_ubyte)
+
+from Crypto.Util.number import long_to_bytes
 
 from Crypto.Hash.keccak import _raw_keccak_lib
 
@@ -45,15 +47,19 @@ def _left_encode(x):
 
     # Get number of bytes needed to represent this integer.
     num = 1 if x == 0 else (x.bit_length() + 7) // 8
-    # Chop off least significant byte of integer.
-    enc = bchr(num) + bchr(x & 0xFF)
-    x >>= 8
-    # Chop off remaining bytes if needed.
-    while x > 0:
-        enc = enc + bchr(x & 0xFF)
-        x >>= 8
 
-    return enc
+    return bchr(num) + long_to_bytes(x)
+
+
+def _right_encode(x):
+    """Right encode function as defined in NIST SP 800-185"""
+
+    assert (x < (1 << 2040) and x >= 0)
+
+    # Get number of bytes needed to represent this integer.
+    num = 1 if x == 0 else (x.bit_length() + 7) // 8
+
+    return long_to_bytes(x) + bchr(num)
 
 
 def _encode_str(x):
@@ -63,13 +69,13 @@ def _encode_str(x):
     if bitlen >= (1 << 2040):
         raise ValueError("String too large to encode in cSHAKE")
 
-    return _left_encode(bitlen) + x
+    return concat_buffers(_left_encode(bitlen), x)
 
 
 def _bytepad(x, length):
     """Zero pad byte string as defined in NIST SP 800-185"""
 
-    to_pad = _left_encode(length) + x
+    to_pad = concat_buffers(_left_encode(length), x)
 
     # Note: this implementation works with byte aligned strings,
     # hence no additional bit padding is needed at this point.
@@ -84,20 +90,20 @@ class cSHAKE_XOF(object):
     Use the :func:`new` function.
     """
 
-    def __init__(self, data, custom, capacity):
+    def __init__(self, data, custom, capacity, function):
         state = VoidPointer()
 
-        if custom:
-            prefix_unpad = _encode_str(b'') + _encode_str(custom)
+        if custom or function:
+            prefix_unpad = _encode_str(function) + _encode_str(custom)
             prefix = _bytepad(prefix_unpad, (1600 - capacity)//8)
-            pad = 0x04
+            self._padding = 0x04
         else:
             prefix = None
-            pad = 0x1F  # for SHAKE
+            self._padding = 0x1F  # for SHAKE
 
         result = _raw_keccak_lib.keccak_init(state.address_of(),
                                              c_size_t(capacity//8),
-                                             pad)
+                                             c_ubyte(24))
         if result:
             raise ValueError("Error %d while instantiating cSHAKE"
                              % result)
@@ -148,7 +154,8 @@ class cSHAKE_XOF(object):
         bfr = create_string_buffer(length)
         result = _raw_keccak_lib.keccak_squeeze(self._state.get(),
                                                 bfr,
-                                                c_size_t(length))
+                                                c_size_t(length),
+                                                c_ubyte(self._padding))
         if result:
             raise ValueError("Error %d while extracting from %s"
                              % (result, self.name))
@@ -156,7 +163,12 @@ class cSHAKE_XOF(object):
         return get_raw_buffer(bfr)
 
 
-def new(data=None, custom=b''):
+def _new(data, custom, function):
+    # Use Keccak[256]
+    return cSHAKE_XOF(data, custom, 256, function)
+
+
+def new(data=None, custom=None):
     """Return a fresh instance of a cSHAKE128 object.
 
     Args:
@@ -172,4 +184,4 @@ def new(data=None, custom=b''):
     """
 
     # Use Keccak[256]
-    return cSHAKE_XOF(data, custom, 256)
+    return cSHAKE_XOF(data, custom, 256, b'')

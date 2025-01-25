@@ -32,7 +32,12 @@ from Crypto.Util._raw_api import c_size_t
 from Crypto.Hash.cSHAKE128 import cSHAKE_XOF
 
 
-def new(data=None, custom=b''):
+def _new(data, custom, function):
+    # Use Keccak[512]
+    return cSHAKE_XOF(data, custom, 512, function)
+
+
+def new(data=None, custom=None):
     """Return a fresh instance of a cSHAKE256 object.
 
     Args:
@@ -48,4 +53,4 @@ def new(data=None, custom=b''):
     """
 
     # Use Keccak[512]
-    return cSHAKE_XOF(data, custom, 512)
+    return cSHAKE_XOF(data, custom, 512, b'')

@@ -79,13 +79,21 @@ if sys.version_info[0] == 2:
         elif isinstance(s, bytearray):
             return bytes(s)
         elif isinstance(s, memoryview):
-            return s[start:end].tobytes()
+            return s.tobytes()
         else:
             return ''.join(s)
     def tostr(bs):
         return bs
     def byte_string(s):
         return isinstance(s, str)
+
+    # In Python 2, a memoryview does not support concatenation
+    def concat_buffers(a, b):
+        if isinstance(a, memoryview):
+            a = a.tobytes()
+        if isinstance(b, memoryview):
+            b = b.tobytes()
+        return a + b
 
     from StringIO import StringIO
     BytesIO = StringIO
@@ -101,7 +109,7 @@ if sys.version_info[0] == 2:
         return isinstance(x, basestring)
 
     def is_bytes(x):
-        return isinstance(x, basestring) or \
+        return isinstance(x, str) or \
                 isinstance(x, bytearray) or \
                 isinstance(x, memoryview)
 
@@ -129,13 +137,16 @@ else:
         elif isinstance(s,str):
             return s.encode(encoding)
         elif isinstance(s, memoryview):
-            return s[start:end].tobytes()
+            return s.tobytes()
         else:
             return bytes([s])
     def tostr(bs):
         return bs.decode("latin-1")
     def byte_string(s):
         return isinstance(s, bytes)
+
+    def concat_buffers(a, b):
+        return a + b
 
     from io import BytesIO
     from io import StringIO

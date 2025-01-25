@@ -1,0 +1,1 @@
+# Generates the genesis block for the chain
