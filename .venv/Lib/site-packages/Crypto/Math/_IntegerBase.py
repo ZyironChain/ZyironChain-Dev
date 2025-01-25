@@ -51,12 +51,12 @@ class IntegerBase(ABC):
         pass
 
     @abc.abstractmethod
-    def to_bytes(self, block_size=0):
+    def to_bytes(self, block_size=0, byteorder='big'):
         pass
 
     @staticmethod
     @abc.abstractmethod
-    def from_bytes(byte_string):
+    def from_bytes(byte_string, byteorder='big'):
         pass
 
     # Relations
@@ -228,7 +228,7 @@ class IntegerBase(ABC):
     @abc.abstractmethod
     def jacobi_symbol(a, n):
         pass
-    
+
     @staticmethod
     def _tonelli_shanks(n, p):
         """Tonelli-shanks algorithm for computing the square root
@@ -390,3 +390,23 @@ class IntegerBase(ABC):
                                     )
         return norm_candidate + min_inclusive
 
+    @staticmethod
+    @abc.abstractmethod
+    def _mult_modulo_bytes(term1, term2, modulus):
+        """Multiply two integers, take the modulo, and encode as big endian.
+        This specialized method is used for RSA decryption.
+
+        Args:
+          term1 : integer
+            The first term of the multiplication, non-negative.
+          term2 : integer
+            The second term of the multiplication, non-negative.
+          modulus: integer
+            The modulus, a positive odd number.
+        :Returns:
+            A byte string, with the result of the modular multiplication
+            encoded in big endian mode.
+            It is as long as the modulus would be, with zero padding
+            on the left if needed.
+        """
+        pass

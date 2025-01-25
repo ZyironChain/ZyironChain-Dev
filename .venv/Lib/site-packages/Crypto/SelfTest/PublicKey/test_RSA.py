@@ -192,9 +192,9 @@ class RSATest(unittest.TestCase):
 
     def test_factoring(self):
         rsaObj = self.rsa.construct([self.n, self.e, self.d])
-        self.failUnless(rsaObj.p==self.p or rsaObj.p==self.q)
-        self.failUnless(rsaObj.q==self.p or rsaObj.q==self.q)
-        self.failUnless(rsaObj.q*rsaObj.p == self.n)
+        self.assertTrue(rsaObj.p==self.p or rsaObj.p==self.q)
+        self.assertTrue(rsaObj.q==self.p or rsaObj.q==self.q)
+        self.assertTrue(rsaObj.q*rsaObj.p == self.n)
 
         self.assertRaises(ValueError, self.rsa.construct, [self.n, self.e, self.n-1])
 
@@ -214,15 +214,17 @@ class RSATest(unittest.TestCase):
         rsa_obj = self.rsa.generate(1024)
 
         self.assertRaises(ValueError, rsa_obj._decrypt, rsa_obj.n)
+        self.assertRaises(ValueError, rsa_obj._decrypt_to_bytes, rsa_obj.n)
         self.assertRaises(ValueError, rsa_obj._encrypt, rsa_obj.n)
 
         self.assertRaises(ValueError, rsa_obj._decrypt, -1)
+        self.assertRaises(ValueError, rsa_obj._decrypt_to_bytes, -1)
         self.assertRaises(ValueError, rsa_obj._encrypt, -1)
 
     def test_size(self):
         pub = self.rsa.construct((self.n, self.e))
-        self.assertEquals(pub.size_in_bits(), 1024)
-        self.assertEquals(pub.size_in_bytes(), 128)
+        self.assertEqual(pub.size_in_bits(), 1024)
+        self.assertEqual(pub.size_in_bytes(), 128)
 
     def _check_private_key(self, rsaObj):
         from Crypto.Math.Numbers import Integer
@@ -239,6 +241,9 @@ class RSATest(unittest.TestCase):
         self.assertEqual(1, rsaObj.q > 1)   # q > 1
         self.assertEqual(1, rsaObj.e > 1)   # e > 1
         self.assertEqual(1, rsaObj.d > 1)   # d > 1
+
+        self.assertEqual(rsaObj.u, rsaObj.invp)
+        self.assertEqual(1, rsaObj.q * rsaObj.invq % rsaObj.p)
 
     def _check_public_key(self, rsaObj):
         ciphertext = a2b_hex(self.ciphertext)
@@ -262,10 +267,12 @@ class RSATest(unittest.TestCase):
         # Public keys should not be able to sign or decrypt
         self.assertRaises(TypeError, rsaObj._decrypt,
                 bytes_to_long(ciphertext))
+        self.assertRaises(TypeError, rsaObj._decrypt_to_bytes,
+                bytes_to_long(ciphertext))
 
         # Check __eq__ and __ne__
         self.assertEqual(rsaObj.public_key() == rsaObj.public_key(),True) # assert_
-        self.assertEqual(rsaObj.public_key() != rsaObj.public_key(),False) # failIf
+        self.assertEqual(rsaObj.public_key() != rsaObj.public_key(),False) # assertFalse
 
         self.assertEqual(rsaObj.publickey(), rsaObj.public_key())
 

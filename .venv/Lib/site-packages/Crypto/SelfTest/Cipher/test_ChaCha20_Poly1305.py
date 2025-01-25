@@ -37,7 +37,6 @@ from Crypto.Util.py3compat import tobytes
 from Crypto.Cipher import ChaCha20_Poly1305
 from Crypto.Hash import SHAKE128
 
-from Crypto.Util._file_system import pycryptodome_filename
 from Crypto.Util.strxor import strxor
 
 
@@ -85,7 +84,7 @@ class ChaCha20Poly1305Tests(unittest.TestCase):
 
         cipher = ChaCha20_Poly1305.new(key=self.key_256,
                                        nonce=self.nonce_96)
-        self.assertEquals(ct, cipher.encrypt(self.data_128))
+        self.assertEqual(ct, cipher.encrypt(self.data_128))
 
     def test_nonce_must_be_bytes(self):
         self.assertRaises(TypeError,
@@ -108,7 +107,7 @@ class ChaCha20Poly1305Tests(unittest.TestCase):
         # Not based on block ciphers
         cipher = ChaCha20_Poly1305.new(key=self.key_256,
                                        nonce=self.nonce_96)
-        self.failIf(hasattr(cipher, 'block_size'))
+        self.assertFalse(hasattr(cipher, 'block_size'))
 
     def test_nonce_attribute(self):
         cipher = ChaCha20_Poly1305.new(key=self.key_256,
@@ -225,7 +224,7 @@ class ChaCha20Poly1305Tests(unittest.TestCase):
             for chunk in break_up(plaintext, chunk_length):
                 ct2 += cipher.encrypt(chunk)
             self.assertEqual(ciphertext, ct2)
-            self.assertEquals(cipher.digest(), ref_mac)
+            self.assertEqual(cipher.digest(), ref_mac)
 
     def test_bytearray(self):
 
@@ -325,6 +324,13 @@ class ChaCha20Poly1305Tests(unittest.TestCase):
 
 
 class XChaCha20Poly1305Tests(unittest.TestCase):
+
+    def test_nonce(self):
+        # Nonce can only be 24 bytes
+        cipher = ChaCha20_Poly1305.new(key=b'Y' * 32,
+                                       nonce=b'H' * 24)
+        self.assertEqual(len(cipher.nonce), 24)
+        self.assertEqual(cipher.nonce, b'H' * 24)
 
     def test_encrypt(self):
         # From https://tools.ietf.org/html/draft-arciszewski-xchacha-03
@@ -599,7 +605,7 @@ class TestVectorsRFC(unittest.TestCase):
         )
     ]
 
-    test_vectors = [[unhexlify(x.replace(" ","").replace(":","")) for x in tv] for tv in test_vectors_hex]
+    test_vectors = [[unhexlify(x.replace(" ", "").replace(":", "")) for x in tv] for tv in test_vectors_hex]
 
     def runTest(self):
         for assoc_data, pt, ct, mac, key, nonce in self.test_vectors:

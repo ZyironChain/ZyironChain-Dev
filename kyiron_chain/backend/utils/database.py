@@ -1,1 +1,0 @@
-# Manages database connections and queries (if used)
