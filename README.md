@@ -220,7 +220,34 @@ The .vscode/ directory contains editor-specific configurations. Consider adding 
 Proposed Refinements
 Here’s an updated version of the file structure with some of the above suggestions incorporated:
 
-Copy
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+FILE STRUCTURE OPEN UP FULL READ ME TO VIEW 
+
+
+
+
+
 Zyiron_Chain/
 ├── .vscode/                         # VSCode configuration files
 │   ├── c_cpp_properties.json
