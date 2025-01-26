@@ -2,17 +2,25 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from Zyiron_Chain.transactions.transactiontype import PaymentType
+
+
+
+
+
+
 import sys
 import os
 import hashlib
 import time
 import json
-from typing import Optional
-from Zyiron_Chain.transactions.transactiontype import TransactionType
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+from typing import Optional, List, Union
+from Zyiron_Chain.transactions.transactiontype import TransactionType, PaymentType
+from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, CoinbaseTx
 from Zyiron_Chain.blockchain.utils.hashing import sha3_384
 from Zyiron_Chain.transactions.fees import FeeModel
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+
+
 
 class BlockHeader:
     def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce):
@@ -38,32 +46,27 @@ class BlockHeader:
         """
         return {
             "version": self.version,
-            "index": self.index,  # Include index in the serialized dictionary
+            "index": self.index,
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
-            "nonce": self.nonce,
+            "nonce": self.nonce
         }
 
-
-    @staticmethod
-    def from_dict(data: dict):
+    @classmethod
+    def from_dict(cls, data):
         """
-        Reconstruct a BlockHeader object from its dictionary representation.
-        Handles missing fields with appropriate defaults or raises errors for critical fields.
+        Create a BlockHeader instance from a dictionary.
+        :param data: Dictionary representation of a block header.
+        :return: BlockHeader instance.
         """
-        required_keys = {"version", "index", "previous_hash", "merkle_root", "timestamp", "nonce"}
-        missing_keys = required_keys - data.keys()
-        if missing_keys:
-            raise KeyError(f"Missing required keys in BlockHeader data: {missing_keys}")
-
-        return BlockHeader(
+        return cls(
             version=data["version"],
-            index=data["index"],  # Ensure index is included
+            index=data["index"],
             previous_hash=data["previous_hash"],
             merkle_root=data["merkle_root"],
             timestamp=data["timestamp"],
-            nonce=data["nonce"],
+            nonce=data["nonce"]
         )
 
     def calculate_hash(self):
@@ -83,6 +86,7 @@ class BlockHeader:
         Returns the hash of the block header.
         """
         return self.calculate_hash()
+
     def validate(self):
         """
         Validate the integrity of the BlockHeader fields.
@@ -110,43 +114,17 @@ class BlockHeader:
         )
 
 
-import time
-from typing import List, Union
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction  # Ensure this import is correct
-
-import time
-from typing import List, Union
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction  # Ensure this import is correct
-
 class Block:
-    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0, miner_address=None):
-        """
-        Initialize a Block object.
-        :param index: The index of the block in the blockchain.
-        :param previous_hash: The hash of the previous block.
-        :param transactions: A list of transactions (can be Transaction objects or dictionaries).
-        :param timestamp: The timestamp of the block (defaults to current time if not provided).
-        :param nonce: The nonce used for mining (defaults to 0).
-        :param miner_address: The public key hash of the miner who mined the block.
-        """
+    def __init__(self, index, previous_hash, transactions, timestamp, merkle_root, key_manager):
         self.index = index
         self.previous_hash = previous_hash
-        self.transactions = self._ensure_transactions(transactions)  # Ensure transactions are Transaction objects
-        self.timestamp = timestamp or time.time()
-        self.nonce = nonce
-        self.miner_address = miner_address  # Miner's public key hash
-        self.hash = None
-        self.merkle_root = None
+        self.transactions = transactions
+        self.timestamp = timestamp
+        self.merkle_root = merkle_root
+        self.key_manager = key_manager  # Add key_manager as an attribute
+        self.miner_address = None  # Can be set later
+        self.nonce = None  # Can be set during mining
 
-        # Initialize the block header
-        self.header = BlockHeader(
-            version=1,
-            index=self.index,  # Pass index to the header
-            previous_hash=self.previous_hash,
-            merkle_root=self.merkle_root,
-            timestamp=self.timestamp,
-            nonce=self.nonce,
-        )
 
 
     def _ensure_transactions(self, transactions: List[Union[Transaction, dict]]) -> List[Transaction]:
@@ -161,7 +139,6 @@ class Block:
                 tx = Transaction.from_dict(tx)
             validated_transactions.append(tx)
         return validated_transactions
-
 
     def to_dict(self):
         """
@@ -221,9 +198,6 @@ class Block:
             print(f"[ERROR] Unexpected error during block deserialization: {e}")
             raise
 
-
-
-
     def validate_transaction(self, tx):
         """
         Validate a transaction to ensure it has all required fields.
@@ -244,12 +218,6 @@ class Block:
             print(f"[ERROR] Invalid transaction type: {type(tx)}")
             return False
         return True
-
-
-
-
-
-
 
     def validate_transactions(self, fee_model, mempool, block_size):
         """
@@ -278,6 +246,10 @@ class Block:
 
         print("[INFO] All transactions in the block are valid.")
         return True
+
+
+
+
 
     def _validate_transaction_by_type(self, tx, tx_type, fee_model, mempool, block_size):
         """
@@ -376,27 +348,38 @@ class Block:
         :param block_size: Maximum block size in MB.
         :param newBlockAvailable: Boolean to stop mining if a new block is available.
         :param network_manager: Optional NetworkManager instance for P2P communication.
+        :return: True if the block is successfully mined, False otherwise.
         """
+        # Validate header and miner address
         if not self.header:
             raise ValueError("Header must be set before mining.")
-
-        # Ensure miner address is set
         if not self.miner_address:
             raise ValueError("Miner address must be set before mining.")
 
-        # Skip fee calculation for the genesis block as it doesn't have inputs
+        # Skip fee calculation for the genesis block
         if self.index == 0:
             print("[INFO] Genesis block detected. Skipping fee validation.")
             total_fee = 0  # No fees for the genesis block
+            # Add a coinbase transaction for the genesis block
+            coinbase_transaction = CoinbaseTx(
+                key_manager=self.key_manager,
+                network="mainnet",  # Adjust network as needed
+                utxo_manager=self.utxo_manager,
+                transaction_fees=total_fee
+            )
+            self.transactions = [coinbase_transaction.to_dict()]
         else:
-            # Process transactions normally for other blocks
+            # Process transactions for non-genesis blocks
             total_fee = 0
+            valid_transactions = []
+
             for tx in self.transactions:
                 # Skip coinbase transaction (it has no inputs)
                 if isinstance(tx, dict) or not hasattr(tx, 'tx_inputs'):
+                    valid_transactions.append(tx)
                     continue
 
-                # Validate transaction before processing
+                # Validate transaction
                 if not self.validate_transaction(tx):
                     print(f"[ERROR] Skipping invalid transaction: {tx}")
                     continue
@@ -409,53 +392,77 @@ class Block:
 
                 # Validate fees
                 try:
-                    # Ensure mempool has the required method
-                    if hasattr(mempool, 'get_total_size'):
-                        mempool_size = mempool.get_total_size()
-                    else:
-                        print("[WARNING] Mempool does not have 'get_total_size' method. Using default size.")
-                        mempool_size = 0  # Default size if method is missing
+                    # Get mempool size (fallback to 0 if method is missing)
+                    mempool_size = mempool.get_total_size() if hasattr(mempool, 'get_total_size') else 0
 
+                    # Calculate required fee
                     required_fee = fee_model.calculate_fee(
                         block_size=block_size,
                         payment_type="Standard",  # Adjust payment type if needed
                         amount=mempool_size,
                         tx_size=tx_size
                     )
+
+                    # Calculate actual fee
                     actual_fee = sum(inp.amount for inp in tx.tx_inputs) - sum(out.amount for out in tx.tx_outputs)
                     if actual_fee < required_fee:
                         print(f"[ERROR] Transaction {tx.tx_id} does not meet the required fees.")
-                        return False
+                        continue
 
-                    total_fee += actual_fee  # Fix: Use actual_fee instead of tx_fee
+                    total_fee += actual_fee
+                    valid_transactions.append(tx)
                 except Exception as e:
                     print(f"[ERROR] Error calculating fees for transaction {tx.tx_id}: {e}")
-                    return False
+                    continue
+
+            # Add a coinbase transaction for non-genesis blocks
+            coinbase_transaction = CoinbaseTx(
+                key_manager=self.key_manager,
+                network="mainnet",  # Adjust network as needed
+                utxo_manager=self.utxo_manager,
+                transaction_fees=total_fee
+            )
+            valid_transactions.insert(0, coinbase_transaction.to_dict())
+
+            # Update block transactions with valid transactions only
+            self.transactions = valid_transactions
+
+        # Calculate Merkle root
+        transaction_ids = [tx["tx_id"] if isinstance(tx, dict) else tx.tx_id for tx in self.transactions]
+        self.merkle_root = self.calculate_merkle_root(transaction_ids)
 
         # Start mining
         self.header.nonce = 0
         print(f"[INFO] Mining block {self.index}...")
-        while int(self.calculate_hash(), 16) > target:
+
+        while int(self.calculate_hash(), 16) > target:  # Use base=16 for hexadecimal
             if newBlockAvailable:
                 print("[INFO] New block available. Stopping mining.")
                 return False
 
-            # Increment nonce and recalculate hash
+            # Increment nonce and print its value
             self.header.nonce += 1
-            self.hash = self.calculate_hash()
-            print(f"Mining... Nonce: {self.header.nonce}", end="\r")
+            print(f"Nonce: {self.header.nonce}", end="\r")  # Print nonce continuously on the same line
 
-        print("\n[INFO] Mining Completed!")
-        print(f"[INFO] Block {self.index} mined successfully! Nonce: {self.header.nonce}")
+            # Recalculate hash
+            self.hash = self.calculate_hash()
+
+        # Mining completed successfully
+        print("\n[INFO] Block mined successfully!")
+        print(f"[INFO] Block Height: {self.index}")
+        print(f"[INFO] Reward: 100.00 ZYC")
+        print(f"[INFO] Miner Address: {self.miner_address}")
+        print(f"[INFO] Previous Block Hash: {self.previous_hash}")
+        print(f"[INFO] Merkle Root: {self.merkle_root}")
 
         # Broadcast the mined block to the network if network_manager is provided
         if network_manager:
-            network_manager.broadcast_block(self.to_dict())
-        else:
-            print("[INFO] Network manager not provided. Skipping block broadcast.")
+            try:
+                network_manager.broadcast_block(self.to_dict())
+            except Exception as e:
+                print(f"[ERROR] Failed to broadcast block: {e}")
 
         return True
-
 
     @staticmethod
     def validate_block(block_data, blockchain):
@@ -489,6 +496,27 @@ class Block:
             print(f"[ERROR] Block validation failed: {e}")
             return False
 
+    def add_transaction(self, transaction):
+        """
+        Add a transaction to the pending_transactions list.
+        """
+        if self.validate_transaction(transaction):
+            self.pending_transactions.append(transaction)
+            print(f"[INFO] Transaction {transaction.tx_id} added to pending transactions.")
+        else:
+            print(f"[ERROR] Invalid transaction {transaction.tx_id}. Not added to pending transactions.")
+
+    def print_block(self, index):
+        if index < len(self.chain):
+            block = self.chain[index]
+            print(f"Block {index}:")
+            print(f"Hash: {block['hash']}")
+            print(f"Previous Hash: {block['previous_hash']}")
+            print(f"Transactions: {len(block['transactions'])}")
+            for tx in block['transactions']:
+                print(tx)
+        else:
+            print(f"[ERROR] Block {index} does not exist.")
 
     def __repr__(self):
         """

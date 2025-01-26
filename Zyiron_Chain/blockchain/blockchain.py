@@ -30,6 +30,7 @@ class Blockchain:
         self.chain = []  # This will be populated from PoC
         self.difficulty = difficulty
         self.utxo_manager = UTXOManager(self.poc)
+        self.pending_transactions = []  # Initialize pending_transactions
 
         # Initialize the PoC (Point of Contact) layer
         self.mempool = StandardMempool(timeout=86400)
@@ -50,6 +51,7 @@ class Blockchain:
         self.chain = self.poc.get_blockchain_data()  # Get the loaded data from PoC
         print(f"[Blockchain] Loaded {len(self.chain)} blocks.")
 
+
     def create_genesis_block(self):
         """
         Create and add the genesis block to the blockchain if none exists.
@@ -67,21 +69,16 @@ class Blockchain:
             genesis_transactions = [genesis_transaction]  # The genesis block will have this single transaction
 
             # Calculate Merkle root
-            transaction_ids = [tx.tx_id for tx in genesis_transactions]  # Ensure transaction IDs are available
-            merkle_root = self.calculate_merkle_root(transaction_ids)
+            merkle_root = self.calculate_merkle_root(genesis_transactions)
+            print(f"[INFO] Merkle root calculated: {merkle_root}")
 
             # Create the Genesis Block
             genesis_block = Block(
                 index=0,  # Explicitly set index to 0 for the genesis block
-                previous_hash="0" * 96,  # Zero hash for the genesis block
+                previous_hash=self.ZERO_HASH,  # Zero hash for the genesis block
                 transactions=genesis_transactions,  # Use the valid genesis transactions
                 timestamp=int(time.time()),  # Ensure timestamp is an integer
-            )
-
-            # Set the block header fields explicitly
-            genesis_block.set_header(
-                version=1,  # Set the block version
-                merkle_root=merkle_root,  # Set the calculated Merkle root
+                merkle_root=merkle_root,  # Pass the Merkle root directly during initialization
             )
 
             # Set the miner address using the KeyManager
@@ -121,7 +118,6 @@ class Blockchain:
             print(f"[ERROR] Failed to create and save the genesis block: {e}")
             raise
 
-
     def calculate_block_difficulty(self, block):
         """
         Calculate the difficulty for a block based on a dynamic difficulty adjustment algorithm.
@@ -139,7 +135,7 @@ class Blockchain:
         time_diff = block.timestamp - previous_block.timestamp
 
         # Define the target block time (e.g., 10 minutes per block, similar to Bitcoin)
-        target_block_time = 30  # 600 seconds = 10 minutes
+        target_block_time = 15  # 600 seconds = 10 minutes
 
         # Difficulty adjustment logic
         if time_diff < target_block_time:
@@ -163,6 +159,7 @@ class Blockchain:
 
 
 
+
     def save_blockchain_state(self):
         """
         Save the current state of the blockchain to persistent storage.
@@ -182,6 +179,7 @@ class Blockchain:
         except Exception as e:
             print(f"[ERROR] Failed to save blockchain state: {e}")
             raise
+
 
 
 
@@ -273,34 +271,29 @@ class Blockchain:
         )
         valid_transactions.insert(0, coinbase_transaction.to_dict())
 
-        # Calculate Merkle root and create the block
-        transaction_ids = [tx["tx_id"] for tx in valid_transactions if isinstance(tx, dict) and "tx_id" in tx]
-        new_block = Block(index=block_height, previous_hash=previous_hash, transactions=valid_transactions)
-        merkle_root = self.calculate_merkle_root(transaction_ids)
-        new_block.set_header(version=1, merkle_root=merkle_root, index=block_height)  # Ensure index is set in the header
+        # Create the new block
+        new_block = Block(
+            index=block_height,
+            previous_hash=previous_hash,
+            transactions=valid_transactions,
+            miner_address=self.key_manager.get_miner_address()
+        )
 
-        # Mine the block
+        # Mine the new block
         target = self.calculate_target()
-        if not new_block.mine(target, fee_model, self.poc, 10, newBlockAvailable=False):
+        if not new_block.mine(target):
             print(f"[ERROR] Failed to mine block {block_height}.")
             return
 
-        # Validate and append the block
-        if new_block.previous_hash != previous_hash:
-            raise ValueError("New block's previous hash does not match the last block's hash!")
-
+        # Add the new block to the chain
         self.chain.append(new_block)
-
-        # Update UTXOs using UTXOManager (via PoC)
-        self.utxo_manager.update_from_block(new_block)
-
-        # Store the block metadata and state via PoC
-        self.poc.store_block_metadata(new_block)
-
-        # Save the blockchain state (via PoC)
-        self.poc.save_blockchain_state()
+        print(f"[INFO] Block {block_height} mined and added to the blockchain.")
 
         print(f"[INFO] Block {block_height} mined successfully with Coinbase Transaction for network: {network}")
+
+
+
+
     def store_transaction_in_mempool(self, transaction):
         """
         Route the transaction to the PoC to be stored in the mempool.
@@ -362,15 +355,17 @@ class Blockchain:
             print(f"[ERROR] Failed to hash transaction: {e}")
             raise
 
-    def calculate_merkle_root(self, transaction_ids):
+
+  
+    def calculate_merkle_root(self, transactions):
         """
-        Calculate the Merkle root of a list of transaction IDs.
-        :param transaction_ids: List of transaction IDs (strings).
+        Calculate the Merkle root of a list of transactions.
+        :param transactions: List of transactions (Transaction objects or dictionaries).
         :return: The Merkle root as a hex string.
         """
-        if not transaction_ids:
+        if not transactions:
             print("[DEBUG] No transactions provided. Returning ZERO_HASH as Merkle root.")
-            return self.ZERO_HASH  # Ensure ZERO_HASH is defined in your class
+            return self.ZERO_HASH  # Use the class-level constant
 
         def merkle_parent_level(hashes):
             """
@@ -389,25 +384,40 @@ class Blockchain:
                 print(f"[DEBUG] Parent hash: {parent_hash} from {hashes[i]} + {hashes[i + 1]}")
             return parent_level
 
-        # Step 1: Hash all transaction IDs
-        hashed_transactions = [self.hash_transaction(tx_id) for tx_id in transaction_ids]
-        print(f"[DEBUG] Initial transaction hashes: {hashed_transactions}")
+        try:
+            # Step 1: Extract transaction IDs
+            transaction_ids = []
+            for tx in transactions:
+                if hasattr(tx, 'tx_id'):  # If tx is an object with a tx_id attribute
+                    transaction_ids.append(tx.tx_id)
+                elif isinstance(tx, dict) and "tx_id" in tx:  # If tx is a dictionary with a "tx_id" key
+                    transaction_ids.append(tx["tx_id"])
+                else:
+                    raise ValueError(f"Transaction {tx} does not have a valid tx_id")
 
-        # Step 2: Build the Merkle tree
-        current_level = hashed_transactions
-        level = 0  # For debug purposes
-        while len(current_level) > 1:
-            print(f"[DEBUG] Level {level} hashes: {current_level}")
-            current_level = merkle_parent_level(current_level)
-            level += 1
+            # Step 2: Hash all transaction IDs
+            hashed_transactions = [hashlib.sha3_384(tx_id.encode()).hexdigest() for tx_id in transaction_ids]
+            print(f"[DEBUG] Initial transaction hashes: {hashed_transactions}")
 
-        # Step 3: The last remaining hash is the Merkle root
-        if not current_level:
-            print("[ERROR] Merkle tree construction failed. Returning ZERO_HASH.")
-            return self.ZERO_HASH  # Fallback in case of an error
+            # Step 3: Build the Merkle tree
+            current_level = hashed_transactions
+            level = 0  # For debug purposes
+            while len(current_level) > 1:
+                print(f"[DEBUG] Level {level} hashes: {current_level}")
+                current_level = merkle_parent_level(current_level)
+                level += 1
 
-        print(f"[DEBUG] Final Merkle root: {current_level[0]}")
-        return current_level[0]
+            # Step 4: The last remaining hash is the Merkle root
+            if not current_level:
+                print("[ERROR] Merkle tree construction failed. Returning ZERO_HASH.")
+                return self.ZERO_HASH  # Fallback in case of an error
+
+            print(f"[DEBUG] Final Merkle root: {current_level[0]}")
+            return current_level[0]
+
+        except Exception as e:
+            print(f"[ERROR] Failed to calculate Merkle root: {e}")
+            return self.ZERO_HASH  # Fallback in case of an erro
 
 
     def calculate_target(self):
