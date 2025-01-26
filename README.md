@@ -46,7 +46,11 @@ TPS estiamte 7-150
 S- = smart payemtns based on these rules which a deailed white paper will be written about 
 
 Max supply will be 84,096,000
-block times 5 mins 
+block times 5 min block confirmation 
+POW is the consensus using Sha3-384 which is also PQC resistant 
+
+
+# Governance insight 
 
  governace will have the ablity to mint up 
 2x the max once all supply has been mined up to 25% 
@@ -57,7 +61,8 @@ but thats a goverance thing and im working on the book
 for the rules ablities to upgrade security 
 the blockchain will be backwards compatible to insure 
 we are furthre proofing and its bere long after the founders 
-
+all this is still being worked on im writting up a
+small book of the governace rules and guidelines 
 
 # Code Structure
 The codebase is organized into several key components:
@@ -104,7 +109,7 @@ needs to be updated but they all python native installs
 The lsit is blank but will be updated 
 
 # Run the blockchain: 
-go to blockchain.py and just run the script 
+Go to blockchain.py and just run the script 
 there will be erros updates get submitted daily
 
 # Generate Falcon keys
@@ -167,12 +172,28 @@ AI for goverance to reduce human needs to a minium
 off chain pay or instant oay needs refined or layer 3
 smart pay logic 
 security audits on the blockchain 
+instant pay HTLC hash locked contract for the smart pay
+the POC or point of contact where data bases 
+and blockchain meet to get routed to where they need to be 
 
 
 
 # Community Development: Engage the community in testing, feedback, and contributions.
 
 We welcome contributions from the community! If you'd like to contribute, please follow the steps 
+
+im welcome to all questions about the project and would 
+
+love to answer them everything cant be answered 
+
+in this read me but 9/10 I have already thought about it 
+
+Just havent go to it yet please email me 
+
+ask all the questions im also open to zoom calls 
+
+zyironchain@gmail.com 
+
 
 
 
