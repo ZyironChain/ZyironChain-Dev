@@ -1,7 +1,7 @@
 # WHITE PAPER VERISON 1.0 DEV VERISON HIGH OVERVIEW 
 
 
-#Goal 
+# Vison & Mission
 
 Be the most secure, democratic, efficent Payment 
 system in the crypto space and address the biggest promblems 
