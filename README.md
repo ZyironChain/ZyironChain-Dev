@@ -3,7 +3,7 @@ WHITE PAPER VERISON 1.0 DEV VERISON HIGH OVERVIEW
 
 
 
-Zyiron Chain - PQC Payment System
+# Zyiron Chain - PQC Payment System
 Overview
 Zyiron Chain is a Post-Quantum Cryptography (PQC) resistant payment system designed to provide secure, scalable, and efficient transactions. It leverages SHA3-384 for hashing and Falcon 1024 for digital signatures, ensuring quantum-resistant security. The system is structured into three layers:
 
@@ -13,7 +13,7 @@ Layer 2: Instant Payments - A layer dedicated to fast, low-latency transactions 
 
 Layer 3: Governance - A governance layer (still under development) that will manage network upgrades, dispute resolution, and community-driven decision-making.
 
-Key Features
+# Key Features
 Quantum-Resistant Security: Utilizes SHA3-384 for hashing and Falcon 1024 for digital signatures, ensuring resistance against quantum computing attacks.
 
 Three-Layer Architecture: Separates protocol, instant payments, and governance for modularity and scalability.
@@ -24,7 +24,7 @@ Smart Transactions: Enables programmable logic for advanced payment scenarios.
 
 Community-Driven Development: Prioritizes community involvement, code refactoring, and debugging to ensure a robust and user-friendly system.
 
-Technologies Used
+#Technologies Used
 SHA3-384: A cryptographic hash function used for secure hashing of transactions and blocks.
 
 Falcon 1024: A post-quantum digital signature algorithm used for signing transactions and ensuring authenticity.
@@ -70,83 +70,24 @@ DisputeResolutionContract: Handles dispute resolution for transactions and payme
 
 Governance Layer: (Under development) Will manage network upgrades and community-driven decisions.
 
-Getting Started
+# Getting Started
 Prerequisites
 Python 3.8 or higher
-
-Required Python packages: unqlite, lmdb, duckdb, sqlite3, tinydb
-
-Installation
-Clone the repository:
-
-bash
-Copy
-git clone https://github.com/your-repo/zyiron-chain.git
-cd zyiron-chain
-Install dependencies:
-
-bash
-Copy
+Required Python packages: unqlite, lmdb, duckdb, sqlite, tinydb, 
 pip install -r requirements.txt
-Run the blockchain:
+needs to be updated but they all python native installa
 
-bash
-Copy
-python main.py
-Example Usage
-Generating Keys and Signing a Message
-python
-Copy
-from Zyiron_Chain.accounts.wallet import Wallet
-
-# Create a new wallet
-wallet = Wallet()
+# Run the blockchain: 
+go to blockchan.py and just run the script 
 
 # Generate Falcon keys
-wallet.generate_keys()
+Genrating Keys 
+go to keymanager.py and generate the keys there is an interactive menu and just set them as default 
 
-# Sign a message
-message = "Hello, Zyiron Chain!"
-signature = wallet.sign_message(message)
 
-# Verify the signature
-is_valid = wallet.verify_message(message, signature)
-print(f"Is the signature valid? {is_valid}")
-Creating and Mining a Block
-python
-Copy
-from Zyiron_Chain.blockchain.block import Block
-from Zyiron_Chain.blockchain.blockchain import Blockchain
-from Zyiron_Chain.accounts.wallet import Wallet
 
-# Initialize the blockchain
-key_manager = KeyManager()
-poc = PoC()
-blockchain = Blockchain(key_manager, poc)
+# Needs
 
-# Create a new block
-block = Block(index=1, previous_hash="0", transactions=["tx1", "tx2"])
-
-# Mine the block
-block.mine(target=blockchain.calculate_target(), fee_model=blockchain.fee_model, mempool=blockchain.mempool, block_size=1)
-
-# Add the block to the blockchain
-blockchain.add_block(block)
-Sending a Transaction
-python
-Copy
-from Zyiron_Chain.transactions.send_zyc import SendZYC
-from Zyiron_Chain.accounts.wallet import Wallet
-
-# Initialize the SendZYC class
-send_zyc = SendZYC(key_manager, utxo_manager, mempool, fee_model, network="mainnet")
-
-# Prepare and send a transaction
-recipient_script_pub_key = "recipient_public_key_hash"
-amount = 10.0  # Amount to send
-block_size = 1  # Current block size in MB
-transaction = send_zyc.prepare_transaction(recipient_script_pub_key, amount, block_size)
-Roadmap
 Layer 3 Governance: Develop the governance layer for community-driven decision-making.
 
 Code Refactoring: Continuously improve code quality and performance.
@@ -158,24 +99,25 @@ Documentation: Expand documentation to include detailed API references and tutor
 Contributing
 We welcome contributions from the community! If you'd like to contribute, please follow these steps:
 
-Fork the repository.
 
-Create a new branch for your feature or bugfix.
-
-Submit a pull request with a detailed description of your changes.
-
-License
+# License
 This project is licensed under the MIT License. See the LICENSE file for details.
 
+# Commit Approavls 
+
+you must email @zyironchain@gmail.com
+expalin your improvements 
+where you made changes and why 
+who you are 
+and anything else you would like to add 
 
 
 
 
 
 
-Observations and Suggestions
-Cryptography Implementation:
 
+# Things that need to be worked on 
 The falcon/ directory is well-detailed, but the ntru-main/ directory is mentioned in the Key Highlights section without being present in the file structure. If NTRU is part of the project, ensure it is added to the structure.
 
 Consider adding a cryptography/ parent directory to group falcon/ and ntru-main/ (if applicable) for better organization.
