@@ -37,7 +37,7 @@ Falcon 1024: A post-quantum digital signature algorithm used for signing transac
 
 Blockchain Fundamentals: Proof-of-Work (PoW), UTXO model, and Merkle trees for transaction validation and block integrity.
 
-a 5 database system to ensure scalability and speed 
+A 5 database system to ensure scalability and speed 
 
 Dyamic block sizes 1-10 mb depending on network traffic 
 TPS estiamte 7-150 
@@ -48,13 +48,15 @@ S- = smart payemtns based on these rules which a deailed white paper will be wri
 Max supply will be 84,096,000
 block times 5 mins 
 
-also governace will have the ablity to mint up 
+ governace will have the ablity to mint up 
 2x the max once all supply has been mined up to 25% 
 of the total at a time or about 25 million ZYC 
 once evey 50 years up to 2x the amount of the max suppy 
 if community votes 90% on these proposals 
 but thats a goverance thing and im working on the book 
-for the rules 
+for the rules ablities to upgrade security 
+the blockchain will be backwards compatible to insure 
+we are furthre proofing and its bere long after the founders 
 
 
 # Code Structure
@@ -68,28 +70,28 @@ Wallet Class: Handles key generation, transaction signing, and verification for 
 2. Blockchain Core
 Block Class: Represents a block in the blockchain, including block headers, transactions, and mining logic.
 
-Blockchain Class: Manages the blockchain, including block creation, validation, and UTXO management.
+3.Blockchain Class: Manages the blockchain, including block creation, validation, and UTXO management.
 
-Mempool Classes: Handles pending transactions, fee calculation, and transaction prioritization.
+4.Mempool Classes: Handles pending transactions, fee calculation, and transaction prioritization.
 
-3. Transaction Handling
+5. Transaction Handling
 Transaction Class: Represents a blockchain transaction with inputs, outputs, and fees.
 
-Smart Transactions: Supports advanced transaction types with programmable logic.
+6.Smart Transactions: Supports advanced transaction types with programmable logic.
 
-Fee Model: Calculates transaction fees based on block size, congestion, and payment type.
+7.Fee Model: Calculates transaction fees based on block size, congestion, and payment type.
 
-4. Payment Channels and Multi-Hop Routing
+8.Payment Channels and Multi-Hop Routing
 PaymentChannel Class: Manages off-chain payment channels for instant transactions.
 
-MultiHop Class: Implements multi-hop routing for efficient transaction batching and forwarding.
+9.MultiHop Class: Implements multi-hop routing for efficient transaction batching and forwarding.
 
-5. Database and Storage
+10.Database and Storage
 UnQLite, SQLite, LMDB, DuckDB: Various databases for storing blockchain data, UTXOs, and analytics.
 
-DatabaseSyncManager: Synchronizes data across multiple databases for consistency and redundancy.
+11.DatabaseSyncManager: Synchronizes data across multiple databases for consistency and redundancy.
 
-6. Governance and Dispute Resolution
+12.Governance and Dispute Resolution
 DisputeResolutionContract: Handles dispute resolution for transactions and payment channels.
 
 
@@ -102,7 +104,8 @@ needs to be updated but they all python native installs
 The lsit is blank but will be updated 
 
 # Run the blockchain: 
-go to blockchan.py and just run the script 
+go to blockchain.py and just run the script 
+there will be erros updates get submitted daily
 
 # Generate Falcon keys
 Genrating Keys 
@@ -118,10 +121,11 @@ This project is licensed under the MIT License. See the LICENSE file for details
 you must email @zyironchain@gmail.com 
 message on instagram @zyironchain 
 or telegram @Zyiron_Chain
-expalin your improvements 
+details about your improvements 
 where you made changes and why 
 who you are 
 and anything else you would like to add 
+
 
 # Custodial Wallets and keys 
 will be made using NTRU a PQC encryption 
