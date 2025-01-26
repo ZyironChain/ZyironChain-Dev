@@ -4,12 +4,22 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 class AnalyticsNetworkDB:
-    def __init__(self, db_file="analytics_network.duckdb"):
+    def __init__(self, db_file="analytics_network.duckdb", read_only=False):
         """
-        Initialize the DuckDB connection and create the required tables.
+        Initialize the DuckDB connection.
+        If read_only is True, opens the database in read-only mode to prevent file locking issues.
         """
-        self.conn = duckdb.connect(db_file)
-        self.create_tables()
+        try:
+            # Open the database in read-only mode if specified
+            self.conn = duckdb.connect(db_file, read_only=read_only)
+            if not read_only:
+                self.create_tables()  # Create tables only if not in read-only mode
+            print("[INFO] Connected to DuckDB.")
+        except duckdb.duckdb.IOException as e:
+            print(f"[ERROR] Failed to open DuckDB file: {e}")
+            raise
+
+
 
     def create_tables(self):
         """
@@ -189,24 +199,29 @@ class AnalyticsNetworkDB:
         """
         Close the DuckDB connection.
         """
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
+            print("[INFO] DuckDB connection closed.")
 
 
 # Example Usage
 if __name__ == "__main__":
-    db = AnalyticsNetworkDB()
+    try:
+        db = AnalyticsNetworkDB()
 
-    # Insert some example data
-    db.insert_block_metadata("hash1", 1, "miner1", datetime.now(), 1024, 2, 10)
-    db.insert_transaction_metadata("tx1", "hash1", 100.5, 0.5, 2, 3, "confirmed", datetime.now())
-    db.insert_wallet_metadata("wallet1", 1000.0, 5, datetime.now())
-    db.insert_network_analytics("avg_fee", 0.25, datetime.now())
+        # Insert example data
+        db.insert_block_metadata("hash1", 1, "miner1", datetime.now(), 1024, 2, 10)
+        db.insert_transaction_metadata("tx1", "hash1", 100.5, 0.5, 2, 3, "confirmed", datetime.now())
 
-    # Fetch and print data
-    print("Block Metadata:", db.fetch_block_metadata("hash1"))
-    print("Transaction Metadata:", db.fetch_transaction_metadata("tx1"))
-    print("Wallet Metadata:", db.fetch_wallet_metadata("wallet1"))
-    print("Network Analytics:", db.fetch_network_analytics("avg_fee"))
+        # Fetch and print data
+        block = db.fetch_block_metadata("hash1")
+        if block:
+            print("Block Metadata:", block)
+        else:
+            logging.warning("[WARN] No block metadata found for hash1.")
 
-    # Close the connection
-    db.close()
+    except Exception as e:
+        logging.error(f"[ERROR] An error occurred: {e}")
+
+    finally:
+        db.close()
