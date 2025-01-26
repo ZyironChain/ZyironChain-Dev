@@ -1,10 +1,16 @@
-WHITE PAPER VERISON 1.0 DEV VERISON HIGH OVERVIEW 
+# WHITE PAPER VERISON 1.0 DEV VERISON HIGH OVERVIEW 
 
 
+#Goal 
 
+Be the most secure, democratic, efficent Payment 
+system in the crypto space and address the biggest promblems 
+suchs as PQC cheap teansactions, security and
+having voices heard to move the project in the direction 
+of the communities best instrest 
 
-# Zyiron Chain - PQC Payment System
-Overview
+# Zyiron Chain - PQC Payment System Overview
+
 Zyiron Chain is a Post-Quantum Cryptography (PQC) resistant payment system designed to provide secure, scalable, and efficient transactions. It leverages SHA3-384 for hashing and Falcon 1024 for digital signatures, ensuring quantum-resistant security. The system is structured into three layers:
 
 Layer 1: Protocol Layer - The foundational layer handling core blockchain operations, including block creation, consensus, and transaction validation.
@@ -24,16 +30,34 @@ Smart Transactions: Enables programmable logic for advanced payment scenarios.
 
 Community-Driven Development: Prioritizes community involvement, code refactoring, and debugging to ensure a robust and user-friendly system.
 
-#Technologies Used
-SHA3-384: A cryptographic hash function used for secure hashing of transactions and blocks.
+# Technologies Used
+SHA3-384: A cryptographic hash function used for secure hashing of transactions and blocks. NTRU for custodal wallets 
 
 Falcon 1024: A post-quantum digital signature algorithm used for signing transactions and ensuring authenticity.
 
-Python: The primary programming language for the implementation.
-
 Blockchain Fundamentals: Proof-of-Work (PoW), UTXO model, and Merkle trees for transaction validation and block integrity.
 
-Code Structure
+a 5 database system to ensure scalability and speed 
+
+Dyamic block sizes 1-10 mb depending on network traffic 
+TPS estiamte 7-150 
+
+2 mempools that are desinged to pirotize PID CID= istnat payments 
+S- = smart payemtns based on these rules which a deailed white paper will be written about 
+
+Max supply will be 84,096,000
+block times 5 mins 
+
+also governace will have the ablity to mint up 
+2x the max once all supply has been mined up to 25% 
+of the total at a time or about 25 million ZYC 
+once evey 50 years up to 2x the amount of the max suppy 
+if community votes 90% on these proposals 
+but thats a goverance thing and im working on the book 
+for the rules 
+
+
+# Code Structure
 The codebase is organized into several key components:
 
 1. Account and Wallet Management
@@ -68,14 +92,14 @@ DatabaseSyncManager: Synchronizes data across multiple databases for consistency
 6. Governance and Dispute Resolution
 DisputeResolutionContract: Handles dispute resolution for transactions and payment channels.
 
-Governance Layer: (Under development) Will manage network upgrades and community-driven decisions.
 
 # Getting Started
 Prerequisites
 Python 3.8 or higher
 Required Python packages: unqlite, lmdb, duckdb, sqlite, tinydb, 
 pip install -r requirements.txt
-needs to be updated but they all python native installa
+needs to be updated but they all python native installs 
+The lsit is blank but will be updated 
 
 # Run the blockchain: 
 go to blockchan.py and just run the script 
@@ -86,30 +110,35 @@ go to keymanager.py and generate the keys there is an interactive menu and just 
 
 
 
-# Needs
-
-Layer 3 Governance: Develop the governance layer for community-driven decision-making.
-
-Code Refactoring: Continuously improve code quality and performance.
-
-Community Development: Engage the community in testing, feedback, and contributions.
-
-Documentation: Expand documentation to include detailed API references and tutorials.
-
-Contributing
-We welcome contributions from the community! If you'd like to contribute, please follow these steps:
-
-
 # License
 This project is licensed under the MIT License. See the LICENSE file for details.
 
 # Commit Approavls 
 
-you must email @zyironchain@gmail.com
+you must email @zyironchain@gmail.com 
+message on instagram @zyironchain 
+or telegram @Zyiron_Chain
 expalin your improvements 
 where you made changes and why 
 who you are 
 and anything else you would like to add 
+
+# Custodial Wallets and keys 
+will be made using NTRU a PQC encryption 
+which will store the private keys for the wallets 
+and the public keys 
+because falcon keys I created the key Manager 
+the script pub key or public key is a sha3-384 hash 
+of the raw public key 
+
+the wallet.py will hold the APIs for exahnges and third 
+parties becuase they have there own way of storing things 
+so it provides raw keys 
+
+the custodal wallets for the apple and andorid store 
+wallets will be made with some of the strongest encryption 
+PQC ready which is what I will recommend ZYC holders 
+to store in and olus you have more control. 
 
 
 
@@ -118,54 +147,28 @@ and anything else you would like to add
 
 
 # Things that need to be worked on 
-The falcon/ directory is well-detailed, but the ntru-main/ directory is mentioned in the Key Highlights section without being present in the file structure. If NTRU is part of the project, ensure it is added to the structure.
-
-Consider adding a cryptography/ parent directory to group falcon/ and ntru-main/ (if applicable) for better organization.
-
+there is alot if work these are just a few 
+the p2p needs to be built 
+the wallet using NTRU 
+debugging logic refinement 
+code refactoring 
+frontend 
 Database Management:
+Off-Chain and Smart Payment Logic has been built about 70 percent 
+Testing it all 
+making sure all the databases communicate and work togther 
+building the goversnce layer or layer 3with the tax model 
+I created a tax model evrybody gets rewards 
+AI for goverance to reduce human needs to a minium 
+off chain pay or instant oay needs refined or layer 3
+smart pay logic 
+security audits on the blockchain 
 
-The database/ directory contains multiple files for different database operations (layer2db.py, leveldbblocks.py, etc.). Consider grouping related files into subdirectories (e.g., database/leveldb/, database/lmdb/) for better modularity.
 
-The reset.py file suggests a reset functionality. Ensure this is well-documented in the docs/ directory to avoid accidental misuse.
 
-Off-Chain and Smart Payment Logic:
+# Community Development: Engage the community in testing, feedback, and contributions.
 
-The offchain/ and smartpay/ directories are well-defined. Ensure there is clear documentation on how these modules interact with the core blockchain logic (blockchain/) and transactions (transactions/).
-
-Testing:
-
-The tests/ directory is divided into backend_tests/, blockchain_tests/, and frontend_tests/. Ensure that all critical components (e.g., cryptography, database, transactions) have corresponding test cases.
-
-Consider adding a tests/integration_tests/ directory for end-to-end testing of the system.
-
-Documentation:
-
-The docs/ directory is well-structured. Consider adding a docs/security.md file to detail cryptographic implementations, key management, and security best practices.
-
-Add a docs/testing.md file to outline the testing strategy, including unit, integration, and performance tests.
-
-Virtual Environment:
-
-The .venv/ directory is included, which is great for local development. Ensure that the requirements.txt file is kept up-to-date with all dependencies.
-
-Build and Distribution:
-
-The build/ and dist/ directories suggest the project is packaged for distribution. Ensure the setup.py or pyproject.toml file is included in the root directory for proper package configuration.
-
-Frontend (if applicable):
-
-If the project includes a frontend (e.g., a web interface), consider adding a frontend/ directory to the root structure. This would include UI code, assets, and frontend tests.
-
-Logging and Monitoring:
-
-The scripts/monitoring.py file suggests monitoring capabilities. Consider adding a logs/ directory for storing system logs and a monitoring/ directory for advanced monitoring tools and configurations.
-
-Configuration Files:
-
-The .vscode/ directory contains editor-specific configurations. Consider adding a config/ directory for project-wide configurations (e.g., network settings, cryptographic parameters).
-
-Proposed Refinements
-Here’s an updated version of the file structure with some of the above suggestions incorporated:
+We welcome contributions from the community! If you'd like to contribute, please follow the steps 
 
 
 
@@ -189,7 +192,10 @@ Here’s an updated version of the file structure with some of the above suggest
 
 
 
-FILE STRUCTURE OPEN UP FULL READ ME TO VIEW 
+
+
+
+# FILE STRUCTURE OPEN UP FULL READ ME TO VIEW 
 
 
 
