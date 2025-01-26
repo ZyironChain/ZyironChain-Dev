@@ -63,6 +63,24 @@ the blockchain will be backwards compatible to insure
 we are furthre proofing and its bere long after the founders 
 all this is still being worked on im writting up a
 small book of the governace rules and guidelines 
+there is also a tax model 3 differnt fund 
+Goverance Fund
+Smart Fund 
+Contributors Fund
+
+these 3 funds have been very well defined in the book 
+and there roles 
+
+The goverance is a true democratic system 
+with a economy inside of an economy 
+
+Also 
+
+The analysis and analyics models 
+I have support this growth and how sustainable it is 
+All the addtional Governance Documents I can 
+email over to any party interested learning more 
+
 
 # Code Structure
 The codebase is organized into several key components:
