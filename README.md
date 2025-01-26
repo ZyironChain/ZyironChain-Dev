@@ -151,29 +151,55 @@ to store in and olus you have more control.
 
 
 
+# Where the project currently is 
+Zyiron Chain is about 40% done 
+there is alot of work that needs to be done 
+im inviting the community to build this with me 
+The core has been built alot of the Algorithms in place 
+and everything in overview 
+for the most part has been built and it has reached 
+a point where I need help to help humanity 
 
 
 
 
 # Things that need to be worked on 
 there is alot if work these are just a few 
+
 the p2p needs to be built 
+
 the wallet using NTRU 
+
 debugging logic refinement 
+
 code refactoring 
-frontend 
-Database Management:
+
+frontend / block explore / analytics APIS
+
+Database Management
+
 Off-Chain and Smart Payment Logic has been built about 70 percent 
+
 Testing it all 
+
 making sure all the databases communicate and work togther 
+
 building the goversnce layer or layer 3with the tax model 
+
 I created a tax model evrybody gets rewards 
-AI for goverance to reduce human needs to a minium 
+
+AI for goverance to reduce human needs
+
 off chain pay or instant oay needs refined or layer 3
+
 smart pay logic 
+
 security audits on the blockchain 
+
 instant pay HTLC hash locked contract for the smart pay
+
 the POC or point of contact where data bases 
+
 and blockchain meet to get routed to where they need to be 
 
 
