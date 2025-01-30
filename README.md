@@ -167,6 +167,65 @@ wallets will be made with some of the strongest encryption
 PQC ready which is what I will recommend ZYC holders 
 to store in and olus you have more control. 
 
+# The custodial HKTD wallet 
+
+HKTD Wallet System Summary
+The HKTD Wallet is a high-security custodial wallet designed to provide secure key management, encryption, and transaction obfuscation using AES-256-GCM encryption and Falcon 1024 cryptography. It ensures secure wallet recovery, private key protection, and transaction privacy.
+
+1. Master Seed & Recovery System
+The wallet is powered by a 2048-bit hexadecimal master seed, serving as the ultimate key for:
+Recovering lost wallets
+Decrypting all stored wallet data, including private keys
+Signing transactions when needed
+This master seed allows for full wallet restoration, ensuring seamless access to encrypted data while maintaining security.
+
+2. Dual Use of Falcon Cryptography
+A. Falcon for Address Generation (ZYC & ZYT Networks)
+The HKTD Wallet generates addresses for the ZYC (Mainnet) and ZYT (Testnet) networks using Falcon 1024.
+Process:
+
+Key Pair Generation: A Falcon 1024 private and public key pair is created.
+Public Key Hashing: The public key is hashed to create a base address hash.
+Network-Specific Prefixing:
+
+ZYC (Mainnet) addresses start with KYZ
+ZYT (Testnet) addresses start with KCT
+Final Address Generation: The network prefix is added, and the address is finalized.
+B. Falcon + AES-256-GCM for Wallet Encryption
+
+Private keys, master seed, and sensitive data are encrypted using AES-256-GCM, ensuring high-security protection.
+Falcon 1024 is also used to generate digital signatures that ensure the authenticity and integrity of encrypted wallet data.
+Decryption & Access Control:
+The master seed is required to decrypt private keys.
+Each key is stored in an encrypted vault within the wallet, accessible only after authentication.
+Multi-Factor Authentication (MFA) adds additional security to prevent unauthorized access.
+
+4. Transaction Lifecycle & Privacy Mechanism
+To enhance transaction privacy and prevent tracking, every transaction follows a salted and cryptographic validation process:
+
+Step 1: Transaction Creation
+Input Selection:
+The wallet selects UTXOs that are tied to salted hashes for spending.
+Transaction Details Include:
+Salted Hash: Ensures that transactions cannot be linked through predictable patterns.
+Raw Public Key: Allows recomputation of the base hash for ownership verification.
+Salt: Required to recompute the salted hash and validate the transaction.
+Signature: The transaction is signed using the Falcon private key.
+
+Step 2: Transaction Validation
+Recompute Salted Hash:
+Formula: recomputed_hash = SHA3_384(public_key + salt)
+Ownership Verification:
+The base hash derived from the public key is compared with the UTXO database hash.
+Signature Validation:
+The Falcon public key is used to verify that the transaction signature is authentic.
+ Signing & Secure Key Access
+ 
+The wallet derives Falcon key pairs from the master seed for:
+Address generation (ZYC & ZYT networks)
+Transaction signing & authentication
+Private keys are encrypted and only accessible through the master seed, ensuring they remain secure and hidden at all times.
+Transaction signing is performed using Falcon cryptography, providing strong authentication and integrity for blockchain transactions.
 
 
 # Where the project currently is 
@@ -379,8 +438,7 @@ Zyiron_Chain/
 │   └── __init__.py                  # Package initialization
 └── .venv/                           # Virtual environment
 Next Steps
-Review the updated structure and ensure all components are aligned with the project's goals.
 
-Add any missing files or directories (e.g., ntru/, frontend/).
+there is always constant updates 
 
 Update documentation to reflect any changes.
