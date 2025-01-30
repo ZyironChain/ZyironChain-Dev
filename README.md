@@ -151,63 +151,104 @@ and anything else you would like to add
 ZyironChain-Dev Repository Guide 🚀
 Welcome to the ZyironChain-Dev repository! This repo is designed for secure development, requiring all contributions to go through pull requests and approval. Below are the guidelines to fork, clone, contribute, and follow the repository rules.
 
-🔗 Clone the Repository
+
+
+# 🔗 Clone the Repository
 To clone this repository and start contributing, use one of the following methods:
 
 HTTPS (Recommended)
+
 bash
+
 Copy
+
 Edit
+
 git clone https://github.com/ZyironChain/ZyironChain-Dev.git
+
 SSH (For Secure Authentication)
+
 bash
+
 Copy
+
 Edit
+
 git clone git@github.com:ZyironChain/ZyironChain-Dev.git
+
 Note: SSH requires an SSH key linked to your GitHub account.
+
 
 After cloning, navigate into the project directory:
 
 bash
+
 Copy
+
 Edit
+
 cd ZyironChain-Dev
+
 Verify your remote repository setup:
 
 bash
+
 Copy
 Edit
 git remote -v
 🔄 Fork & Contribute
 To contribute:
 
-Fork the repository by clicking the Fork button on GitHub.
+# Fork the repository by clicking the Fork button on GitHub.
+
 Clone your fork to your local machine:
+
 bash
+
 Copy
+
 Edit
+
 git clone https://github.com/YOUR-USERNAME/ZyironChain-Dev.git
 Create a new branch for your changes:
+
 bash
+
 Copy
+
 Edit
+
 git checkout -b feature-branch
+
 Make your changes, commit them, and push to your fork:
 bash
+
 Copy
+
 Edit
+
 git add .
+
 git commit -m "Description of changes"
+
 git push origin feature-branch
+
 Submit a Pull Request (PR) on GitHub.
+
 🚧 Branch Protection & Approval Process
+
 This repository has branch protection rules in place to ensure secure development.
 
 🔒 Direct pushes to main are restricted—all changes must go through a Pull Request (PR).
+
 ✅ All PRs require at least 1 approval before merging.
+
 🔄 Auto-merge is disabled—maintainers review and approve merges.
+
 👥 Who Can Contribute?
+
 Anyone can fork and pull the repository.
+
 Contributors must submit a PR for review—direct push access is restricted. 
 
 and send a email to zyironchain@gmail.com
