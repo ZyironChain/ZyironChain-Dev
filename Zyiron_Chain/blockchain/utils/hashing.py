@@ -8,11 +8,17 @@ sys.path.append(project_root)
 
 
 
-
 import hashlib
 
+def sha3_384_hash(data: str) -> str:
+    """Standardized SHA3-384 hashing function"""
+    return hashlib.sha3_384(data.encode()).hexdigest()
 
-def sha3_384(s):
-    """Two rounds of SHA3-384"""
-    return hashlib.sha3_384(hashlib.sha3_384(s).digest()).digest()
+def validate_hash(hash_str: str) -> bool:
+    """Validate SHA3-384 hash format"""
+    return len(hash_str) == 96 and all(c in '0123456789abcdef' for c in hash_str)
 
+def hash_transaction(tx_data: dict) -> str:
+    """Hash transaction data with SHA3-384"""
+    serialized = "".join(f"{k}{v}" for k, v in sorted(tx_data.items()))
+    return sha3_384_hash(serialized)

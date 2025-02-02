@@ -46,8 +46,6 @@ class PaymentTypeManager:
             return "Parent"
         elif tx_id.startswith("CID-"):
             return "Child"
-        elif tx_id.startswith("I-"):
-            return "Instant"
         elif tx_id.startswith("S-"):
             return "Smart"
         else:
