@@ -5,7 +5,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, CoinbaseTx
 from Zyiron_Chain.transactions.fees import FeeModel
-from Zyiron_Chain.transactions.txout import UTXOManager
+from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager

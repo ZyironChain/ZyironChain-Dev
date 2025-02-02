@@ -6,124 +6,62 @@ import hashlib
 import logging
 import json
 import time 
-from Zyiron_Chain.database.blockchainpoc import BlockchainPoC
 from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
 from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
 from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
-from Zyiron_Chain.blockchain.block import Block
+
+from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-from Zyiron_Chain.transactions.fees import FeeModel, PaymentTypes
+from Zyiron_Chain.transactions.fees import FeeModel
+from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from datetime import datetime
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
 from Zyiron_Chain.transactions.transactiontype import TransactionType
+from decimal import Decimal
 
 logging.basicConfig(level=logging.INFO)
 
+
 class PoC:
     def __init__(self):
-        # Initialize the databases and transaction manager
+        """
+        Initialize the Point-of-Contact (PoC) layer to handle node interactions, database storage,
+        and blockchain operations.
+        """
         self.unqlite_db = BlockchainUnqliteDB()
         self.sqlite_db = SQLiteDB()
         self.duckdb_analytics = AnalyticsNetworkDB()
         self.lmdb_manager = LMDBManager()
         self.tinydb_manager = TinyDBManager()
 
-        # Fee Model and Mempool
-        self.fee_model = FeeModel()
+        # Initialize Fee Model with max supply
+        self.fee_model = FeeModel(Decimal("84096000"))
 
-        # Initialize PaymentType (or PaymentTypes) with the fee_model
-        self.payment_type_manager = PaymentTypes(self.fee_model)  # Pass fee_model to PaymentType
+        # Initialize Payment Type Manager
+        self.payment_type_manager = PaymentTypeManager()
 
-        # Initialize BlockchainPoC (the blockchain-specific logic handler)
-        self.blockchain_poc = BlockchainPoC(self)  # PoC now interacts with BlockchainPoC for blockchain-related operations
-
-        # Initialize mempool for pending transactions
+        # Mempool for pending transactions
         self.mempool = []
 
-    def store_block_metadata(self, block):
-        """
-        Store metadata about the block in DuckDB for analytics.
-        :param block: The block whose metadata needs to be stored.
-        """
-        try:
-            # Calculate block size
-            block_size = 0
-            for tx in block.transactions:
-                if hasattr(tx, 'to_dict'):  # If tx is a Transaction object
-                    block_size += len(str(tx.to_dict()))
-                else:  # If tx is a dictionary
-                    block_size += len(str(tx))
 
-            # Extract metadata from the block
-            block_metadata = {
-                "index": block.index,
-                "miner": "miner_address_placeholder",  # Replace with actual miner address
-                "timestamp": block.timestamp,
-                "size": block_size,  # Block size based on transactions
-                "difficulty": block.header.nonce,  # Replace with actual difficulty if available
-                "transaction_count": len(block.transactions)
-            }
-
-            # Store metadata in DuckDB
-            self.duckdb_analytics.insert_block_metadata(**block_metadata)
-            logging.info(f"[INFO] Stored metadata for block {block.index} in DuckDB.")
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to store block metadata: {e}")
-            raise
-
-
-    def get_total_size(self):
-        """
-        Calculate the total size of the mempool or blockchain.
-        """
-        return len(self.mempool)  # Example: Return the number of transactions in the mempool
-
-    def serialize_data(self, data):
-        """
-        Serialize data before sending it to UnQLite, SQLite, or over the network.
-        Convert the data into a JSON string for transmission or storage.
-        """
-        try:
-            serialized_data = json.dumps(data)
-            logging.info(f"[POC] Serialized data: {serialized_data}")
-            return serialized_data
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to serialize data: {e}")
-            return None
-
-    def load_blockchain_data(self):
-        """
-        Load blockchain data (blocks, transactions, UTXOs) from the appropriate storage.
-        This could be from a database, file system, or other sources.
-        """
-        logging.info("[POC] Loading blockchain data...")
-
-        # Delegate to BlockchainPoC to load blockchain data
-        try:
-            self.blockchain_poc.load_blockchain_data()  # Let BlockchainPoC handle the loading of blockchain data
-            logging.info(f"[POC] Loaded blockchain data successfully.")
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to load blockchain data: {e}")
+    ### -------------------- BLOCKCHAIN STORAGE & VALIDATION -------------------- ###
 
     def store_block(self, block, difficulty):
         """
         Store a block in the PoC layer.
-        This will handle storing the block data into UnQLite (or another DB you are using).
-        :param block: The block to be stored.
-        :param difficulty: The difficulty for mining the block.
         """
         try:
-            # Serialize the block into a dictionary form
+            if isinstance(block, dict):
+                block = Block.from_dict(block)  # Convert dict to Block object if needed
+
             block_data = block.to_dict()
+            block_header = block.header.to_dict()
+            transactions = [tx.to_dict() for tx in block.transactions]
 
-            # Get the necessary details to pass to add_block
-            block_header = block.header
-            transactions = block.transactions
-            size = sum(len(str(tx.to_dict())) for tx in transactions)  # Example block size based on transactions
+            size = sum(len(json.dumps(tx)) for tx in transactions)  # Calculate block size
 
-            # Now store the block data in UnQLite
             self.unqlite_db.add_block(
                 block_data['hash'],
                 block_header,
@@ -132,139 +70,198 @@ class PoC:
                 difficulty
             )
 
-            print(f"[INFO] Block {block.index} stored in PoC successfully.")
+            logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
         except Exception as e:
-            print(f"[ERROR] Failed to store block: {e}")
+            logging.error(f"[ERROR] Failed to store block: {e}")
             raise
 
-    def get_blockchain_data(self):
-        """
-        Return the blockchain data that has been loaded by BlockchainPoC.
-        """
-        # Delegate to BlockchainPoC to get the blockchain data
-        return self.blockchain_poc.get_blockchain_data()  # Get blockchain data from BlockchainPoC
 
-    def deserialize_data(self, serialized_data):
+
+    def store_utxo(self, utxo_id, utxo_data):
         """
-        Deserialize data received from UnQLite, SQLite, or the network.
-        Convert the JSON string back into a Python object.
+        Store a UTXO in the SQLite database.
+        :param utxo_id: Unique UTXO identifier.
+        :param utxo_data: Dictionary containing UTXO data.
         """
         try:
-            deserialized_data = json.loads(serialized_data)
-            logging.info(f"[POC] Deserialized data: {deserialized_data}")
-            return deserialized_data
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to deserialize data: {e}")
-            return None
+            if not isinstance(utxo_data, dict):
+                raise TypeError("[ERROR] UTXO data must be a dictionary.")
 
-    def route_request(self, node, request_type, data=None):
+            required_keys = ["tx_out_id", "amount", "script_pub_key"]
+            for key in required_keys:
+                if key not in utxo_data:
+                    raise KeyError(f"[ERROR] Missing required UTXO field: {key}")
+
+            self.sqlite_db.add_utxo(
+                utxo_id=utxo_id,
+                tx_out_id=utxo_data["tx_out_id"],
+                amount=Decimal(utxo_data["amount"]),
+                script_pub_key=utxo_data["script_pub_key"],
+                locked=utxo_data.get("locked", False),  # Default to False if not provided
+                block_index=utxo_data.get("block_index", 0)  # Default index 0 for new UTXOs
+            )
+
+            logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
+        except (KeyError, TypeError, ValueError) as e:
+            logging.error(f"[ERROR] Failed to store UTXO {utxo_id}: {e}")
+            raise
+
+
+    def ensure_consistency(self, block):
         """
-        Route requests between nodes in the P2P network based on node type and request type.
+        Ensure blockchain consistency before adding a new block.
+        :param block: The block to check.
         """
-        if request_type == "block":
-            return self.handle_block_request(node, data)
-        elif request_type == "utxo":
-            return self.handle_utxo_request(node, data)
-        elif request_type == "transaction":
-            return self.handle_transaction_request(node, data)
-        elif request_type == "metadata":
-            return self.handle_metadata_request(node)
+        if self.chain:
+            last_block = self.chain[-1]
+            if block.previous_hash != last_block.hash:
+                raise ValueError(f"Previous hash mismatch: {block.previous_hash} != {last_block.hash}")
+            if block.index != last_block.index + 1:
+                raise ValueError(f"Block index mismatch: {block.index} != {last_block.index + 1}")
         else:
-            logging.error(f"[ERROR] Unsupported request type: {request_type}")
+            if block.index != 0:
+                raise ValueError("First block must have index 0.")
+
+        if not block.hash or not block.merkle_root:
+            raise ValueError("Block hash or Merkle root is missing.")
+
+
+    def get_last_block(self):
+        """
+        Fetch the latest block from the blockchain database.
+        If a block is missing required fields, log the issue and assign default values.
+        """
+        logging.info("[POC] Fetching latest block...")
+
+        blocks = self.unqlite_db.get_all_blocks()
+        if not blocks:
+            logging.warning("[POC] No blocks found in database.")
+            return None  # No blocks exist
+
+        last_block_data = blocks[-1]  # Get the most recent block
+
+        # Ensure all critical fields exist
+        last_block_data.setdefault("index", len(blocks) - 1)  # Default index
+        last_block_data.setdefault("previous_hash", "0" * 96)  # Default genesis hash
+        last_block_data.setdefault("timestamp", time.time())  # Assign current timestamp
+        last_block_data.setdefault("merkle_root", "0" * 96)  # Default Merkle root
+        last_block_data.setdefault("nonce", 0)  # Default nonce
+        last_block_data.setdefault("header", {
+            "version": 1,
+            "index": last_block_data["index"],
+            "previous_hash": last_block_data["previous_hash"],
+            "merkle_root": last_block_data["merkle_root"],
+            "timestamp": last_block_data["timestamp"],
+            "nonce": last_block_data["nonce"]
+        })
+
+        if "hash" not in last_block_data:
+            logging.warning(f"[POC] Block {last_block_data['index']} missing 'hash'. Recalculating...")
+            temp_block = Block.from_dict(last_block_data)
+            last_block_data["hash"] = temp_block.calculate_hash()
+
+        return Block.from_dict(last_block_data)  # Convert dict to Block object
+
+
+
+
+    def get_block(self, block_hash):
+        """
+        Retrieve a block from the blockchain database by its hash.
+        """
+        logging.info(f"[POC] Fetching block with hash {block_hash}")
+        try:
+            block_data = self.unqlite_db.get_block(block_hash)
+            if block_data:
+                return Block.from_dict(block_data)  # Ensure return type is Block object
+            logging.warning(f"[POC] Block {block_hash} not found.")
             return None
+        except Exception as e:
+            logging.error(f"[POC] Failed to fetch block {block_hash}: {e}")
+            return None
+        
 
-    def handle_block_request(self, node, block_hash):
+    def validate_block(self, block):
         """
-        Handle requests for blocks, routing to the appropriate node based on role.
+        Validate a block before adding it to the blockchain.
+        :param block: The block to validate.
         """
-        logging.info(f"[POC] Handling block request for {block_hash}")
-        if isinstance(node, FullNode) or isinstance(node, ValidatorNode):
-            # Route block request to BlockchainPoC for handling block retrieval
-            block_data = self.blockchain_poc.get_block(block_hash)  # BlockchainPoC handles getting the block
-            return self.deserialize_data(block_data)  # Deserialize block data for the node
-        logging.error("[ERROR] Invalid node type for block request.")
-        return None
+        try:
+            self.ensure_consistency(block)
+            return True
+        except Exception as e:
+            logging.error(f"[ERROR] Block validation failed: {e}")
+            return False
 
-    def handle_utxo_request(self, node, utxo_id):
+    def load_blockchain_data(self):
         """
-        Handle UTXO request, routing it to the correct database.
+        Load blockchain data from the database.
         """
-        logging.info(f"[POC] Handling UTXO request for {utxo_id}")
-        if isinstance(node, FullNode) or isinstance(node, ValidatorNode):
-            # Route UTXO request to BlockchainPoC for handling UTXO retrieval
-            utxo_data = self.blockchain_poc.get_utxo_data(utxo_id)  # BlockchainPoC handles getting UTXOs
-            return self.deserialize_data(utxo_data)  # Deserialize UTXO data for the node
-        logging.error("[ERROR] Invalid node type for UTXO request.")
-        return None
+        logging.info("[POC] Loading blockchain data...")
+        try:
+            self.chain = self.unqlite_db.get_all_blocks()
+            logging.info(f"[POC] Loaded {len(self.chain)} blocks.")
+        except Exception as e:
+            logging.error(f"[POC] Error loading blockchain data: {e}")
+            self.chain = []
 
-    def handle_transaction_request(self, node, transaction_id):
-        """
-        Handle requests for pending transactions, routing to LMDB or other sources.
-        """
-        logging.info(f"[POC] Handling transaction request for {transaction_id}")
-        if isinstance(node, FullNode) or isinstance(node, MinerNode):
-            # Route transaction request to BlockchainPoC for handling transaction retrieval
-            pending_transactions = self.blockchain_poc.get_pending_transactions(transaction_id)  # BlockchainPoC handles transactions
-            return self.deserialize_data(pending_transactions)  # Deserialize transaction data for the node
-        logging.error("[ERROR] Invalid node type for transaction request.")
-        return None
+    ### -------------------- TRANSACTION HANDLING -------------------- ###
 
-    def handle_metadata_request(self, node):
+    def handle_transaction(self, transaction):
         """
-        Handle metadata requests for light nodes or analytics purposes.
+        Process and store a transaction.
+        :param transaction: The transaction to process.
         """
-        logging.info("[POC] Handling metadata request.")
-        if isinstance(node, LightNode):
-            metadata = self.duckdb_analytics.fetch_network_analytics("avg_fee")
-            return self.deserialize_data(metadata)  # Deserialize metadata for Light Node
-        logging.error("[ERROR] Invalid node type for metadata request.")
-        return None
+        try:
+            if not hasattr(transaction, 'tx_id'):
+                raise ValueError("Transaction is missing required field: tx_id")
 
-    def handle_transaction_type(self, transaction):
-        """
-        Handle transaction type after it is processed.
-        If the transaction was Instant or Smart, update it to Standard after usage.
-        """
-        current_type = transaction.current_type
-        print(f"Current transaction type: {current_type}")
+            self.unqlite_db.store_transaction(transaction)
+            logging.info(f"[INFO] Transaction {transaction.tx_id} handled successfully.")
 
-        # Update transaction type if it was Instant or Smart and has been processed
-        if current_type == TransactionType.INSTANT:
-            print(f"Changing transaction type to {TransactionType.STANDARD} after processing.")
-            transaction.update_payment_type(TransactionType.STANDARD)
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to handle transaction: {e}")
+            raise
 
-        elif current_type == TransactionType.SMART:
-            print(f"Changing transaction type to {TransactionType.STANDARD} after processing.")
-            transaction.update_payment_type(TransactionType.STANDARD)
+    def get_pending_transactions(self, transaction_id=None):
+        """
+        Retrieve pending transactions.
+        """
+        return self.mempool if transaction_id is None else [tx for tx in self.mempool if tx.tx_id == transaction_id]
+
+    def add_pending_transaction(self, transaction):
+        """
+        Add a transaction to the mempool.
+        """
+        self.mempool.append(transaction)
+
+    ### -------------------- BLOCK PROPAGATION & NETWORK -------------------- ###
 
     def propagate_block(self, block, nodes):
         """
-        Propagate a newly mined block to the P2P network.
+        Broadcast a mined block to the P2P network.
         """
-        logging.info(f"[POC] Propagating new block {block.hash} to the network.")
-        # Use BlockchainPoC to serialize the block
-        serialized_block = self.blockchain_poc.serialize_data(block)  # BlockchainPoC handles block serialization
+        logging.info(f"[POC] Propagating new block {block.hash} to network.")
+        serialized_block = json.dumps(block.to_dict())
+
         for node in nodes:
             if isinstance(node, FullNode) or isinstance(node, ValidatorNode):
-                node.receive_block(serialized_block)  # Send the serialized block to nodes
+                node.receive_block(serialized_block)
 
     def validate_transaction(self, transaction, nodes):
         """
-        Validate a transaction and propagate it through the network.
+        Validate a transaction and ensure it has a valid transaction ID.
         """
-        logging.info(f"[POC] Validating transaction {transaction.tx_id}.")
-        if self.validate_transaction_fee(transaction):
-            logging.info(f"[POC] Transaction {transaction.tx_id} is valid.")
-            # Propagate to LMDB for mining via PoC
-            serialized_tx = self.blockchain_poc.serialize_data(transaction)  # BlockchainPoC handles transaction serialization
-            self.add_pending_transaction(serialized_tx)  # PoC handles adding transaction to the mempool
-            self.propagate_transaction(serialized_tx, nodes)
-        else:
-            logging.error(f"[ERROR] Transaction {transaction.tx_id} failed fee validation.")
+        if not transaction.tx_id:
+            logging.error("[ERROR] Transaction is missing tx_id.")
+            return False
+
+        logging.info(f"[POC] Validating transaction {transaction.tx_id}...")
+        return True  # Temporary, implement full validation later
 
     def propagate_transaction(self, transaction, nodes):
         """
-        Propagate a valid transaction to Miner Nodes for inclusion in blocks.
+        Send a valid transaction to miner nodes.
         """
         logging.info(f"[POC] Propagating transaction {transaction.tx_id} for mining.")
         for node in nodes:
@@ -273,84 +270,34 @@ class PoC:
 
     def validate_transaction_fee(self, transaction):
         """
-        Validate if the transaction fee is adequate.
+        Ensure a transaction has sufficient fees.
         """
         transaction_size = len(str(transaction.tx_inputs)) + len(str(transaction.tx_outputs))
         required_fee = self.fee_model.calculate_fee(transaction_size)
         total_fee = sum(inp.amount for inp in transaction.tx_inputs) - sum(out.amount for out in transaction.tx_outputs)
-        if total_fee >= required_fee:
-            return True
-        return False
+        return total_fee >= required_fee
 
-    def synchronize_node(self, node, peers):
-        """
-        Synchronize a node with the latest blockchain state from peers.
-        """
-        logging.info(f"[POC] Synchronizing node {node.node_id} with the P2P network.")
-        latest_block = self.blockchain_poc.get_last_block()  # Use BlockchainPoC to get the latest block
-        serialized_block = self.serialize_data(latest_block)  # Use PoC for serialization
-        node.sync_blockchain(serialized_block)
-        node.sync_mempool(self.get_pending_transactions_from_mempool())  # Use PoC to sync mempool with node
+    ### -------------------- UTILITIES -------------------- ###
 
-    def handle_error(self, error):
+    def clear_blockchain(self):
         """
-        Handle errors during PoC operations and implement retry logic.
+        Clear blockchain data for testing or reset.
         """
-        logging.error(f"[POC] Error encountered: {error}. Retrying...")
-        # Implement retry logic here, for example:
-        self.retry_failed_operation(error)  # PoC can manage retries for failed operations
+        self.chain = []
+        logging.info("[INFO] Blockchain data cleared.")
 
-    def get_block(self, block_hash):
-        """
-        Route block retrieval request to BlockchainPoC.
-        """
-        return self.blockchain_poc.get_block(block_hash)  # PoC now delegates to BlockchainPoC for blocks
+# -------------------- NODE CLASSES FOR TESTING -------------------- #
 
-    def get_utxo_data(self, utxo_id):
-        """
-        Route UTXO retrieval request to BlockchainPoC.
-        """
-        return self.blockchain_poc.get_utxo_data(utxo_id)
-
-    def get_pending_transactions(self, transaction_id=None):
-        """
-        Route transaction retrieval request to BlockchainPoC.
-        """
-        return self.blockchain_poc.get_pending_transactions(transaction_id)
-
-    def get_pending_transactions_from_mempool(self):
-        """
-        Get pending transactions from the mempool.
-        """
-        return self.mempool
-
-    def add_pending_transaction(self, transaction):
-        """
-        Add a pending transaction to the mempool.
-        """
-        self.mempool.append(transaction)
-
-    def retry_failed_operation(self, error):
-        """
-        Retry a failed operation.
-        """
-        logging.info(f"[POC] Retrying failed operation: {error}")
-        # Implement retry logic here
-
-# Example Node Classes for routing requests (FullNode, ValidatorNode, MinerNode, etc.)
 class FullNode:
     def __init__(self, node_id):
         self.node_id = node_id
 
     def receive_block(self, block):
-        logging.info(f"FullNode {self.node_id} received block {block.hash}")
-
-    def sync_blockchain(self, block):
-        logging.info(f"FullNode {self.node_id} is syncing blockchain with block {block.hash}")
+        logging.info(f"FullNode {self.node_id} received block {block}")
 
 class ValidatorNode(FullNode):
     def validate_block(self, block):
-        logging.info(f"ValidatorNode {self.node_id} is validating block {block.hash}")
+        logging.info(f"ValidatorNode {self.node_id} is validating block {block}")
 
 class MinerNode:
     def __init__(self, node_id):
@@ -359,26 +306,9 @@ class MinerNode:
     def receive_transaction(self, transaction):
         logging.info(f"MinerNode {self.node_id} received transaction {transaction.tx_id}")
 
-class LightNode:
-    def __init__(self, node_id):
-        self.node_id = node_id
+# -------------------- TEST EXECUTION -------------------- #
 
-# Main execution for testing PoC functionalities
 if __name__ == "__main__":
     poc = PoC()
-
-    # Example setup for nodes
-    node_a = FullNode(node_id="Node_A")
-    node_b = ValidatorNode(node_id="Node_B")
-    nodes = [node_a, node_b]
-
-    # Example transaction validation and propagation
-    transaction = Transaction(tx_inputs=["input1"], tx_outputs=["output1"], fee=0.01)
-    poc.validate_transaction(transaction, nodes)
-
-    # Example block propagation
-    block = Block(index=1, previous_hash="0", transactions=["tx1", "tx2"])
-    poc.propagate_block(block, nodes)
-
-    # Example synchronization
-    poc.synchronize_node(node_a, nodes)
+    poc.clear_blockchain()  # Reset before test
+    print("[INFO] PoC initialized successfully.")
