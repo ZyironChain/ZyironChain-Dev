@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 import json
 from Zyiron_Chain.database.poc import PoC
-from Zyiron_Chain.transactions.txout import UTXOManager
+from Zyiron_Chain.transactions. utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
 
 class StorageManager:
