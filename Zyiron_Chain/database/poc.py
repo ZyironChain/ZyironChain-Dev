@@ -12,40 +12,75 @@ from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
 from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
-from Zyiron_Chain.blockchain.block import Block
+from Zyiron_Chain.blockchain.helper  import get_block
+
+
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-from Zyiron_Chain.transactions.fees import FeeModel
+import importlib
+from Zyiron_Chain.blockchain.block_manager import BlockManager
+
+
+
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from datetime import datetime
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 from decimal import Decimal
+def get_transaction():
+    """Lazy import Transaction to break circular dependencies."""
+    module = importlib.import_module("Zyiron_Chain.transactions.Blockchain_transaction")
+    return getattr(module, "Transaction")
 
+def get_standard_mempool():
+    """Lazy import StandardMempool to prevent circular imports."""
+    module = importlib.import_module("Zyiron_Chain.blockchain.utils.standardmempool")
+    return getattr(module, "StandardMempool")
+
+def get_block_instance():
+    """Dynamically import Block only when needed to prevent circular imports."""
+    return get_block()
+def get_fee_model():
+    """Lazy import FeeModel to break circular dependencies."""
+    module = importlib.import_module("Zyiron_Chain.transactions.fees")
+    return getattr(module, "FeeModel")
+
+def get_smart_mempool():
+    """Lazy load SmartMempool to fix circular import"""
+    module = importlib.import_module("Zyiron_Chain.smartpay.smartmempool")
+    return getattr(module, "SmartMempool")
 logging.basicConfig(level=logging.INFO)
+
 
 
 class PoC:
     def __init__(self):
-        """
-        Initialize the Point-of-Contact (PoC) layer to handle node interactions, database storage,
-        and blockchain operations.
-        """
-        self.unqlite_db = BlockchainUnqliteDB()
-        self.sqlite_db = SQLiteDB()
-        self.duckdb_analytics = AnalyticsNetworkDB()
-        self.lmdb_manager = LMDBManager()
-        self.tinydb_manager = TinyDBManager()
+        """Initialize the Point-of-Contact (PoC) layer"""
+        self.unqlite_db = BlockchainUnqliteDB()  # Stores the entire blockchain
+        self.sqlite_db = SQLiteDB()  # UTXO storage
+        self.duckdb_analytics = AnalyticsNetworkDB()  # Analytics database
+        self.lmdb_manager = LMDBManager()  # Stores block metadata
+        self.tinydb_manager = TinyDBManager()  # Handles node settings
 
-        # Initialize Fee Model with max supply
-        self.fee_model = FeeModel(Decimal("84096000"))
+        # ✅ Assign storage_manager to UnQLite since it handles full blockchain storage
+        self.storage_manager = self.unqlite_db  
 
-        # Initialize Payment Type Manager
+        # ✅ Initialize BlockManager (Fix for missing attribute)
+        from Zyiron_Chain.blockchain.block_manager import BlockManager  # Ensure correct import
+        self.block_manager = BlockManager(storage_manager=self.lmdb_manager)
+
+        # ✅ Lazy Load StandardMempool to Prevent Circular Import
+        StandardMempool = get_standard_mempool()
+        self.standard_mempool = StandardMempool()
+
+        # ✅ Lazy Load FeeModel to Prevent Circular Import
+        FeeModel = get_fee_model()
+        self.fee_model = FeeModel(max_supply=Decimal("84096000"))
+
+        # ✅ Initialize Payment Type Manager
         self.payment_type_manager = PaymentTypeManager()
 
-        # Mempool for pending transactions
-        self.mempool = []
-
+        # ✅ Set Default Mempool Reference
+        self.mempool = self.standard_mempool  # Default to standard mempool
 
     ### --------------------- Anti Farm Logic -------------------------------###
 
@@ -120,13 +155,14 @@ class PoC:
         Store a block in the PoC layer with atomic transactions to prevent inconsistencies.
         """
         try:
+            from Zyiron_Chain.blockchain.block import Block  # ✅ Ensure Block is properly imported
+
             if isinstance(block, dict):
-                block = Block.from_dict(block)  # Convert dict to Block object if needed
+                block = Block.from_dict(block)  # ✅ Correct reference to Block class
 
             block_data = block.to_dict()
             block_header = block.header.to_dict()
             transactions = [tx.to_dict() for tx in block.transactions]
-
             size = sum(len(json.dumps(tx)) for tx in transactions)  # Calculate block size
 
             # Use atomic transactions across databases
@@ -134,30 +170,11 @@ class PoC:
             self.unqlite_db.begin_transaction()
             self.lmdb_manager.begin_transaction()
 
-            # Store block in databases
-            self.sqlite_db.add_block(
-                block_data['hash'],
-                block_header,
-                transactions,
-                size,
-                difficulty
-            )
+            # Store block in multiple databases
+            self.unqlite_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
 
-            self.unqlite_db.add_block(
-                block_data['hash'],
-                block_header,
-                transactions,
-                size,
-                difficulty
-            )
-
-            self.lmdb_manager.add_block(
-                block_data['hash'],
-                block_header,
-                transactions,
-                size,
-                difficulty
-            )
+            self.unqlite_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+            self.lmdb_manager.add_block(block_data['hash'], block_header, transactions, size, difficulty)
 
             # Commit changes to all databases
             self.sqlite_db.commit()
@@ -173,6 +190,7 @@ class PoC:
             self.lmdb_manager.rollback()
             logging.error(f"[ERROR] Block storage failed: {e}")
             raise
+
 
 
 
@@ -227,7 +245,7 @@ class PoC:
 
 
     def get_last_block(self):
-        """ Fetch the latest block from the database. """
+        """Fetch the latest block from the database."""
         from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
 
         logging.info("[POC] Fetching latest block...")
@@ -239,7 +257,7 @@ class PoC:
 
         last_block_data = blocks[-1]  # Get the most recent block
 
-        # Ensure all critical fields exist
+        # ✅ Ensure all critical fields exist
         last_block_data.setdefault("index", len(blocks) - 1)  # Default index
         last_block_data.setdefault("previous_hash", "0" * 96)  # Default genesis hash
         last_block_data.setdefault("timestamp", time.time())  # Assign current timestamp
@@ -254,6 +272,7 @@ class PoC:
             "nonce": last_block_data["nonce"]
         })
 
+        # ✅ Handle missing hash by recalculating it
         if "hash" not in last_block_data:
             logging.warning(f"[POC] Block {last_block_data['index']} missing 'hash'. Recalculating...")
             temp_block = Block.from_dict(last_block_data)
@@ -273,7 +292,7 @@ class PoC:
         try:
             block_data = self.unqlite_db.get_block(block_hash)
             if block_data:
-                return Block.from_dict(block_data)  # Ensure return type is Block object
+                return get_block.from_dict(block_data)  # Ensure return type is Block object
             logging.warning(f"[POC] Block {block_hash} not found.")
             return None
         except Exception as e:

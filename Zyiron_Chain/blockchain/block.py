@@ -21,16 +21,15 @@ import json
 from typing import List, Dict, Union
 from decimal import Decimal
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, CoinbaseTx
 from Zyiron_Chain. transactions.transactiontype import PaymentTypeManager
 from Zyiron_Chain. transactions.fees import FeeModel
-from Zyiron_Chain.database.poc import PoC
+from Zyiron_Chain.blockchain.helper import get_poc, get_transaction, get_coinbase_tx, get_block_header
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+PoC = get_poc()
+Transaction = get_transaction()
+CoinbaseTx = get_coinbase_tx()
+BlockHeader = get_block_header()
 
-
-from typing import List, Union
-from Zyiron_Chain.blockchain.blockheader import BlockHeader
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
-from Zyiron_Chain.database.poc import PoC  # ✅ Ensures transactions are routed properly
 
 class Block:
     def __init__(self, index, previous_hash, transactions, timestamp=None, key_manager=None, nonce=0):
@@ -48,8 +47,8 @@ class Block:
         self.transactions = self._ensure_transactions(transactions)
         self.timestamp = timestamp or time.time()
         self.nonce = nonce
-        self.key_manager = key_manager
-        self.miner_address = None  # Set during mining
+        self.key_manager = key_manager or KeyManager()  # ✅ Default to KeyManager
+        self.miner_address = self.key_manager.get_default_public_key("mainnet", "miner")  # ✅ Default miner key
         self.merkle_root = self.calculate_merkle_root()
 
         self.header = BlockHeader(
@@ -63,9 +62,10 @@ class Block:
 
         self.hash = None  # Will be calculated during PoW
 
-    def _ensure_transactions(self, transactions: List[Union[Transaction, dict]]) -> List[Transaction]:
-        """Ensure all transactions are valid `Transaction` objects."""
-        return [Transaction.from_dict(tx) if isinstance(tx, dict) else tx for tx in transactions]
+
+    def _ensure_transactions(self, transactions, poc):
+        return [Transaction.from_dict(tx, poc) if isinstance(tx, dict) else tx for tx in transactions]
+
 
     def calculate_merkle_root(self):
         """Compute the Merkle root from transaction IDs."""
@@ -135,8 +135,9 @@ class Block:
             "transactions": [tx.to_dict() for tx in self.transactions],
             "timestamp": self.timestamp,
             "nonce": self.nonce,
-            "miner_address": self.miner_address,
-            "hash": self.hash,
+            "miner_address": self.miner_address or KeyManager().get_default_public_key("mainnet", "miner"),  # ✅ Ensure miner address is always set
+            "hash": self.hash or self.calculate_hash(),  # ✅ Ensure hash is never missing
+
             "merkle_root": self.merkle_root,
             "header": self.header.to_dict()
         }
@@ -144,6 +145,8 @@ class Block:
     @classmethod
     def from_dict(cls, data):
         """Create a Block instance from a dictionary."""
+        from Zyiron_Chain.blockchain.blockheader import BlockHeader  # Ensure correct import
+
         header = BlockHeader.from_dict(data["header"])
         block = cls(
             index=data["index"],
@@ -153,10 +156,15 @@ class Block:
             nonce=data["nonce"]
         )
         block.header = header
-        block.miner_address = data["miner_address"]
-        block.hash = data["hash"]
-        return block
 
+        # ✅ Handle missing miner_address safely
+        block.miner_address = data.get("miner_address", None)  
+
+        # ✅ Handle missing hash safely
+        block.hash = data.get("hash", None)
+
+        return block
+        
     def validate_transactions(self, fee_model, mempool, block_size):
         """Validate all transactions in the block with parallelized execution."""
         payment_type_manager = PaymentTypeManager()

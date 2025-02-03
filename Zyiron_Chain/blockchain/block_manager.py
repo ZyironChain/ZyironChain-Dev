@@ -6,9 +6,22 @@ import json
 import hashlib
 import time
 import logging
-from Zyiron_Chain.blockchain.block import Block
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, CoinbaseTx
+
 from Zyiron_Chain.transactions.txout import TransactionOut
+def get_transaction():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    return Transaction
+
+def get_coinbase_tx():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    return CoinbaseTx
+
+def get_block():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.blockchain.block import Block
+    return Block
 
 class BlockManager:
     ZERO_HASH = "0" * 96  # 384-bit zero hash for SHA-3 384
@@ -25,13 +38,13 @@ class BlockManager:
             return
 
         try:
-            genesis_transaction = Transaction(
+            genesis_transaction = get_transaction(
                 tx_inputs=[],
                 tx_outputs=[TransactionOut(script_pub_key="genesis_output", amount=50, locked=False)]
             )
             
             merkle_root = self.calculate_merkle_root([genesis_transaction])
-            genesis_block = Block(
+            genesis_block = get_block(
                 index=0,
                 previous_hash=self.ZERO_HASH,
                 transactions=[genesis_transaction],
@@ -77,7 +90,7 @@ class BlockManager:
         for tx in transactions:
             if isinstance(tx, dict):
                 tx_str = json.dumps(tx, sort_keys=True)
-            elif isinstance(tx, Transaction):
+            elif isinstance(tx, get_transaction):
                 tx_str = json.dumps(tx.to_dict(), sort_keys=True)
             else:
                 tx_str = str(tx)

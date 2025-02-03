@@ -63,6 +63,7 @@ class FundsAllocator:
 class FeeModel:
     """Fee model with 7% allocation cap and no burning"""
     def __init__(self, max_supply: Decimal):
+        self.max_supply = max_supply  # ✅ Fix: Ensure max_supply is stored
         self.allocator = FundsAllocator(max_supply)
         self.type_manager = PaymentTypeManager()
         
@@ -102,15 +103,11 @@ class FeeModel:
                 "remaining_cap": float(self.allocator.cap - sum(self.allocator.allocated.values()))
             }
         }
-
     def _calculate_base_fee(self, tx_type: TransactionType, 
                            amount: Decimal, tx_size: int) -> Decimal:
         """Calculate base fee with size normalization"""
         base_rate = self.fee_structure[tx_type]
         size_factor = Decimal(tx_size) / Decimal(1024)  # Per KB
         return amount * base_rate * size_factor
-    
-
-
 
 

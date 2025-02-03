@@ -6,7 +6,7 @@
 
 
 
-
+from decimal import Decimal
 import time
 from threading import Lock
 from Zyiron_Chain.transactions.fees import FeeModel
@@ -29,7 +29,7 @@ class StandardMempool:
         self.lock = Lock()      # To handle concurrency
         self.max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
         self.current_size_bytes = 0  # Track current memory usage
-        self.fee_model = FeeModel()  # Fee model instance for fee calculations
+        self.fee_model = FeeModel(max_supply=Decimal("84096000"))  # Pass the required argument
 
     def add_transaction(self, transaction, smart_contract, fee_model):
         """

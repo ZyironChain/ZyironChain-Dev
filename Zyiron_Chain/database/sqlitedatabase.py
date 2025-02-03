@@ -3,9 +3,18 @@ import json
 from datetime import datetime
 
 
+import sqlite3
+import json
+from datetime import datetime
+
+import sqlite3
+import json
+from datetime import datetime
+
+
 class SQLiteDB:
     def __init__(self, db_path="sqlite.db"):
-        self.connection = sqlite3.connect(db_path)
+        self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row  # Return rows as dictionaries
         self.cursor = self.connection.cursor()
         self.create_utxos_table()  # Ensure the UTXOs table exists
@@ -42,14 +51,32 @@ class SQLiteDB:
         """)
         self.connection.commit()
 
-    def insert_utxo(self, tx_out_id, amount, script_pub_key, block_index, locked=False):
+    def begin_transaction(self):
+        """
+        Start a new transaction.
+        """
+        self.connection.execute("BEGIN TRANSACTION;")
+
+    def commit(self):
+        """
+        Commit the active transaction.
+        """
+        self.connection.commit()
+
+    def rollback(self):
+        """
+        Rollback the last transaction in case of failure.
+        """
+        self.connection.rollback()
+
+    def insert_utxo(self, utxo_id, tx_out_id, amount, script_pub_key, block_index, locked=False):
         """
         Insert a new UTXO into the database.
         """
         self.cursor.execute("""
-        INSERT INTO utxos (tx_out_id, amount, script_pub_key, locked, block_index)
-        VALUES (?, ?, ?, ?, ?)
-        """, (tx_out_id, amount, script_pub_key, locked, block_index))
+        INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
         self.connection.commit()
 
     def update_utxo_lock(self, utxo_id, locked):
@@ -122,22 +149,16 @@ class SQLiteDB:
         Fetch all UTXOs from the database as dictionaries.
         """
         self.cursor.execute("SELECT * FROM utxos")
-        return [dict(row) for row in self.cursor.fetchall()]  # Convert each row to a dictionary
+        return [dict(row) for row in self.cursor.fetchall()]
 
     def fetch_all_transactions(self):
         """
         Fetch all transactions.
         """
         self.cursor.execute("""
-        SELECT * FROM transactions
+            SELECT * FROM transactions
         """)
-        return [dict(row) for row in self.cursor.fetchall()]
-
-    def close(self):
-        """
-        Close the SQLite database connection.
-        """
-        self.connection.close()
+        return [dict(row) for row in self.cursor.fetchall()]  # Convert rows to dictionary format
 
     def clear(self):
         """
@@ -147,31 +168,18 @@ class SQLiteDB:
         self.cursor.execute("DELETE FROM transactions")
         self.connection.commit()
 
-    def insert_test_utxos(self):
+    def close(self):
         """
-        Insert sample UTXOs for testing purposes.
+        Close the SQLite database connection.
         """
-        sample_utxos = [
-            ("utxo1", "tx1", 100, "address1", False, 1),
-            ("utxo2", "tx2", 200, "address2", False, 2),
-            ("utxo3", "tx3", 300, "address3", False, 3),
-        ]
-        self.cursor.executemany(
-            "INSERT OR REPLACE INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index) VALUES (?, ?, ?, ?, ?, ?)",
-            sample_utxos
-        )
-        self.connection.commit()
-
+        self.connection.close()
 
 # Example Usage
 if __name__ == "__main__":
     db = SQLiteDB()
 
     # Insert test data
-    db.insert_utxo("tx_out_1", 100.5, "script1", 1, locked=False)
-    db.insert_utxo("tx_out_2", 50.0, "script2", 1, locked=True)
-
-    # Insert sample transactions
+    db.insert_utxo("utxo1", "tx1", 100.5, "script1", 1, locked=False)
     db.insert_transaction(
         "tx_1",
         [{"utxo_id": "utxo1", "script_sig": "sig1"}],
