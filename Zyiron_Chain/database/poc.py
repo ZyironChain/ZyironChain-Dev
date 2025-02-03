@@ -6,12 +6,13 @@ import hashlib
 import logging
 import json
 import time 
+import random
 from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
 from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
 from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
-
+from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 from Zyiron_Chain.transactions.fees import FeeModel
@@ -46,11 +47,77 @@ class PoC:
         self.mempool = []
 
 
+    ### --------------------- Anti Farm Logic -------------------------------###
+
+    # 🚀 Dynamic VRAM Scaling (8MB - 192MB)
+    def get_vram_allocation(self):
+        """Determine dynamic VRAM requirement based on network hashrate."""
+        hashrate = self.get_network_hashrate()
+
+        if hashrate < 10_000:
+            return 8  # 8MB VRAM
+        elif hashrate < 50_000:
+            return 32
+        elif hashrate < 100_000:
+            return 64
+        elif hashrate < 500_000:
+            return 128
+        else:
+            return 192  # 192MB for high hashrate
+
+
+    # 🔁 Algorithm Rotation Based on Hashrate
+    def check_algorithm_rotation(self, block_index):
+        """Trigger algorithm rotation if hashrate jumps 10%+ in 2 hours."""
+        hashrate_change = self.get_network_hashrate_change()
+        if hashrate_change > 10:
+            logging.warning(f"[WARNING] Hashrate spiked {hashrate_change:.2f}%. Rotating algorithm.")
+            return True
+        return block_index % random.randint(24, 100) == 0  # Normal rotation every 24-100 blocks
+
+    # 🚨 ASIC & Farm Detection
+    def detect_farm_activity(self):
+        """Detect large mining farms based on unusual hashrate spikes."""
+        hashrate_change = self.get_network_hashrate_change()
+        if hashrate_change > 10:
+            logging.warning(f"[WARNING] Hashrate increased {hashrate_change:.2f}%. Activating countermeasures.")
+            self.increase_vram_allocation()
+            self.increase_difficulty()
+            self.force_algorithm_rotation()
+
+    # ⚙️ Real-Time Difficulty Adjustment (Every 24 Blocks)
+    def adjust_difficulty(self, block_index):
+        """Adjust mining difficulty dynamically every 24 blocks."""
+        if block_index % 24 == 0:
+            self.block_manager.recalculate_difficulty()
+
+    # ⏳ Network Hashrate Monitoring (Every 2 Hours)
+    def monitor_network_hashrate(self):
+        """Check network hashrate every 2 hours & adjust accordingly."""
+        while True:
+            time.sleep(7200)  # 2-hour intervals
+            hashrate_change = self.get_network_hashrate_change()
+            if hashrate_change < 5:
+                logging.info("[INFO] Minor hashrate change. No major adjustments needed.")
+            elif hashrate_change < 10:
+                logging.info("[INFO] Moderate hashrate increase detected. Adjusting difficulty.")
+                self.adjust_difficulty(self.get_latest_block_index())
+            else:
+                logging.warning(f"[WARNING] Major hashrate spike ({hashrate_change:.2f}%). Triggering countermeasures.")
+                self.detect_farm_activity()
+
+
+
+
+
+
+
+
     ### -------------------- BLOCKCHAIN STORAGE & VALIDATION -------------------- ###
 
     def store_block(self, block, difficulty):
         """
-        Store a block in the PoC layer.
+        Store a block in the PoC layer with atomic transactions to prevent inconsistencies.
         """
         try:
             if isinstance(block, dict):
@@ -62,6 +129,20 @@ class PoC:
 
             size = sum(len(json.dumps(tx)) for tx in transactions)  # Calculate block size
 
+            # Use atomic transactions across databases
+            self.sqlite_db.begin_transaction()
+            self.unqlite_db.begin_transaction()
+            self.lmdb_manager.begin_transaction()
+
+            # Store block in databases
+            self.sqlite_db.add_block(
+                block_data['hash'],
+                block_header,
+                transactions,
+                size,
+                difficulty
+            )
+
             self.unqlite_db.add_block(
                 block_data['hash'],
                 block_header,
@@ -70,10 +151,29 @@ class PoC:
                 difficulty
             )
 
+            self.lmdb_manager.add_block(
+                block_data['hash'],
+                block_header,
+                transactions,
+                size,
+                difficulty
+            )
+
+            # Commit changes to all databases
+            self.sqlite_db.commit()
+            self.unqlite_db.commit()
+            self.lmdb_manager.commit()
+
             logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
+
         except Exception as e:
-            logging.error(f"[ERROR] Failed to store block: {e}")
+            # Rollback changes in case of failure
+            self.sqlite_db.rollback()
+            self.unqlite_db.rollback()
+            self.lmdb_manager.rollback()
+            logging.error(f"[ERROR] Block storage failed: {e}")
             raise
+
 
 
 
@@ -127,10 +227,9 @@ class PoC:
 
 
     def get_last_block(self):
-        """
-        Fetch the latest block from the blockchain database.
-        If a block is missing required fields, log the issue and assign default values.
-        """
+        """ Fetch the latest block from the database. """
+        from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
+
         logging.info("[POC] Fetching latest block...")
 
         blocks = self.unqlite_db.get_all_blocks()
@@ -160,7 +259,8 @@ class PoC:
             temp_block = Block.from_dict(last_block_data)
             last_block_data["hash"] = temp_block.calculate_hash()
 
-        return Block.from_dict(last_block_data)  # Convert dict to Block object
+        return Block.from_dict(last_block_data)  # ✅ Ensures return type is Block object
+
 
 
 
@@ -276,6 +376,17 @@ class PoC:
         required_fee = self.fee_model.calculate_fee(transaction_size)
         total_fee = sum(inp.amount for inp in transaction.tx_inputs) - sum(out.amount for out in transaction.tx_outputs)
         return total_fee >= required_fee
+
+
+
+    def synchronize_node(self, node, peers):
+        """Sync node with the latest blockchain state."""
+        logging.info(f"[POC] Synchronizing node {node.node_id} with network.")
+        latest_block = self.get_last_block()
+        serialized_block = self.serialize_data(latest_block)
+        node.sync_blockchain(serialized_block)
+        node.sync_mempool(self.get_pending_transactions_from_mempool())
+
 
     ### -------------------- UTILITIES -------------------- ###
 

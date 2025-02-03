@@ -8,7 +8,7 @@ from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
 from Zyiron_Chain.blockchain.storage_manager import StorageManager
 from Zyiron_Chain.blockchain.miner import Miner
 from Zyiron_Chain.database.poc import PoC
-
+import hashlib
 from decimal import Decimal
 import time
 from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx, TransactionFactory, sha3_384_hash
@@ -29,7 +29,7 @@ class Blockchain:
         self.ZERO_HASH = '0' * 96
         self.current_block_size = 1  # MB
         self.block_size_adjustment_interval = 2016
-        
+
         # New monetary policy parameters
         self.initial_reward = Decimal('100.00')
         self.halving_interval = 420480  # 4 years in 5-min blocks (4*365*24*12)
@@ -37,24 +37,47 @@ class Blockchain:
         self.total_issued = Decimal('0')
         self.block_time_target = 300  # 5 minutes in seconds
 
+        # Anti-Farm PoW Adjustments
+        self.vram_scaling = 8  # Starts at 8MB, increases dynamically
+        self.algorithm_rotation_interval = 24  # Rotates every 24 blocks minimum
+        self.difficulty_check_interval = 24  # Recalculates every 24 blocks
+        self.last_hashrate_check = time.time()  # For 2-hour monitoring
+
+
+
+    def _detect_hashrate_spike(self):
+        """Check for hashrate spikes every 2 hours."""
+        if time.time() - self.last_hashrate_check >= 7200:  # Every 2 hours
+            self.last_hashrate_check = time.time()
+            previous_difficulty = self.chain[-self.difficulty_check_interval]['header']['difficulty']
+            current_difficulty = self.chain[-1]['header']['difficulty']
+
+            # Percentage change in hashrate
+            hashrate_change = ((current_difficulty - previous_difficulty) / previous_difficulty) * 100
+            return hashrate_change
+
+        return 0
+
+
     def _calculate_block_reward(self):
-        """Calculate current block reward with halving"""
+        """Calculate current block reward with halving."""
         blocks = len(self.chain)
         halvings = blocks // self.halving_interval
         reward = self.initial_reward / (2 ** halvings)
-        
+
         # Cap at remaining supply
         remaining = self.max_supply - self.total_issued
         return min(reward, remaining) if remaining > 0 else Decimal('0')
 
+
     def _create_coinbase(self, miner_address: str, fees: Decimal):
-        """Create coinbase transaction with protocol rules"""
+        """Create coinbase transaction with protocol rules."""
         block_reward = self._calculate_block_reward()
         total_reward = block_reward + fees
-        
+
         # Update total issued supply
         self.total_issued += block_reward
-        
+
         return {
             "version": 1,
             "inputs": [],
@@ -66,32 +89,44 @@ class Blockchain:
             "locktime": 0
         }
 
+
     def _calculate_difficulty(self):
-        """Adjust difficulty to maintain 5-minute block times"""
-        if len(self.chain) % 2016 != 0 or len(self.chain) == 0:
+        """Adjust difficulty dynamically to maintain 5-minute block times while preventing extreme fluctuations."""
+        if len(self.chain) == 0:
+            return 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 4 Leading Zeros
+
+        if len(self.chain) < self.difficulty_check_interval:
             return self.chain[-1]['header']['difficulty'] if self.chain else 1
-        
-        # Calculate actual time for last 2016 blocks
-        actual_time = self.chain[-1]['header']['timestamp'] - self.chain[-2016]['header']['timestamp']
-        target_time = 2016 * self.block_time_target
-        
-        # Adjust difficulty
+
+        # Calculate actual time for the last difficulty interval
+        actual_time = self.chain[-1]['header']['timestamp'] - self.chain[-self.difficulty_check_interval]['header']['timestamp']
+        target_time = self.difficulty_check_interval * self.block_time_target
+
+        # Adjust difficulty proportionally with clamping to prevent drastic changes
         ratio = actual_time / target_time
-        new_diff = self.chain[-1]['header']['difficulty'] * ratio
-        return max(new_diff, 1)
+        new_difficulty = int(self.chain[-1]['header']['difficulty'] * max(0.75, min(1.25, ratio)))
+
+        return max(new_difficulty, 1)  # Ensure difficulty is never below 1
+
+
 
     def create_block(self, miner_address: str):
-        # Calculate total fees first
+        """Create a new block with Anti-Farm PoW logic, dynamic VRAM scaling, and adaptive block sizes."""
+        
+        # ✅ Dynamically adjust block size based on network congestion
+        self._calculate_block_size()
+
+        # ✅ Calculate total transaction fees
         total_fees = sum(tx['fee'] for tx in self.pending_transactions)
-        
-        # Create coinbase transaction
+
+        # ✅ Create coinbase transaction
         coinbase_tx = self._create_coinbase(miner_address, Decimal(total_fees))
-        
-        # Select transactions (existing logic)
-        max_block_bytes = self.current_block_size * 1024 * 1024
+
+        # ✅ Dynamic Block Size Allocation
+        max_block_bytes = self.current_block_size * 1024 * 1024  # Converts MB to bytes
         current_block_size = 0
         selected_transactions = []
-        
+
         for tx in list(self.pending_transactions):
             tx_size = self._calculate_transaction_size(tx)
             if current_block_size + tx_size <= max_block_bytes:
@@ -101,7 +136,18 @@ class Blockchain:
             else:
                 break
 
-        # Assemble block with new header fields
+        # ✅ Anti-Farm PoW Adjustments (Detect Hashrate Spikes & Adjust VRAM + Algorithm)
+        hashrate_change = self._detect_hashrate_spike()
+
+        if hashrate_change >= 10:
+            self.vram_scaling = min(192, self.vram_scaling * 1.5)  # Increase VRAM Scaling (Max: 192MB)
+            self.algorithm_rotation_interval = 24  # Rotate algorithm immediately
+
+        elif 5 <= hashrate_change < 10:
+            self.vram_scaling = min(192, self.vram_scaling * 1.2)  # Moderate VRAM scaling increase
+            self.algorithm_rotation_interval = 50  # Algorithm rotation slowed down
+
+        # ✅ Assemble Block
         block = {
             "header": {
                 "version": 3,
@@ -110,24 +156,32 @@ class Blockchain:
                 "timestamp": int(time.time()),
                 "difficulty": self._calculate_difficulty(),
                 "nonce": 0,
-                "block_size": self.current_block_size,
+                "block_size": self.current_block_size,  # ✅ Now dynamic (1MB-10MB)
+                "vram_usage": self.vram_scaling,  # ✅ Tracks current VRAM usage
                 "reward": float(self._calculate_block_reward())
             },
             "transactions": [coinbase_tx] + selected_transactions,
             "hash": None
         }
 
-        # Mine block (existing logic)
+        # ✅ Mining Logic (Anti-Farm PoW Mining)
         while True:
             block_data = f"{block['header']}{block['transactions']}"
-            block_hash = sha3_384_hash(block_data)
-            if block_hash.startswith('0' * self.current_difficulty()):
+            block_hash = hashlib.sha3_384(block_data.encode()).hexdigest()
+
+            if block_hash.startswith('0' * self.chain[-1]['header']['difficulty']):  # ✅ Dynamic difficulty targeting
                 block["hash"] = block_hash
                 break
-            block['header']['nonce'] += 1
 
+            block['header']['nonce'] += 1  # Increment nonce for PoW
+
+        # ✅ Append Block to Chain
         self.chain.append(block)
-        self._calculate_block_size()  # Existing size adjustment
+
+        # ✅ Recalculate Block Size & Difficulty After Each Block
+        self._calculate_block_size()
+        self._calculate_difficulty()
+
         return block
 
     def _create_genesis_block(self):
@@ -152,3 +206,32 @@ class Blockchain:
         genesis['header']['hash'] = self._calculate_block_hash(genesis)
         self.chain.append(genesis)
         self.total_issued += self.initial_reward
+
+
+    def _calculate_block_size(self):
+        """
+        Dynamically adjust block size based on network congestion.
+        Block sizes scale from 1MB to 10MB based on mempool size and hashrate.
+        """
+        # Measure pending transactions
+        pending_tx_count = len(self.pending_transactions)
+
+        # Base size (1MB) if transactions are low
+        new_block_size = 1  # MB
+
+        # Increase block size based on pending transactions
+        if pending_tx_count > 500:
+            new_block_size = 2  # 2MB
+        if pending_tx_count > 1000:
+            new_block_size = 4  # 4MB
+        if pending_tx_count > 2000:
+            new_block_size = 6  # 6MB
+        if pending_tx_count > 5000:
+            new_block_size = 8  # 8MB
+        if pending_tx_count > 10000:
+            new_block_size = 10  # 10MB max
+
+        # Ensure it stays within limits (1MB - 10MB)
+        self.current_block_size = max(1, min(new_block_size, 10))
+
+        print(f"[INFO] Block size adjusted to {self.current_block_size}MB.")

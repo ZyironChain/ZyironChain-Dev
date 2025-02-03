@@ -16,7 +16,8 @@ class BlockManager:
     def __init__(self, storage_manager):
         self.chain = []
         self.storage_manager = storage_manager
-        self.difficulty = 4
+        self.difficulty = 4  # Default to 4 leading zeros
+        self.difficulty_adjustment_interval = 24  # Adjust every 24 blocks (~2 hours)
 
     def create_genesis_block(self, key_manager):
         if self.storage_manager.poc.get_block("block:0"):
@@ -38,8 +39,11 @@ class BlockManager:
                 merkle_root=merkle_root,
             )
             genesis_block.miner_address = key_manager.get_default_public_key("testnet", "miner")
-            
-            if genesis_block.mine(self.calculate_target(), None, None, None, False):
+
+            # ✅ Use fixed 4 leading zeros for Genesis Block
+            genesis_target = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+
+            if genesis_block.mine(genesis_target, None, None, None, False):
                 self.chain.append(genesis_block)
                 self.storage_manager.store_block(genesis_block, self.difficulty)
                 logging.info("Genesis block created successfully")
@@ -88,19 +92,47 @@ class BlockManager:
         return tx_hashes[0] if tx_hashes else self.ZERO_HASH
 
     def calculate_target(self):
-        return 2 ** (384 - self.difficulty * 4)
+        """Dynamically calculate the mining target based on hashrate & VRAM scaling"""
+        last_block = self.chain[-1] if self.chain else None
+        
+        # Genesis Block Target
+        if not last_block:
+            return 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 4 leading zeros
+        
+        # ✅ Adjust target dynamically every 24 blocks (~2 hours)
+        if last_block.index % self.difficulty_adjustment_interval == 0:
+            return self._adjust_target(last_block)
+
+        return last_block.header.difficulty
+
+    def _adjust_target(self, last_block):
+        """Adjusts difficulty dynamically every 24 blocks based on network hashrate"""
+        if len(self.chain) < 24:
+            return last_block.header.difficulty
+        
+        # Calculate actual time for last 24 blocks
+        actual_time = last_block.timestamp - self.chain[-24].timestamp
+        expected_time = 24 * 300  # 24 blocks * 5 minutes
+        
+        # Difficulty Adjustment Ratio
+        adjustment_ratio = actual_time / expected_time
+        new_difficulty = last_block.header.difficulty * adjustment_ratio
+
+        # Prevent difficulty from dropping too low
+        return max(new_difficulty, 1)
 
     def calculate_block_difficulty(self, block):
+        """Recalculate difficulty dynamically"""
         if block.index == 0:
-            return 1
+            return 1  # Genesis Block difficulty fixed at 1
             
         prev_block = self.chain[-1]
         time_diff = block.timestamp - prev_block.timestamp
-        target_time = 15  # 15 seconds target
+        expected_time = 300  # 5-minute block target
         
-        if time_diff < target_time:
+        if time_diff < expected_time:
             return prev_block.difficulty + 1
-        elif time_diff > target_time:
+        elif time_diff > expected_time:
             return max(prev_block.difficulty - 1, 1)
         else:
             return prev_block.difficulty

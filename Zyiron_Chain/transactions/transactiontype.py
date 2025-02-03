@@ -19,12 +19,12 @@ class PaymentTypeManager:
     TYPE_CONFIG = {
         TransactionType.STANDARD: {
             "prefixes": [],
-            "confirmations": 1,
+            "confirmations": 8,
             "description": "Standard peer-to-peer transactions"
         },
         TransactionType.SMART: {
             "prefixes": ["S-"],
-            "confirmations": 6,
+            "confirmations": 5,
             "description": "Smart contract transactions"
         },
         TransactionType.INSTANT: {

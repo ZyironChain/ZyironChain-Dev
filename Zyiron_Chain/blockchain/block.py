@@ -15,7 +15,7 @@ from typing import Optional, List, Union
 
 
 
-
+from multiprocessing import Pool
 import time
 import json
 from typing import List, Dict, Union
@@ -27,8 +27,22 @@ from Zyiron_Chain. transactions.fees import FeeModel
 from Zyiron_Chain.database.poc import PoC
 
 
+from typing import List, Union
+from Zyiron_Chain.blockchain.blockheader import BlockHeader
+from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+from Zyiron_Chain.database.poc import PoC  # ✅ Ensures transactions are routed properly
+
 class Block:
     def __init__(self, index, previous_hash, transactions, timestamp=None, key_manager=None, nonce=0):
+        """
+        Initialize a Block.
+        :param index: Block index in the blockchain.
+        :param previous_hash: Hash of the previous block.
+        :param transactions: List of transactions in the block.
+        :param timestamp: Block creation timestamp (defaults to current time).
+        :param key_manager: KeyManager instance for handling miner addresses.
+        :param nonce: Initial nonce (used for mining).
+        """
         self.index = index
         self.previous_hash = previous_hash
         self.transactions = self._ensure_transactions(transactions)
@@ -46,7 +60,9 @@ class Block:
             timestamp=self.timestamp,
             nonce=self.nonce
         )
+
         self.hash = None  # Will be calculated during PoW
+
     def _ensure_transactions(self, transactions: List[Union[Transaction, dict]]) -> List[Transaction]:
         """Ensure all transactions are valid `Transaction` objects."""
         return [Transaction.from_dict(tx) if isinstance(tx, dict) else tx for tx in transactions]
@@ -67,23 +83,16 @@ class Block:
                 for i in range(0, len(tx_hashes), 2)
             ]
 
- 
- 
         return tx_hashes[0]
 
-
-
     def store_block(self):
-        """Use PoC to store the block in the appropriate database."""
-        from Zyiron_Chain.database.poc import PoC  # ✅ Import inside method to break circular dependency
+        """
+        Use PoC to store the block and ensure proper routing.
+        The PoC will determine where to store transactions (SQLite, LMDB, etc.).
+        """
         poc = PoC()
-        poc.store_block(self, difficulty=1)  # ✅ Route block storage through PoC
-
-
-
-
-
-
+        difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
+        poc.store_block(self, difficulty)
 
     def set_header(self, version: int, merkle_root: str):
         """
@@ -107,8 +116,6 @@ class Block:
         self.hash = self.header.calculate_hash()
         print(f"[INFO] Block header set with Merkle root: {merkle_root}")
 
-
-
     def calculate_hash(self):
         """
         Calculate the block hash using the block header.
@@ -119,9 +126,6 @@ class Block:
 
         self.hash = self.header.calculate_hash()
         return self.hash
-
-
-
 
     def to_dict(self):
         """Convert Block into a serializable dictionary."""
@@ -154,36 +158,68 @@ class Block:
         return block
 
     def validate_transactions(self, fee_model, mempool, block_size):
-        """Validate all transactions in the block."""
+        """Validate all transactions in the block with parallelized execution."""
         payment_type_manager = PaymentTypeManager()
 
-        for tx in self.transactions:
-            if isinstance(tx, dict):
-                continue  # Skip coinbase transactions
+        # Parallelize transaction validation using multiprocessing
+        with Pool() as pool:
+            validation_results = pool.starmap(
+                self._validate_transaction_by_type,
+                [(tx, payment_type_manager.get_payment_type(tx.tx_id), fee_model, mempool, block_size) for tx in self.transactions if not isinstance(tx, dict)]
+            )
 
-            tx_type = payment_type_manager.get_payment_type(tx.tx_id)
+        # Ensure all transactions are valid
+        if all(validation_results):
+            print("[INFO] All transactions in the block are valid.")
+            return True
+        return False
+
+    def _validate_transaction_by_type(self, tx, tx_type, fee_model, mempool, block_size):
+        """Validate a transaction based on its type and prevent replay attacks."""
+        try:
             if tx_type == "Unknown":
                 print(f"[ERROR] Invalid transaction type for transaction: {tx.tx_id}")
                 return False
 
-            if not self._validate_transaction_by_type(tx, tx_type, fee_model, mempool, block_size):
+            tx_size = sum(len(str(inp.to_dict())) + len(str(out.to_dict())) for inp, out in zip(tx.tx_inputs, tx.tx_outputs))
+
+            required_fee = fee_model.calculate_fee(block_size, tx_type, mempool.get_total_size(), tx_size)
+            actual_fee = sum(inp.amount for inp in tx.tx_inputs) - sum(out.amount for out in tx.tx_outputs)
+
+            if actual_fee < required_fee:
+                print(f"[ERROR] Transaction {tx.tx_id} does not meet the required fees.")
                 return False
 
-        print("[INFO] All transactions in the block are valid.")
-        return True
+            # Prevent replay attacks by checking nonce and network_id
+            if self.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
+                print(f"[ERROR] Replay attack detected for transaction {tx.tx_id}.")
+                return False
 
-    def _validate_transaction_by_type(self, tx, tx_type, fee_model, mempool, block_size):
-        """Validate a transaction based on its type."""
-        tx_size = sum(len(str(inp.to_dict())) + len(str(out.to_dict())) for inp, out in zip(tx.tx_inputs, tx.tx_outputs))
-
-        required_fee = fee_model.calculate_fee(block_size, tx_type, mempool.get_total_size(), tx_size)
-        actual_fee = sum(inp.amount for inp in tx.tx_inputs) - sum(out.amount for out in tx.tx_outputs)
-
-        if actual_fee < required_fee:
-            print(f"[ERROR] Transaction {tx.tx_id} does not meet the required fees.")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed transaction validation: {str(e)}")
             return False
 
-        return True
+
+    def get_block_difficulty(self):
+        """
+        Determines the difficulty for this block dynamically based on network hashrate.
+        :return: The adjusted difficulty.
+        """
+        poc = PoC()
+        return poc.block_manager.calculate_difficulty(self.index)
+
+    def check_farm_activity(self):
+        """
+        Detects potential mining farms based on network hashrate changes.
+        If hashrate increases too fast, activates countermeasures.
+        """
+        poc = PoC()
+        hashrate_change = poc.get_network_hashrate_change()
+
+        if hashrate_change > 10:
+            print(f"[WARNING] Hashrate increased by {hashrate_change:.2f}% in 2 hours. Activating countermeasures.")
+            poc.trigger_countermeasures(hashrate_change)
 
     def __repr__(self):
         """Return a string representation of the block."""
