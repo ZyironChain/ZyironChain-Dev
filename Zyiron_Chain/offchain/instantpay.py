@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 import hashlib
 import time
 import secrets
-
+from Zyiron_Chain.offchain.zkp import ZKP
 from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool
@@ -220,9 +220,6 @@ class PaymentChannel:
 
 
 
-
-
-
     def generate_htlc_hashes(self, sender_public_address, utxo_amount):
         """
         Generate random number, single hash, and double hash for an HTLC.
@@ -240,9 +237,10 @@ class PaymentChannel:
 
 
 
-    def register_transaction(self, transaction_id, parent_id, utxo_id, sender, recipient, amount, fee):
+    def register_transaction(self, transaction_id, parent_id, utxo_id, sender, recipient, amount, fee, zk_commitment):
         """
         Register a transaction and track parent-child relationships.
+        :param zk_commitment: The ZKP commitment of the transaction.
         """
         if transaction_id in self.transactions:
             raise ValueError("Transaction already registered.")
@@ -256,6 +254,7 @@ class PaymentChannel:
             "recipient": recipient,
             "amount": amount,
             "fee": fee,
+            "zk_commitment": zk_commitment,  # Store ZKP commitment
             "timestamp": self.time_provider(),
             "resolved": False
         }
@@ -267,49 +266,31 @@ class PaymentChannel:
         if parent_id:
             self.transactions[parent_id]["child_ids"].append(transaction_id)
 
-        print(f"Transaction {transaction_id} registered under parent {parent_id}, UTXO {utxo_id} locked.")
+        print(f"Transaction {transaction_id} registered with ZKP commitment {zk_commitment}, UTXO {utxo_id} locked.")
 
 
-    def close_channel(self):
+
+
+
+
+    def claim_htlc(self, zk_proof):
         """
-        Close the payment channel and unlock UTXOs.
+        Claim funds from an HTLC using a Zero-Knowledge Proof (ZKP).
         """
-        if not self.is_open:
-            raise Exception("Channel is already closed.")
-
-        self.is_open = False
-        for utxo in self.utxos.values():
-            utxo['locked'] = False
-
-        return {
-            "status": "Channel Closed",
-            "final_balances": self.balances,
-        }
-
-
-
-
-
-    def claim_htlc(self, single_hash):
-        """
-        Claim funds from an HTLC using the single hash.
-        """
-        double_hash = hashlib.sha3_384(single_hash.encode()).hexdigest()
+        zk_proof_system = ZKP()
 
         for htlc in self.htlcs:
-            if htlc["hash_secret"] == double_hash and not htlc["claimed"]:
-                if self.time_provider() > htlc["expiry"]:
-                    raise Exception("HTLC expired. Funds refunded to the payer.")
+            if not htlc["claimed"]:
+                # Verify the ZKP proof instead of checking single_hash
+                if zk_proof_system.verify_proof(zk_proof, htlc["internal_data"]["single_hash"]):
+                    # Unlock the UTXO and release funds
+                    self.utxo_manager.unlock_utxo(htlc["locked_utxo"])
+                    self.balances[htlc["recipient"]] += htlc["amount"]
+                    htlc["claimed"] = True
+                    htlc["zkp_verified"] = True  # Mark ZKP verification as passed
 
-                # Unlock the UTXO
-                self.utxo_manager.unlock_utxo(htlc["locked_utxo"])
-
-                # Transfer funds to the recipient
-                self.balances[htlc["recipient"]] += htlc["amount"]
-                htlc["claimed"] = True
-
-                self.update_last_activity()
-                return {"status": "HTLC claimed successfully.", "htlc": htlc}
+                    print(f"[INFO] HTLC claimed successfully using ZKP. Funds transferred to {htlc['recipient']}.")
+                    return {"status": "HTLC claimed successfully.", "htlc": htlc}
 
         raise Exception("Invalid or expired HTLC.")
 
@@ -317,7 +298,7 @@ class PaymentChannel:
 
     def create_htlc(self, payer, recipient, amount, sender_public_address, utxo_id, block_size, tx_size, **kwargs):
         """
-        Create an HTLC for conditional payment with updated logic for dispute resolution, fee calculation, and tracking.
+        Create an HTLC for conditional payment using Zero-Knowledge Proofs (ZKP).
         """
         utxo_amount = kwargs.get("utxo_amount", amount)
 
@@ -345,18 +326,22 @@ class PaymentChannel:
         # Generate hashes for the HTLC
         random_number, single_hash, double_hash = self.generate_htlc_hashes(sender_public_address, utxo_amount)
 
+        # Generate the Zero-Knowledge Proof
+        zkp_proof = self.generate_zkp_proof(single_hash, double_hash)
+
         htlc = {
             "payer": payer,
             "recipient": recipient,
             "amount": amount,
             "fee": fee,
-            "hash_secret": double_hash,
+            "double_hash": double_hash,  # Store only `double_hash` on-chain
+            "zkp_proof": zkp_proof,  # Store the ZKP proof instead of `single_hash`
             "expiry": self.time_provider() + kwargs.get("expiry", 2 * 60 * 60),
             "locked_utxo": utxo_id,
             "claimed": False,
             "internal_data": {
-                "random_number": random_number,
-                "single_hash": single_hash
+                "random_number": random_number,  # Still stored internally
+                "single_hash": single_hash  # Still stored internally, but never on-chain
             }
         }
 
@@ -364,8 +349,10 @@ class PaymentChannel:
         self.htlcs.append(htlc)
         self.update_last_activity()
 
-        print(f"[INFO] HTLC created: {htlc}")
+        print(f"[INFO] ZKP-based HTLC created: {htlc}")
         return htlc
+
+
 
 
 

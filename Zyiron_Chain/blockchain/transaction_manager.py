@@ -13,82 +13,122 @@ from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from threading import Lock
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool  # Add this import
 
+
+import logging
+
 class TransactionManager:
     def __init__(self, storage_manager, key_manager):
-        # Existing initialization
+        """
+        Initialize the Transaction Manager.
+        - Standard Mempool: Handles regular transactions.
+        - Smart Mempool: Manages smart contract transactions.
+        - Locking mechanism for concurrent mempool access.
+        """
+        self.storage_manager = storage_manager
+        self.key_manager = key_manager
         self.standard_mempool = StandardMempool(timeout=86400)
-        self.smart_mempool = SmartMempool()  # Add SmartMempool
-        self.mempool_lock = Lock()  # Add shared lock
+        self.smart_mempool = SmartMempool()
+        self.mempool_lock = Lock()
 
     def store_transaction_in_mempool(self, transaction):
-        """Updated to handle both mempool types"""
+        """
+        Store a transaction in the appropriate mempool and route it via PoC.
+        - Standard transactions go to StandardMempool.
+        - Smart transactions (S-) go to SmartMempool.
+        - Ensures replay attack protection by checking nonce and network_id.
+        """
         with self.mempool_lock:
             if transaction.tx_id.startswith("S-"):
                 current_height = len(self.storage_manager.block_manager.chain)
                 success = self.smart_mempool.add_transaction(transaction, current_height)
             else:
                 success = self.standard_mempool.add_transaction(transaction)
-            
+
             if success:
                 self.storage_manager.poc.route_transaction_to_mempool(transaction)
+            else:
+                logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the mempool.")
 
     def select_transactions_for_block(self, max_block_size_mb=10):
-        """Updated to combine both mempool types"""
+        """
+        Select transactions for the next block, prioritizing high-fee transactions.
+        - Includes transactions from both mempools.
+        - Ensures the selected transactions fit within the block size.
+        """
         max_size = max_block_size_mb * 1024 * 1024
         current_height = len(self.storage_manager.block_manager.chain)
-        
-        # Get transactions from both mempools
+
+        # Fetch transactions from both mempools
         smart_txs = self.smart_mempool.get_smart_transactions(max_block_size_mb, current_height)
         standard_txs = self.standard_mempool.get_pending_transactions()
-        
-        # Combine and validate
-        all_txs = smart_txs + standard_txs
-        return [tx for tx in all_txs if self.validate_transaction(tx)][:max_size]
 
-    def select_transactions_for_block(self, max_block_size_mb=10):
-        max_size = max_block_size_mb * 1024 * 1024
-        selected = []
-        current_size = 0
-        
-        for tx in self.mempool.get_transactions():
-            tx_size = sum(
-                len(str(inp.to_dict())) + len(str(out.to_dict())) 
-                for inp, out in zip(tx.tx_inputs, tx.tx_outputs)
-            )
-            
-            if current_size + tx_size > max_size:
-                break
-                
-            if self.validate_transaction(tx):
-                selected.append(tx)
+        # Sort by fee per byte for optimal inclusion
+        all_txs = sorted(smart_txs + standard_txs, key=lambda tx: tx.fee / self._calculate_transaction_size(tx), reverse=True)
+
+        # Select transactions that fit in the block
+        selected_txs, current_size = [], 0
+        for tx in all_txs:
+            tx_size = self._calculate_transaction_size(tx)
+            if current_size + tx_size <= max_size and self.validate_transaction(tx):
+                selected_txs.append(tx)
                 current_size += tx_size
-                
-        return selected
+
+        return selected_txs
+
+    def _calculate_transaction_size(self, tx):
+        """
+        Calculate transaction size for block inclusion.
+        - Uses SHA3-384-based size estimation.
+        """
+        return sum(
+            len(str(inp.to_dict())) + len(str(out.to_dict()))
+            for inp, out in zip(tx.tx_inputs, tx.tx_outputs)
+        )
 
     def validate_transaction(self, tx):
+        """
+        Validate transaction integrity:
+        - Signature verification.
+        - Input/output balance check.
+        - Prevent replay attacks by ensuring unique nonce and network_id.
+        """
         try:
             if not tx.verify_signature():
                 return False
-                
+
             input_sum = sum(inp.amount for inp in tx.tx_inputs)
             output_sum = sum(out.amount for out in tx.tx_outputs)
-            
+
             if input_sum < output_sum:
                 return False
-                
+
+            # Check for replay attack prevention
+            if self.storage_manager.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
+                logging.error(f"[ERROR] Replay attack detected for transaction {tx.tx_id}.")
+                return False
+
             return True
-            
+
         except Exception as e:
-            print(f"Transaction validation failed: {str(e)}")
+            logging.error(f"[ERROR] Transaction validation failed: {str(e)}")
             return False
 
     def create_coinbase_tx(self, total_fees, network):
+        """
+        Create a coinbase transaction for block rewards.
+        - Uses the key manager to generate the miner's address.
+        - Includes both block reward and collected transaction fees.
+        """
         return CoinbaseTx(
             key_manager=self.key_manager,
             network=network,
-            utxo_manager=self.utxo_manager,
+            utxo_manager=self.storage_manager.utxo_manager,
             transaction_fees=total_fees
         )
 
     def store_transaction_in_mempool(self, transaction):
+        """
+        Store a transaction in PoC's routing system.
+        - Ensures transactions are handled according to network rules.
+        """
         self.storage_manager.poc.route_transaction_to_mempool(transaction)

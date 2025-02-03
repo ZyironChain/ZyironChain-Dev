@@ -34,11 +34,11 @@ class Wallet:
         print("Generating new keys for both testnet and mainnet...")
 
         # Generate keys for testnet
-        self.testnet_secret_key = SecretKey(1024)
+        self.testnet_secret_key = SecretKey(512)
         self.testnet_public_key = PublicKey(self.testnet_secret_key)
 
         # Generate keys for mainnet
-        self.mainnet_secret_key = SecretKey(1024)
+        self.mainnet_secret_key = SecretKey(512)
         self.mainnet_public_key = PublicKey(self.mainnet_secret_key)
 
         # Display hashed public keys with prefixes

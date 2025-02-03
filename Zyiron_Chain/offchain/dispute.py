@@ -12,9 +12,9 @@ class DisputeResolutionContract:
         self.htlcs = {}  # Track HTLCs by hash_secret
         self.ttl = ttl  # Time-to-live for transactions
 
-    def register_transaction(self, transaction_id, parent_id, utxo_id, sender, recipient, amount, fee):
+    def register_transaction(self, transaction_id, parent_id, utxo_id, sender, recipient, amount, fee, zkp_proof):
         """
-        Register a transaction and track parent-child relationships.
+        Register a transaction and track parent-child relationships with Zero-Knowledge Proofs (ZKP).
         :param transaction_id: Unique transaction ID.
         :param parent_id: ID of the parent transaction.
         :param utxo_id: ID of the UTXO locked in this transaction.
@@ -22,31 +22,28 @@ class DisputeResolutionContract:
         :param recipient: Address of the recipient.
         :param amount: Amount to transfer.
         :param fee: Transaction fee.
+        :param zkp_proof: Zero-Knowledge Proof used to validate the transaction.
         """
         if transaction_id in self.transactions:
             raise ValueError("Transaction already registered.")
 
-        # Register the transaction
+        # Register the transaction with ZKP Proof
         self.transactions[transaction_id] = {
             "parent_id": parent_id,
-            "child_ids": [],
             "utxo_id": utxo_id,
             "sender": sender,
             "recipient": recipient,
             "amount": amount,
             "fee": fee,
-            "timestamp": time.time(),
+            "zkp_proof": zkp_proof,  # Store ZKP proof instead of single_hash
+            "timestamp": self.time_provider(),
             "resolved": False
         }
 
         # Lock the UTXO
-        self.locked_utxos[utxo_id] = transaction_id
+        self.utxo_manager.lock_utxo(utxo_id)
 
-        # Link to parent transaction
-        if parent_id:
-            self.transactions[parent_id]["child_ids"].append(transaction_id)
-
-        print(f"Transaction {transaction_id} registered and UTXO {utxo_id} locked.")
+        print(f"Transaction {transaction_id} registered with ZKP in dispute contract.")
 
     def trigger_dispute(self, transaction_id):
         """
