@@ -3,6 +3,14 @@ import json
 import time
 
 
+import lmdb
+import json
+import time
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+
 class LMDBManager:
     def __init__(self, db_path="blockchain_lmdb", map_size=10 * 1024 * 1024):  # 10MB
         """
@@ -11,198 +19,137 @@ class LMDBManager:
         :param map_size: Maximum size of the database in bytes.
         """
         self.env = lmdb.open(db_path, map_size=map_size, create=True)
+        self.transaction_active = False  # ✅ Added transaction tracking
 
     def _serialize(self, data):
-        """
-        Serialize Python dictionary into JSON string.
-        """
+        """Serialize Python dictionary into JSON string."""
         return json.dumps(data).encode()
 
     def _deserialize(self, data):
-        """
-        Deserialize JSON string into Python dictionary.
-        """
-        return json.loads(data.decode())
+        """Deserialize JSON string into Python dictionary."""
+        return json.loads(data.decode()) if data else None
 
-    # --- Pending Transactions ---
-    def add_pending_transaction(self, tx_id, fee_per_byte, size, block_height_added, timestamp, status):
+    # --------------------- ✅ Transaction Management ---------------------
+    def begin_transaction(self):
+        """Begin a transaction (simulated, since LMDB uses auto-commit)."""
+        if not self.transaction_active:
+            logging.info("[INFO] Starting LMDB transaction.")
+            self.transaction_active = True
+
+    def commit(self):
+        """Commit a transaction (simulated for compatibility)."""
+        if self.transaction_active:
+            logging.info("[INFO] Committing LMDB transaction.")
+            self.transaction_active = False  # Reset flag
+
+    def rollback(self):
         """
-        Add a pending transaction to the database.
+        Rollback a transaction (LMDB does not support rollback).
+        We log a warning instead of an actual rollback.
         """
-        with self.env.begin(write=True) as txn:
-            data = {
-                "tx_id": tx_id,
-                "fee_per_byte": fee_per_byte,
+        if self.transaction_active:
+            logging.warning("[WARNING] LMDB does not support rollback. Manual data correction may be required.")
+            self.transaction_active = False  # Reset flag
+
+    # --------------------- ✅ Blockchain Storage ---------------------
+    def add_block(self, block_hash, block_header, transactions, size, difficulty):
+        """
+        Add a block to the blockchain.
+        """
+        try:
+            self.begin_transaction()
+
+            block_data = {
+                "block_header": block_header,
+                "transactions": [tx.to_dict() if hasattr(tx, 'to_dict') else tx for tx in transactions],
                 "size": size,
-                "block_height_added": block_height_added,
-                "timestamp": timestamp,
-                "status": status,
+                "difficulty": difficulty
             }
-            txn.put(f"pending:{tx_id}".encode(), self._serialize(data))
+            with self.env.begin(write=True) as txn:
+                txn.put(f"block:{block_hash}".encode(), self._serialize(block_data))
 
-    def fetch_all_pending_transactions(self):
-        """
-        Fetch all pending transactions from LMDB.
-        """
-        transactions = []
-        with self.env.begin(db=self.pending_db) as txn:
+            self.commit()
+            logging.info(f"[INFO] Block {block_hash} stored successfully.")
+
+        except Exception as e:
+            self.rollback()
+            logging.error(f"[ERROR] Failed to store block {block_hash}: {e}")
+            raise
+
+    def get_block(self, block_hash):
+        """Retrieve a block by its hash."""
+        with self.env.begin() as txn:
+            data = txn.get(f"block:{block_hash}".encode())
+            return self._deserialize(data)
+
+    def get_all_blocks(self):
+        """Retrieve all blocks stored in LMDB."""
+        blocks = []
+        with self.env.begin() as txn:
             cursor = txn.cursor()
             for key, value in cursor:
-                transactions.append(json.loads(value.decode("utf-8")))
-        return transactions
-    
-    def delete_pending_transaction(self, tx_id):
-        """
-        Delete a pending transaction by its ID.
-        """
-        with self.env.begin(write=True) as txn:
-            txn.delete(f"pending:{tx_id}".encode())
+                if key.decode().startswith("block:"):
+                    blocks.append(self._deserialize(value))
+        logging.info(f"[INFO] Retrieved {len(blocks)} blocks.")
+        return blocks
 
-    def fetch_all_pending_transactions(self):
+    def delete_block(self, block_hash):
+        """Delete a block from the database."""
+        with self.env.begin(write=True) as txn:
+            txn.delete(f"block:{block_hash}".encode())
+
+    # --------------------- ✅ Transactions ---------------------
+    def add_transaction(self, tx_id, block_hash, inputs, outputs, timestamp):
         """
-        Fetch all pending transactions from the database.
+        Store a transaction in LMDB.
         """
+        try:
+            transaction_data = {
+                "block_hash": block_hash,
+                "inputs": inputs,
+                "outputs": outputs,
+                "timestamp": timestamp
+            }
+            with self.env.begin(write=True) as txn:
+                txn.put(f"transaction:{tx_id}".encode(), self._serialize(transaction_data))
+
+            logging.info(f"[INFO] Transaction {tx_id} stored.")
+
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to store transaction {tx_id}: {e}")
+            raise
+
+    def get_transaction(self, tx_id):
+        """Retrieve a transaction by its ID."""
+        with self.env.begin() as txn:
+            data = txn.get(f"transaction:{tx_id}".encode())
+            return self._deserialize(data)
+
+    def get_all_transactions(self):
+        """Retrieve all transactions."""
         transactions = []
         with self.env.begin() as txn:
             cursor = txn.cursor()
             for key, value in cursor:
-                if key.decode().startswith("pending:"):
+                if key.decode().startswith("transaction:"):
                     transactions.append(self._deserialize(value))
+        logging.info(f"[INFO] Retrieved {len(transactions)} transactions.")
         return transactions
 
-    # --- Priority Metadata ---
-    def add_priority_metadata(self, tx_id, priority_level, expires_at, mined=False):
-        """
-        Add priority metadata for a transaction.
-        """
+    def delete_transaction(self, tx_id):
+        """Delete a transaction by its ID."""
         with self.env.begin(write=True) as txn:
-            data = {
-                "tx_id": tx_id,
-                "priority_level": priority_level,
-                "expires_at": expires_at,
-                "mined": mined,
-            }
-            txn.put(f"priority:{tx_id}".encode(), self._serialize(data))
+            txn.delete(f"transaction:{tx_id}".encode())
 
-    def get_priority_metadata(self, tx_id):
-        """
-        Retrieve priority metadata for a transaction.
-        """
-        with self.env.begin() as txn:
-            data = txn.get(f"priority:{tx_id}".encode())
-            return self._deserialize(data) if data else None
-
-    def delete_priority_metadata(self, tx_id):
-        """
-        Delete priority metadata for a transaction.
-        """
-        with self.env.begin(write=True) as txn:
-            txn.delete(f"priority:{tx_id}".encode())
-
-    def fetch_all_priority_metadata(self):
-        """
-        Fetch all priority metadata from the database.
-        """
-        metadata = []
-        with self.env.begin() as txn:
-            cursor = txn.cursor()
-            for key, value in cursor:
-                if key.decode().startswith("priority:"):
-                    metadata.append(self._deserialize(value))
-        return metadata
-
-    # --- Mempool Metrics ---
-    def update_mempool_metrics(self, total_size, total_fees, total_transactions):
-        """
-        Update the mempool metrics.
-        """
-        with self.env.begin(write=True) as txn:
-            data = {
-                "total_size": total_size,
-                "total_fees": total_fees,
-                "total_transactions": total_transactions,
-                "timestamp": time.time(),
-            }
-            txn.put("mempool:metrics".encode(), self._serialize(data))
-
-    def get_mempool_metrics(self):
-        """
-        Retrieve the current mempool metrics.
-        """
-        with self.env.begin() as txn:
-            data = txn.get("mempool:metrics".encode())
-            return self._deserialize(data) if data else None
-
-    # --- General Utilities ---
-    def clear_all_data(self):
-        """
-        Clear all data from the database.
-        """
+    # --------------------- ✅ General Utilities ---------------------
+    def clear_database(self):
+        """Clear all data (for testing purposes)."""
         with self.env.begin(write=True) as txn:
             cursor = txn.cursor()
-            for key, _ in cursor:  # Extract only the `key` for deletion
+            for key, _ in cursor:
                 txn.delete(key)
-        print("[INFO] All data cleared from the database.")
+        logging.info("[INFO] LMDB database cleared.")
 
     def close(self):
-        """
-        Close the LMDB environment.
-        """
+        """Close the LMDB environment."""
         self.env.close()
-
-
-# Example Usage
-if __name__ == "__main__":
-    db_manager = LMDBManager()
-
-    # Add Pending Transactions
-    db_manager.add_pending_transaction(
-        tx_id="tx123",
-        fee_per_byte=0.5,
-        size=250,
-        block_height_added=100,
-        timestamp=time.time(),
-        status="pending"
-    )
-    db_manager.add_pending_transaction(
-        tx_id="tx456",
-        fee_per_byte=0.6,
-        size=300,
-        block_height_added=101,
-        timestamp=time.time(),
-        status="prioritized"
-    )
-
-    # Fetch Pending Transactions
-    print("Pending Transactions:", db_manager.fetch_all_pending_transactions())
-
-    # Add Priority Metadata
-    db_manager.add_priority_metadata(
-        tx_id="tx123",
-        priority_level="high",
-        expires_at=time.time() + 3600,
-        mined=False
-    )
-    db_manager.add_priority_metadata(
-        tx_id="tx456",
-        priority_level="medium",
-        expires_at=time.time() + 1800,
-        mined=True
-    )
-
-    # Fetch Priority Metadata
-    print("Priority Metadata:", db_manager.fetch_all_priority_metadata())
-
-    # Update and Retrieve Mempool Metrics
-    db_manager.update_mempool_metrics(total_size=550, total_fees=0.8, total_transactions=2)
-    print("Mempool Metrics:", db_manager.get_mempool_metrics())
-
-    # Clear all data
-    db_manager.clear_all_data()
-    print("After Clearing Data:")
-    print("Pending Transactions:", db_manager.fetch_all_pending_transactions())
-    print("Priority Metadata:", db_manager.fetch_all_priority_metadata())
-    print("Mempool Metrics:", db_manager.get_mempool_metrics())
-
-    # Close the database
-    db_manager.close()

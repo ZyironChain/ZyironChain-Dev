@@ -12,7 +12,17 @@ from typing import List, Dict
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
-from Zyiron_Chain.database.poc import PoC  # Use PoC for routing transactions
+from Zyiron_Chain.blockchain.helper import get_poc
+
+PoC = get_poc()  # ✅ Dynamically load PoC before using it
+
+
+def get_poc_instance():
+    """Dynamically import PoC only when needed to prevent circular imports."""
+    return get_poc()
+
+
+ # Use PoC for routing transactions
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager  # Ensure KeyManager is correctly imported
 
 from decimal import Decimal
@@ -59,26 +69,28 @@ class CoinbaseTx:
             "type": self.type.name,
             "hash": self.hash
         }
-
 class Transaction:
     """Represents a standard blockchain transaction"""
 
     def __init__(self, tx_id: str, inputs: List[Dict], outputs: List[Dict], poc: PoC):
-        """
-        Initialize a transaction.
-        :param tx_id: Unique transaction identifier.
-        :param inputs: List of transaction inputs (previous UTXOs being spent).
-        :param outputs: List of transaction outputs (recipients and amounts).
-        :param poc: PoC instance for routing transactions.
-        """
         self.tx_id = tx_id
-        self.inputs = self._ensure_inputs(inputs)  # Ensures all inputs have necessary fields
-        self.outputs = self._ensure_outputs(outputs)  # Ensures all outputs have necessary fields
+        self.inputs = self._ensure_inputs(inputs)
+        self.outputs = self._ensure_outputs(outputs)
         self.timestamp = time.time()
         self.type = PaymentTypeManager().get_transaction_type(tx_id)
         self.fee = self._calculate_fee()
         self.hash = self.calculate_hash()
-        self.poc = poc  # Use PoC for transaction routing
+        self.poc = poc  # ✅ PoC is now properly assigned
+
+    @classmethod
+    def from_dict(cls, data: Dict, poc: PoC):
+        """Create a Transaction instance from a dictionary."""
+        return cls(
+            tx_id=data["tx_id"],
+            inputs=data["inputs"],
+            outputs=data["outputs"],
+            poc=poc
+        )
 
     def _ensure_inputs(self, inputs):
         """Ensure all inputs have required fields and default values if missing."""
@@ -176,12 +188,15 @@ class Transaction:
 class TransactionFactory:
     """Factory for creating transactions"""
     @staticmethod
-    def create_transaction(tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict]) -> Transaction:
+    def create_transaction(tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict], poc: PoC) -> Transaction:
         """Create a new transaction of the specified type"""
         prefix = PaymentTypeManager().TYPE_CONFIG[tx_type]["prefixes"][0] if tx_type != TransactionType.STANDARD else ""
         base_data = f"{prefix}{','.join(str(i['amount']) for i in inputs)}"
-        tx_id = sha3_384_hash(base_data + str(time.time()))[:64]
-        return Transaction(tx_id, inputs, outputs)
+        tx_id = hashlib.sha3_384(f"{base_data}{str(time.time())}".encode()).hexdigest()[:64]
+        return Transaction(tx_id, inputs, outputs, poc)
+
+
+
 
 
 class TransactionIn:

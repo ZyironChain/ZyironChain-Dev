@@ -7,6 +7,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 from threading import Lock
 import time
 from decimal import Decimal
+import importlib
+
+def get_fee_model():
+    """Lazy load FeeModel to prevent circular imports"""
+    module = importlib.import_module("Zyiron_Chain.transactions.fees")
+    return getattr(module, "FeeModel")
+
 
 class SmartMempool:
     def __init__(self, max_size_mb=500, confirmation_blocks=(4, 5, 6)):
@@ -21,6 +28,7 @@ class SmartMempool:
         self.max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
         self.current_size_bytes = 0  # Track current memory usage
         self.confirmation_blocks = confirmation_blocks  # Block confirmation thresholds
+
 
     def add_transaction(self, transaction, current_block_height):
         """
