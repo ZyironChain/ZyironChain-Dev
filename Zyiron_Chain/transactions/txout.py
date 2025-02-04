@@ -23,8 +23,11 @@ logging.basicConfig(level=logging.INFO)
 class TransactionOut:
     """Represents a transaction output (UTXO)"""
     def __init__(self, script_pub_key: str, amount: float, locked: bool = False):
+        if not isinstance(amount, (int, float, Decimal)):
+            raise ValueError("[ERROR] Amount must be a valid number.")
+        
         self.script_pub_key = script_pub_key
-        self.amount = amount
+        self.amount = float(amount)
         self.locked = locked
         self.tx_out_id = self._calculate_tx_out_id()
 

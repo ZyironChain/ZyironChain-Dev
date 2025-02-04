@@ -28,12 +28,15 @@ class UTXOManager:
         """Retrieve UTXO from cache or PoC"""
         if tx_out_id in self._cache:
             return TransactionOut.from_dict(self._cache[tx_out_id])
-        
+
         utxo_data = self.poc.get_utxo(tx_out_id)
         if utxo_data:
             self._cache[tx_out_id] = utxo_data
             return TransactionOut.from_dict(utxo_data)
-        return None
+
+        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC.")
+        return None  # ✅ Explicitly return None if not found
+
 
     def update_from_block(self, block: Dict):
         """Update UTXO set from block transactions"""

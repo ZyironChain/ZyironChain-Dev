@@ -15,7 +15,7 @@ import time
 from decimal import Decimal
 from Zyiron_Chain.blockchain.helper import get_block
 Block = get_block()  # ✅ Lazy import
-
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.blockchain.miner import Miner
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, TransactionIn, TransactionOut, CoinbaseTx
@@ -45,22 +45,39 @@ class BlockchainTestSuite(unittest.TestCase):
         """Initialize complete blockchain ecosystem with anti-farm measures"""
         print("\n[SETUP] Building Full Blockchain Test Environment...\n")
         
+        # ✅ Initialize PoC and other core components
         cls.poc = PoC()
         cls.fee_model = FeeModel(max_supply=Decimal('84096000'))
         cls.allocator = FundsAllocator(cls.fee_model.max_supply)
         
+        # ✅ Check if a genesis block exists
         if not cls.poc.get_last_block():
             genesis = Block(
                 index=0,
                 previous_hash="0" * 96,
                 transactions=[CoinbaseTx(block_height=0, miner_address="genesis", reward=Decimal("50.0"))],
-                timestamp=int(time.time())
+                timestamp=int(time.time()),
+                key_manager=KeyManager(),  # ✅ Ensure KeyManager is available
+                nonce=0,
+                poc=cls.poc  # ✅ Pass `poc`
             )
-            genesis.calculate_hash()
-            cls.poc.store_block(genesis, difficulty=0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        
+
+            # ✅ Ensure transactions are correctly processed
+            genesis.transactions = genesis._ensure_transactions(genesis.transactions, cls.poc)
+
+            # ✅ Compute the correct Merkle root
+            genesis.merkle_root = genesis.calculate_merkle_root()
+
+            # ✅ Store the block through PoC
+            cls.poc.store_block(
+                genesis,
+                difficulty=0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+            )
+
+        # ✅ Initialize mining components
         cls.miner = Miner(cls.poc.block_manager, cls.poc.standard_mempool, cls.poc.storage_manager)
-        cls.miner.base_vram = 8 * 1024 * 1024
+        cls.miner.base_vram = 8 * 1024 * 1024  # Start at 8MB VRAM
+
 
 
     def setUp(self):

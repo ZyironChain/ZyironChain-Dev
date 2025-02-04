@@ -60,54 +60,107 @@ class FundsAllocator:
             fund: (amount / self.max_supply) * Decimal('100')
             for fund, amount in self.allocated.items()
         }
+from decimal import Decimal
+
 class FeeModel:
-    """Fee model with 7% allocation cap and no burning"""
-    def __init__(self, max_supply: Decimal):
-        self.max_supply = max_supply  # ✅ Fix: Ensure max_supply is stored
+    """Fee model with 7% allocation cap, congestion-based fees, and dynamic fee adjustments"""
+    def __init__(self, max_supply: Decimal, base_fee_rate=Decimal('0.00015')):
+        self.max_supply = max_supply  # ✅ Ensure max_supply is stored
+        self.base_fee_rate = base_fee_rate  # ✅ Introduce base_fee_rate
         self.allocator = FundsAllocator(max_supply)
         self.type_manager = PaymentTypeManager()
         
         # Fee structure
-        self.fee_structure = {
-            TransactionType.STANDARD: Decimal('0.0012'),
-            TransactionType.SMART: Decimal('0.0036'),
-            TransactionType.INSTANT: Decimal('0.006')
+        self.fee_percentages = {
+            "Low": {"Standard": Decimal('0.0012'), "Smart": Decimal('0.0036'), "Instant": Decimal('0.006')},
+            "Moderate": {"Standard": Decimal('0.0024'), "Smart": Decimal('0.006'), "Instant": Decimal('0.012')},
+            "High": {"Standard": Decimal('0.006'), "Smart": Decimal('0.012'), "Instant": Decimal('0.024')},
         }
         
-        # Tax rates (fixed at 7%)
-        self.tax_rate = Decimal('0.07')
+        # Congestion thresholds
+        self.congestion_thresholds = {
+            1: {"Standard": [12000, 60000], "Smart": [6000, 30000], "Instant": [3000, 15000]},
+            5: {"Standard": [60000, 300000], "Smart": [30000, 150000], "Instant": [15000, 75000]},
+            10: {"Standard": [120000, 600000], "Smart": [60000, 300000], "Instant": [30000, 150000]},
+        }
+        
+        # Tax rates (dynamic by congestion)
+        self.tax_rates = {"Low": Decimal('0.07'), "Moderate": Decimal('0.05'), "High": Decimal('0.03')}
+        
+    def interpolate_thresholds(self, block_size, payment_type):
+        """Linearly scale congestion thresholds for a given block size and payment type."""
+        sizes = sorted(self.congestion_thresholds.keys())
+        for i in range(len(sizes) - 1):
+            lower_size, upper_size = sizes[i], sizes[i + 1]
+            if lower_size <= block_size <= upper_size:
+                lower_thresholds = self.congestion_thresholds[lower_size][payment_type]
+                upper_thresholds = self.congestion_thresholds[upper_size][payment_type]
+                
+                scale_factor = (block_size - lower_size) / (upper_size - lower_size)
+                low_threshold = lower_thresholds[0] + scale_factor * (upper_thresholds[0] - lower_thresholds[0])
+                moderate_threshold = lower_thresholds[1] + scale_factor * (upper_thresholds[1] - lower_thresholds[1])
+                
+                return [low_threshold, moderate_threshold]
+        
+        if block_size in self.congestion_thresholds:
+            return self.congestion_thresholds[block_size][payment_type]
+        
+        raise ValueError(f"Block size {block_size} is out of supported range.")
 
-    def calculate_fee(self, block_size: Decimal, tx_id: str, 
-                     amount: Decimal, tx_size: int) -> dict:
-        """Calculate fees with allocations capped at 7% of supply"""
-        # Determine transaction type
-        tx_type = self.type_manager.get_transaction_type(tx_id)
-        
-        # Calculate base fee
-        base_fee = self._calculate_base_fee(tx_type, amount, tx_size)
-        
-        # Calculate tax and allocations
-        tax_fee = base_fee * self.tax_rate
-        allocations = self.allocator.allocate(tax_fee)
-        
+    def get_congestion_level(self, block_size, payment_type, amount):
+        """Determine the congestion level based on block size, payment type, and transaction amount."""
+        if block_size < 1 or block_size > 10:
+            raise ValueError(f"Unsupported block size: {block_size}")
+
+        if payment_type not in ["Standard", "Smart", "Instant"]:
+            raise ValueError(f"Unsupported payment type: {payment_type}")
+
+        thresholds = self.interpolate_thresholds(block_size, payment_type)
+        if amount < thresholds[0]:
+            return "Low"
+        elif thresholds[0] <= amount <= thresholds[1]:
+            return "Moderate"
+        else:
+            return "High"
+
+    def calculate_fee_and_tax(self, block_size, payment_type, amount, tx_size):
+        """Calculate the transaction fee, tax fee, and fund allocation based on congestion level."""
+        congestion_level = self.get_congestion_level(block_size, payment_type, amount)
+        base_fee = self.calculate_fee(block_size, payment_type, amount, tx_size)
+        tax_rate = self.tax_rates[congestion_level]
+
+        tax_fee = base_fee * tax_rate
+        miner_fee = base_fee - tax_fee
+
+        smart_contract_fund = tax_fee * (3 / 7)
+        governance_fund = tax_fee * (3 / 7)
+        network_contribution_fund = tax_fee * (1 / 7)
+
+        total_fee_percentage = (base_fee / amount) * 100 if amount > 0 else 0
+        tax_fee_percentage = (tax_fee / base_fee) * 100 if base_fee > 0 else 0
+
         return {
-            "total_fee": float(base_fee),
-            "breakdown": {
-                "miner_fee": float(base_fee - tax_fee),
-                "tax_fee": float(tax_fee),
-                "allocations": {k: float(v) for k, v in allocations.items()},
-                "tax_rate": float(self.tax_rate)
+            "base_fee": base_fee,
+            "tax_fee": tax_fee,
+            "miner_fee": miner_fee,
+            "scaled_tax_rate": round(tax_rate * 100, 2),
+            "congestion_level": congestion_level,
+            "fund_allocation": {
+                "Smart Contract Fund": smart_contract_fund,
+                "Governance Fund": governance_fund,
+                "Network Contribution Fund": network_contribution_fund,
             },
-            "metadata": {
-                "allocated_totals": self.allocator.get_allocated_totals(),
-                "remaining_cap": float(self.allocator.cap - sum(self.allocator.allocated.values()))
-            }
+            "total_fee_percentage": round(total_fee_percentage, 2),
+            "tax_fee_percentage": round(tax_fee_percentage, 2),
         }
-    def _calculate_base_fee(self, tx_type: TransactionType, 
-                           amount: Decimal, tx_size: int) -> Decimal:
-        """Calculate base fee with size normalization"""
-        base_rate = self.fee_structure[tx_type]
-        size_factor = Decimal(tx_size) / Decimal(1024)  # Per KB
-        return amount * base_rate * size_factor
 
+    def calculate_fee(self, block_size, payment_type, amount, tx_size):
+        """Calculate the base transaction fee based on congestion level and payment type."""
+        congestion_level = self.get_congestion_level(block_size, payment_type, amount)
+        max_percentage = self.fee_percentages[congestion_level][payment_type]
 
+        scaled_percentage = max_percentage * (block_size / 10)
+
+        total_fee = amount * scaled_percentage
+        per_byte_fee = total_fee / tx_size
+        return tx_size * per_byte_fee

@@ -258,21 +258,56 @@ class KeyManager:
                 hashed_public_key = key_data.get("hashed_public_key", "N/A")
                 print(f"- {role.capitalize()}: {identifier} (Public Hash: {hashed_public_key})")
 
-
-    def get_private_key_for_channel(self, network, role="channel"):
+    def sign_transaction(self, message, network, role="channel"):
         """
-        Retrieve the private key for a specific role in a payment channel.
+        Sign a transaction using the wallet's private key stored in the KeyManager.
+        :param message: The transaction data (tx_id or block data).
         :param network: Either 'testnet' or 'mainnet'.
-        :param role: Role of the key (e.g., 'channel').
-        :return: Private key for the role.
+        :param role: The role of the key to use for signing (e.g., 'miner', 'channel').
+        :return: The digital signature.
         """
+        from Zyiron_Chain.accounts.wallet import Wallet  # ✅ Import Wallet for signing
+
         if network not in self.keys:
-            raise ValueError(f"Invalid network: {network}.")
+            raise ValueError(f"Invalid network: {network}. Choose 'testnet' or 'mainnet'.")
+
         if role not in self.keys[network]["defaults"]:
             raise ValueError(f"No default key set for role '{role}' in {network}.")
 
         identifier = self.keys[network]["defaults"][role]
+
+        # ✅ Retrieve the serialized private key
+        private_key_serialized = self.keys[network]["keys"][identifier]["private_key"]
+
+        # ✅ Decode the private key (base64 → JSON → SecretKey object)
+        private_key_json = json.loads(base64.b64decode(private_key_serialized).decode("utf-8"))
+
+        # ✅ Use the Wallet class to sign the transaction
+        wallet = Wallet()
+        signature = wallet.sign_transaction(message.encode(), network)  # ✅ Ensure message is bytes
+
+        return signature
+
+
+
+
+    def get_private_key_for_channel(self, network, role="channel"):
+        """
+        Retrieve the private key for a specific role in a payment channel.
+        If no default key exists, generate one.
+        """
+        if network not in self.keys:
+            raise ValueError(f"Invalid network: {network}.")
+
+        # ✅ Ensure a default key for 'channel' exists
+        if role not in self.keys[network]["defaults"]:
+            print(f"[INFO] No default key found for role '{role}' in {network}. Generating one...")
+            self.add_key(network, role, f"{role}_default")
+
+        identifier = self.keys[network]["defaults"][role]
         return self.keys[network]["keys"][identifier]["private_key"]
+
+
 
 
 

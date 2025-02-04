@@ -32,7 +32,8 @@ BlockHeader = get_block_header()
 
 
 class Block:
-    def __init__(self, index, previous_hash, transactions, timestamp=None, key_manager=None, nonce=0):
+
+    def __init__(self, index, previous_hash, transactions, timestamp=None, key_manager=None, nonce=0, poc=None):
         """
         Initialize a Block.
         :param index: Block index in the blockchain.
@@ -41,10 +42,11 @@ class Block:
         :param timestamp: Block creation timestamp (defaults to current time).
         :param key_manager: KeyManager instance for handling miner addresses.
         :param nonce: Initial nonce (used for mining).
+        :param poc: PoC instance for transaction validation.
         """
         self.index = index
         self.previous_hash = previous_hash
-        self.transactions = self._ensure_transactions(transactions)
+        self.transactions = self._ensure_transactions(transactions, poc)  # ✅ Pass `poc`
         self.timestamp = timestamp or time.time()
         self.nonce = nonce
         self.key_manager = key_manager or KeyManager()  # ✅ Default to KeyManager
@@ -61,6 +63,7 @@ class Block:
         )
 
         self.hash = None  # Will be calculated during PoW
+
 
 
     def _ensure_transactions(self, transactions, poc):

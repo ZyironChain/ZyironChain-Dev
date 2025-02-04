@@ -197,9 +197,7 @@ class PoC:
 
     def store_utxo(self, utxo_id, utxo_data):
         """
-        Store a UTXO in the SQLite database.
-        :param utxo_id: Unique UTXO identifier.
-        :param utxo_data: Dictionary containing UTXO data.
+        Store a UTXO in SQLite via PoC.
         """
         try:
             if not isinstance(utxo_data, dict):
@@ -210,39 +208,59 @@ class PoC:
                 if key not in utxo_data:
                     raise KeyError(f"[ERROR] Missing required UTXO field: {key}")
 
-            self.sqlite_db.add_utxo(
-                utxo_id=utxo_id,
+            # ✅ Route UTXO storage to SQLite
+            self.sqlite_db.insert_utxo(
+                utxo_id=utxo_data["tx_out_id"],
                 tx_out_id=utxo_data["tx_out_id"],
-                amount=Decimal(utxo_data["amount"]),
+                amount=utxo_data["amount"],
                 script_pub_key=utxo_data["script_pub_key"],
-                locked=utxo_data.get("locked", False),  # Default to False if not provided
-                block_index=utxo_data.get("block_index", 0)  # Default index 0 for new UTXOs
+                locked=utxo_data.get("locked", False),  # Default to False
+                block_index=utxo_data.get("block_index", 0)  # Default index 0
             )
 
             logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
+
         except (KeyError, TypeError, ValueError) as e:
             logging.error(f"[ERROR] Failed to store UTXO {utxo_id}: {e}")
             raise
+
+
+
 
 
     def ensure_consistency(self, block):
         """
         Ensure blockchain consistency before adding a new block.
         :param block: The block to check.
+        :raises ValueError: If the block does not meet consistency requirements.
         """
-        if self.chain:
-            last_block = self.chain[-1]
-            if block.previous_hash != last_block.hash:
-                raise ValueError(f"Previous hash mismatch: {block.previous_hash} != {last_block.hash}")
-            if block.index != last_block.index + 1:
-                raise ValueError(f"Block index mismatch: {block.index} != {last_block.index + 1}")
-        else:
-            if block.index != 0:
-                raise ValueError("First block must have index 0.")
+        if not block:
+            raise ValueError("[ERROR] Invalid block: Block data is missing.")
 
         if not block.hash or not block.merkle_root:
-            raise ValueError("Block hash or Merkle root is missing.")
+            raise ValueError("[ERROR] Block hash or Merkle root is missing.")
 
+        if self.chain:
+            last_block = self.chain[-1]
+
+            # Check for proper block linking
+            if block.previous_hash != last_block.hash:
+                raise ValueError(
+                    f"[ERROR] Previous hash mismatch: Expected {last_block.hash}, Got {block.previous_hash}"
+                )
+
+            # Ensure sequential block indexing
+            if block.index != last_block.index + 1:
+                raise ValueError(
+                    f"[ERROR] Block index mismatch: Expected {last_block.index + 1}, Got {block.index}"
+                )
+
+        else:
+            # Ensure genesis block has the correct index
+            if block.index != 0:
+                raise ValueError("[ERROR] First block must have index 0.")
+
+        logging.info(f"[INFO] Block {block.index} passed consistency checks.")
 
     def get_last_block(self):
         """Fetch the latest block from the database."""
@@ -298,7 +316,14 @@ class PoC:
         except Exception as e:
             logging.error(f"[POC] Failed to fetch block {block_hash}: {e}")
             return None
-        
+    
+    
+    
+    def get_utxo(self, tx_out_id):
+
+        """Retrieve a UTXO from the SQLite database."""
+        return self.sqlite_db.fetch_utxo(tx_out_id)  # ✅ Use correct method
+                    
 
     def validate_block(self, block):
         """
@@ -325,6 +350,62 @@ class PoC:
             self.chain = []
 
     ### -------------------- TRANSACTION HANDLING -------------------- ###
+
+
+
+
+
+    def route_block_metadata_to_duckdb(self, block):
+        """
+        Routes block metadata and analytics to DuckDB.
+        """
+        try:
+            self.duckdb_analytics.add_block_metadata(
+                block.hash,
+                block.index,
+                block.miner_address,
+                block.timestamp,
+                len(block.transactions),
+                block.header["difficulty"]
+            )
+            logging.info(f"[POC] Routed block metadata for {block.hash} to DuckDB.")
+        except Exception as e:
+            logging.error(f"[POC ERROR] Failed to route block metadata for {block.hash}: {e}")
+
+
+
+
+
+
+    def route_block_to_unqlite(self, block):
+        """
+        Routes completed blocks to UnQLite (Immutable Blockchain Storage).
+        """
+        try:
+            self.unqlite_db.add_block(
+                block.hash, 
+                block.header.to_dict(), 
+                [tx.to_dict() for tx in block.transactions], 
+                len(block.transactions),
+                block.header["difficulty"]
+            )
+            logging.info(f"[POC] Routed block {block.hash} to UnQLite.")
+        except Exception as e:
+            logging.error(f"[POC ERROR] Failed to route block {block.hash}: {e}")
+
+
+    def route_transaction_to_lmdb(self, transaction):
+        """
+        Routes pending transactions to LMDB (Mempool).
+        - LMDB handles mempool transaction storage and prioritization.
+        """
+        try:
+            self.lmdb_manager.store_pending_transaction(transaction.tx_id, transaction.to_dict())
+            logging.info(f"[POC] Routed transaction {transaction.tx_id} to LMDB (Mempool).")
+        except Exception as e:
+            logging.error(f"[POC ERROR] Failed to route transaction {transaction.tx_id}: {e}")
+
+
 
     def handle_transaction(self, transaction):
         """

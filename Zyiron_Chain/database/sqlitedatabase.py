@@ -1,16 +1,16 @@
-import sqlite3
-import json
-from datetime import datetime
-
-
-import sqlite3
-import json
-from datetime import datetime
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 import sqlite3
 import json
 from datetime import datetime
 
+import sqlite3
+import json
+from datetime import datetime
+import logging
+from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, TransactionIn, TransactionOut, CoinbaseTx
 
 class SQLiteDB:
     def __init__(self, db_path="sqlite.db"):
@@ -72,12 +72,18 @@ class SQLiteDB:
     def insert_utxo(self, utxo_id, tx_out_id, amount, script_pub_key, block_index, locked=False):
         """
         Insert a new UTXO into the database.
+        Ensures that `amount` is stored as a float instead of `Decimal`.
         """
-        self.cursor.execute("""
-        INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
-        self.connection.commit()
+        try:
+            self.cursor.execute("""
+            INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (utxo_id, tx_out_id, float(amount), script_pub_key, locked, block_index))  # ✅ Convert amount to float
+            self.connection.commit()
+            logging.info(f"[INFO] UTXO {utxo_id} added successfully with {float(amount)} ZYC.")
+        except sqlite3.Error as e:
+            logging.error(f"[ERROR] Failed to insert UTXO {utxo_id}: {e}")
+
 
     def update_utxo_lock(self, utxo_id, locked):
         """
@@ -88,14 +94,29 @@ class SQLiteDB:
         """, (locked, utxo_id))
         self.connection.commit()
 
-    def fetch_utxo(self, utxo_id):
-        """
-        Fetch a UTXO by its ID.
-        """
-        self.cursor.execute("""
-        SELECT * FROM utxos WHERE utxo_id = ?
-        """, (utxo_id,))
-        return self.cursor.fetchone()
+    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
+        """Retrieve UTXO from cache or PoC, ensuring SQLite row conversion."""
+        
+        if tx_out_id in self._cache:
+            return TransactionOut.from_dict(dict(self._cache[tx_out_id]))  # ✅ Convert cached UTXO to dict
+
+        utxo_data = self.poc.get_utxo(tx_out_id)
+        
+        if utxo_data:
+            try:
+                # ✅ Convert sqlite3.Row to a dictionary before passing it
+                utxo_dict = dict(utxo_data) if isinstance(utxo_data, sqlite3.Row) else utxo_data
+                self._cache[tx_out_id] = utxo_dict  # ✅ Cache the converted UTXO
+                return TransactionOut.from_dict(utxo_dict)  # ✅ Ensure proper format
+            except Exception as e:
+                logging.error(f"[ERROR] Failed to convert UTXO {tx_out_id}: {e}")
+                return None
+
+        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC.")
+        return None  # ✅ Explicitly return None if not found
+
+
+
 
     def delete_utxo(self, utxo_id):
         """
@@ -146,10 +167,20 @@ class SQLiteDB:
 
     def fetch_all_utxos(self):
         """
-        Fetch all UTXOs from the database as dictionaries.
+        Fetch all **unspent** UTXOs from the database.
         """
-        self.cursor.execute("SELECT * FROM utxos")
-        return [dict(row) for row in self.cursor.fetchall()]
+        try:
+            self.cursor.execute("SELECT * FROM utxos WHERE locked = 0")
+            utxos = self.cursor.fetchall()
+            
+            if not utxos:
+                logging.warning("[WARNING] No unspent UTXOs found in SQLite.")
+            
+            return [dict(row) for row in utxos]  # Convert to dictionary format
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to fetch UTXOs from SQLite: {e}")
+            return []
+
 
     def fetch_all_transactions(self):
         """

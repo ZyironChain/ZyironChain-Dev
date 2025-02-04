@@ -21,14 +21,15 @@ import time
 class Blockchain:
     def __init__(self):
         # Existing initialization
-        self.fee_model = FeeModel(base_fee_rate=Decimal('0.00015'))
+        self.fee_model = FeeModel(max_supply=Decimal('84096000'), base_fee_rate=Decimal('0.00015'))
+
         self.allocator = FundsAllocator()
         self.tx_service = TransactionService(self.fee_model, self.allocator)
         self.pending_transactions = []
         self.chain = []
         self.ZERO_HASH = '0' * 96
         self.current_block_size = 1  # MB
-        self.block_size_adjustment_interval = 2016
+        self.block_size_adjustment_interval = 288
 
         # New monetary policy parameters
         self.initial_reward = Decimal('100.00')
@@ -211,27 +212,26 @@ class Blockchain:
     def _calculate_block_size(self):
         """
         Dynamically adjust block size based on network congestion.
-        Block sizes scale from 1MB to 10MB based on mempool size and hashrate.
+        Block sizes scale linearly from 1MB to 10MB based on transaction count.
         """
         # Measure pending transactions
         pending_tx_count = len(self.pending_transactions)
-
-        # Base size (1MB) if transactions are low
-        new_block_size = 1  # MB
-
-        # Increase block size based on pending transactions
-        if pending_tx_count > 500:
-            new_block_size = 2  # 2MB
-        if pending_tx_count > 1000:
-            new_block_size = 4  # 4MB
-        if pending_tx_count > 2000:
-            new_block_size = 6  # 6MB
-        if pending_tx_count > 5000:
-            new_block_size = 8  # 8MB
-        if pending_tx_count > 10000:
-            new_block_size = 10  # 10MB max
-
-        # Ensure it stays within limits (1MB - 10MB)
-        self.current_block_size = max(1, min(new_block_size, 10))
-
-        print(f"[INFO] Block size adjusted to {self.current_block_size}MB.")
+        
+        # Define thresholds based on TPS analysis
+        min_tx = 1000     # Minimum transactions for 1MB block
+        max_tx = 50000    # Maximum transactions for 10MB block
+        min_size = 1.0    # Minimum block size (MB)
+        max_size = 10.0   # Maximum block size (MB)
+        
+        # Ensure linear scaling of block size
+        if pending_tx_count <= min_tx:
+            new_block_size = min_size
+        elif pending_tx_count >= max_tx:
+            new_block_size = max_size
+        else:
+            new_block_size = min_size + ((max_size - min_size) * ((pending_tx_count - min_tx) / (max_tx - min_tx)))
+        
+        # Ensure block size stays within valid limits
+        self.current_block_size = max(min_size, min(new_block_size, max_size))
+        
+        print(f"[INFO] Block size adjusted to {self.current_block_size:.2f}MB based on {pending_tx_count} transactions.")
