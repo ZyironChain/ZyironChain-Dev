@@ -49,6 +49,7 @@ class Wallet:
         self.save_keys()
         print("Keys for both networks generated and saved successfully.")
 
+
     def public_key(self, network: str) -> str:
         """
         Retrieve the public key for a specified network and return it in a serialized and hashed format.

@@ -41,7 +41,11 @@ class PaymentTypeManager:
 
     def get_transaction_type(self, tx_id: str) -> TransactionType:
         """Determine transaction type based on ID prefix"""
+        if not tx_id:  # ✅ Ensure tx_id is valid
+            return TransactionType.STANDARD  
+
         for tx_type, config in self.TYPE_CONFIG.items():
             if any(tx_id.startswith(prefix) for prefix in config["prefixes"]):
                 return tx_type
+
         return TransactionType.STANDARD
