@@ -13,15 +13,15 @@ from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
 from Zyiron_Chain.blockchain.helper  import get_block
-
+from typing import Optional
 
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 import importlib
 from Zyiron_Chain.blockchain.block_manager import BlockManager
+from Zyiron_Chain.transactions.txout import TransactionOut
 
-
-
+import sqlite3
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from datetime import datetime
 from Zyiron_Chain.transactions.transactiontype import TransactionType
@@ -81,6 +81,10 @@ class PoC:
 
         # ✅ Set Default Mempool Reference
         self.mempool = self.standard_mempool  # Default to standard mempool
+
+        # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
+        self._cache = {}  # 🚀 This prevents `AttributeError`
+
 
     ### --------------------- Anti Farm Logic -------------------------------###
 
@@ -193,11 +197,9 @@ class PoC:
 
 
 
-
-
     def store_utxo(self, utxo_id, utxo_data):
         """
-        Store a UTXO in SQLite via PoC.
+        Store a UTXO in SQLite via PoC, ensuring type safety and handling missing fields.
         """
         try:
             if not isinstance(utxo_data, dict):
@@ -208,17 +210,30 @@ class PoC:
                 if key not in utxo_data:
                     raise KeyError(f"[ERROR] Missing required UTXO field: {key}")
 
-            # ✅ Route UTXO storage to SQLite
+            # ✅ Convert types to ensure SQLite compatibility
+            tx_out_id = str(utxo_data["tx_out_id"])
+            amount = float(utxo_data["amount"])  # ✅ Convert Decimal to float
+            script_pub_key = str(utxo_data["script_pub_key"])
+            locked = int(bool(utxo_data.get("locked", False)))  # ✅ Convert boolean to int (0 or 1)
+            block_index = int(utxo_data.get("block_index", 0))  # ✅ Ensure block index is an integer
+
+            # ✅ Prevent storing duplicate UTXOs
+            existing_utxo = self.sqlite_db.get_utxo(tx_out_id)
+            if existing_utxo:
+                logging.warning(f"[WARNING] Skipping duplicate UTXO insertion: {tx_out_id}")
+                return
+
+            # ✅ Store UTXO in SQLite
             self.sqlite_db.insert_utxo(
-                utxo_id=utxo_data["tx_out_id"],
-                tx_out_id=utxo_data["tx_out_id"],
-                amount=utxo_data["amount"],
-                script_pub_key=utxo_data["script_pub_key"],
-                locked=utxo_data.get("locked", False),  # Default to False
-                block_index=utxo_data.get("block_index", 0)  # Default index 0
+                utxo_id=utxo_id,
+                tx_out_id=tx_out_id,
+                amount=amount,
+                script_pub_key=script_pub_key,
+                locked=locked,
+                block_index=block_index
             )
 
-            logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
+            logging.info(f"[INFO] UTXO {utxo_id} successfully stored in SQLite.")
 
         except (KeyError, TypeError, ValueError) as e:
             logging.error(f"[ERROR] Failed to store UTXO {utxo_id}: {e}")
@@ -318,12 +333,28 @@ class PoC:
             return None
     
     
-    
-    def get_utxo(self, tx_out_id):
+        
+    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
+        """Retrieve UTXO from SQLite, ensuring correct row conversion and caching."""
+        
+        if tx_out_id in self._cache:
+            return TransactionOut.from_dict(dict(self._cache[tx_out_id]))  # ✅ Convert cached UTXO to dict
 
-        """Retrieve a UTXO from the SQLite database."""
-        return self.sqlite_db.fetch_utxo(tx_out_id)  # ✅ Use correct method
-                    
+        utxo_data = self.sqlite_db.get_utxo(tx_out_id)  # ✅ Corrected method call
+
+        if utxo_data:
+            try:
+                # ✅ Convert sqlite3.Row to a dictionary if necessary
+                utxo_dict = dict(utxo_data) if isinstance(utxo_data, sqlite3.Row) else utxo_data
+                self._cache[tx_out_id] = utxo_dict  # ✅ Cache the converted UTXO
+                return TransactionOut.from_dict(utxo_dict)  # ✅ Ensure proper format
+            except Exception as e:
+                logging.error(f"[ERROR] Failed to convert UTXO {tx_out_id}: {e}")
+                return None
+
+        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in SQLite.")
+        return None  # ✅ Explicitly return None if not found
+
 
     def validate_block(self, block):
         """

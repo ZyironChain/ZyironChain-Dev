@@ -5,25 +5,30 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 import sqlite3
 import json
 from datetime import datetime
-
+from typing import Optional
+from decimal import Decimal
 import sqlite3
 import json
 from datetime import datetime
 import logging
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, TransactionIn, TransactionOut, CoinbaseTx
+from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionIn, TransactionOut, CoinbaseTx
+def get_transaction():
+    """Lazy import Transaction to break circular dependencies."""
+    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    return Transaction
 
 class SQLiteDB:
     def __init__(self, db_path="sqlite.db"):
-        self.connection = sqlite3.connect(db_path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row  # Return rows as dictionaries
+        self.connection = sqlite3.connect(db_path, check_same_thread=False)  # ✅ Ensure connection
+        self.connection.row_factory = sqlite3.Row  # ✅ Enables fetching rows as dictionaries
         self.cursor = self.connection.cursor()
-        self.create_utxos_table()  # Ensure the UTXOs table exists
-        self.create_transactions_table()  # Ensure the Transactions table exists
+
+        # ✅ Ensure UTXO and Transactions tables exist
+        self.create_utxos_table()
+        self.create_transactions_table()
 
     def create_utxos_table(self):
-        """
-        Create the UTXOs table if it does not exist.
-        """
+        """Create the UTXOs table if it does not exist."""
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS utxos (
             utxo_id TEXT PRIMARY KEY,
@@ -37,9 +42,7 @@ class SQLiteDB:
         self.connection.commit()
 
     def create_transactions_table(self):
-        """
-        Create the Transactions table if it does not exist.
-        """
+        """Create the Transactions table if it does not exist."""
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             tx_id TEXT PRIMARY KEY,
@@ -52,22 +55,26 @@ class SQLiteDB:
         self.connection.commit()
 
     def begin_transaction(self):
-        """
-        Start a new transaction.
-        """
-        self.connection.execute("BEGIN TRANSACTION;")
+        """Start a new database transaction."""
+        if self.connection:  # ✅ Ensure connection exists before executing
+            self.connection.execute("BEGIN TRANSACTION;")
+        else:
+            logging.error("[ERROR] SQLite connection is not initialized.")
+
 
     def commit(self):
-        """
-        Commit the active transaction.
-        """
-        self.connection.commit()
+        """Commit the active transaction."""
+        if self.connection:
+            self.connection.commit()
+        else:
+            logging.error("[ERROR] SQLite connection is not initialized.")
 
     def rollback(self):
-        """
-        Rollback the last transaction in case of failure.
-        """
-        self.connection.rollback()
+        """Rollback the last transaction in case of failure."""
+        if self.connection:
+            self.connection.rollback()
+        else:
+            logging.error("[ERROR] SQLite connection is not initialized.")
 
     def insert_utxo(self, utxo_id, tx_out_id, amount, script_pub_key, block_index, locked=False):
         """
@@ -75,14 +82,24 @@ class SQLiteDB:
         Ensures that `amount` is stored as a float instead of `Decimal`.
         """
         try:
+            amount = float(amount)  # ✅ Convert to float
+            locked = int(locked)  # ✅ Ensure boolean values are stored as integers
+            block_index = int(block_index)  # ✅ Ensure block index is stored as integer
+
             self.cursor.execute("""
-            INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """, (utxo_id, tx_out_id, float(amount), script_pub_key, locked, block_index))  # ✅ Convert amount to float
-            self.connection.commit()
-            logging.info(f"[INFO] UTXO {utxo_id} added successfully with {float(amount)} ZYC.")
-        except sqlite3.Error as e:
+                INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
+
+            self.connection.commit()  # ✅ Fix: Use `self.connection`
+            logging.info(f"[INFO] UTXO {utxo_id} stored successfully.")
+
+        except sqlite3.IntegrityError as e:
             logging.error(f"[ERROR] Failed to insert UTXO {utxo_id}: {e}")
+
+        except Exception as e:
+            logging.error(f"[ERROR] Unexpected error while inserting UTXO {utxo_id}: {e}")
+
 
 
     def update_utxo_lock(self, utxo_id, locked):
@@ -94,26 +111,30 @@ class SQLiteDB:
         """, (locked, utxo_id))
         self.connection.commit()
 
-    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
-        """Retrieve UTXO from cache or PoC, ensuring SQLite row conversion."""
-        
-        if tx_out_id in self._cache:
-            return TransactionOut.from_dict(dict(self._cache[tx_out_id]))  # ✅ Convert cached UTXO to dict
-
-        utxo_data = self.poc.get_utxo(tx_out_id)
-        
-        if utxo_data:
-            try:
-                # ✅ Convert sqlite3.Row to a dictionary before passing it
-                utxo_dict = dict(utxo_data) if isinstance(utxo_data, sqlite3.Row) else utxo_data
-                self._cache[tx_out_id] = utxo_dict  # ✅ Cache the converted UTXO
-                return TransactionOut.from_dict(utxo_dict)  # ✅ Ensure proper format
-            except Exception as e:
-                logging.error(f"[ERROR] Failed to convert UTXO {tx_out_id}: {e}")
+    def get_utxo(self, tx_out_id):
+        """Retrieve UTXO from SQLite database."""
+        try:
+            self.cursor.execute("SELECT * FROM utxos WHERE tx_out_id = ?", (tx_out_id,))
+            utxo = self.cursor.fetchone()
+            if utxo:
+                return {
+                    "utxo_id": utxo["utxo_id"],
+                    "tx_out_id": utxo["tx_out_id"],
+                    "amount": Decimal(utxo["amount"]),  # ✅ Convert to Decimal
+                    "script_pub_key": utxo["script_pub_key"],
+                    "locked": bool(utxo["locked"]),  # ✅ Convert to boolean
+                    "block_index": int(utxo["block_index"])
+                }
+            else:
+                logging.warning(f"[WARNING] UTXO {tx_out_id} not found in SQLite.")
                 return None
 
-        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC.")
-        return None  # ✅ Explicitly return None if not found
+        except sqlite3.Error as e:
+            logging.error(f"[ERROR] SQLite failed to fetch UTXO {tx_out_id}: {e}")
+            return None
+
+
+
 
 
 
@@ -127,16 +148,42 @@ class SQLiteDB:
         """, (utxo_id,))
         self.connection.commit()
 
-    def insert_transaction(self, tx_id, inputs, outputs, status="pending"):
+    def insert_utxo(self, utxo_id, tx_out_id, amount, script_pub_key, block_index, locked=False):
         """
-        Insert a new transaction into the database.
+        Insert a new UTXO into the database while preventing duplicate entries.
+        Ensures Decimal values are converted to float and boolean values are stored as integers.
         """
-        timestamp = datetime.now().isoformat()
-        self.cursor.execute("""
-        INSERT INTO transactions (tx_id, inputs, outputs, timestamp, status)
-        VALUES (?, ?, ?, ?, ?)
-        """, (tx_id, json.dumps(inputs), json.dumps(outputs), timestamp, status))
-        self.connection.commit()
+        try:
+            # ✅ Ensure Decimal values are converted to float
+            amount = float(amount)
+
+            # ✅ Ensure 'locked' is stored as an integer (0 or 1)
+            locked = int(locked)
+
+            # ✅ Ensure 'block_index' is an integer
+            block_index = int(block_index)
+
+            # ✅ Check if UTXO already exists to prevent duplicate insertion
+            self.cursor.execute("SELECT 1 FROM utxos WHERE utxo_id = ?", (utxo_id,))
+            if self.cursor.fetchone():
+                logging.warning(f"[WARNING] Skipping duplicate UTXO insertion: {utxo_id}")
+                return  # ✅ Prevent duplicate insertion
+
+            # ✅ Proceed with insertion if UTXO does not exist
+            self.cursor.execute("""
+                INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
+            
+            self.conn.commit()
+            logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
+        
+        except sqlite3.IntegrityError as e:
+            logging.error(f"[ERROR] Failed to insert UTXO {utxo_id}: {e}")
+        
+        except Exception as e:
+            logging.error(f"[ERROR] Unexpected error while inserting UTXO {utxo_id}: {e}")
+
 
     def update_transaction_status(self, tx_id, status):
         """

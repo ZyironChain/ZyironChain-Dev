@@ -2,35 +2,30 @@ from tinydb import TinyDB, Query
 from datetime import datetime
 
 
+from tinydb import TinyDB, Query
+from datetime import datetime
+
+from tinydb import TinyDB, Query
+from datetime import datetime
 
 class TinyDBManager:
     def __init__(self, db_path="tinydb.json"):
-        self.db = TinyDB(db_path)
-        # Initialize tables
+        """Initialize TinyDB and create tables"""
+        self.db = TinyDB(db_path)  # ✅ Keep database open
         self.node_table = self.db.table("node_configurations")
         self.session_table = self.db.table("session_data")
         self.peer_table = self.db.table("peers")
 
     def get_all_peers(self):
-        """
-        Fetch all peers from the TinyDB 'peers' table.
-        """
+        """Fetch all peers from the TinyDB 'peers' table."""
         return self.peer_table.all()
 
-
-
     def add_peer(self, peer_address, port):
-        """
-        Add a peer to the TinyDB 'peers' table.
-        """
+        """Add a peer to the TinyDB 'peers' table."""
         self.peer_table.insert({"peer_address": peer_address, "port": port})
 
-
-
     def add_node_configuration(self, node_id, peer_address, port, network, role):
-        """
-        Add a new node configuration to the database.
-        """
+        """Add a new node configuration."""
         self.node_table.insert({
             "node_id": node_id,
             "peer_address": peer_address,
@@ -40,36 +35,26 @@ class TinyDBManager:
         })
 
     def update_node_configuration(self, node_id, updates):
-        """
-        Update a node configuration by node_id.
-        """
+        """Update a node configuration by node_id."""
         query = Query()
         self.node_table.update(updates, query.node_id == node_id)
 
     def fetch_node_configuration(self, node_id):
-        """
-        Fetch a node configuration by node_id.
-        """
+        """Fetch a node configuration by node_id."""
         query = Query()
         return self.node_table.search(query.node_id == node_id)
 
     def delete_node_configuration(self, node_id):
-        """
-        Delete a node configuration by node_id.
-        """
+        """Delete a node configuration by node_id."""
         query = Query()
         self.node_table.remove(query.node_id == node_id)
 
     def fetch_all_nodes(self):
-        """
-        Fetch all node configurations.
-        """
+        """Fetch all node configurations."""
         return self.node_table.all()
 
     def add_session_data(self, session_id, node_id, last_activity, active_connections):
-        """
-        Add session data to the database.
-        """
+        """Add session data."""
         self.session_table.insert({
             "session_id": session_id,
             "node_id": node_id,
@@ -78,43 +63,32 @@ class TinyDBManager:
         })
 
     def update_session_data(self, session_id, updates):
-        """
-        Update session data by session_id.
-        """
+        """Update session data by session_id."""
         query = Query()
         self.session_table.update(updates, query.session_id == session_id)
 
     def fetch_session_data(self, session_id):
-        """
-        Fetch session data by session_id.
-        """
+        """Fetch session data by session_id."""
         query = Query()
         return self.session_table.search(query.session_id == session_id)
 
     def delete_session_data(self, session_id):
-        """
-        Delete session data by session_id.
-        """
+        """Delete session data by session_id."""
         query = Query()
         self.session_table.remove(query.session_id == session_id)
 
     def fetch_all_sessions(self):
-        """
-        Fetch all session data.
-        """
+        """Fetch all session data."""
         return self.session_table.all()
 
     def clear_all_data(self):
-        """
-        Clear all tables in the database.
-        """
+        """Clear all tables."""
         self.node_table.truncate()
         self.session_table.truncate()
+        self.peer_table.truncate()
 
     def close(self):
-        """
-        Close the TinyDB database.
-        """
+        """Close the TinyDB database."""
         self.db.close()
 
 

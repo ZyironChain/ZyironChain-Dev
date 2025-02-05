@@ -16,9 +16,10 @@ class TransactionType(Enum):
 
 class PaymentTypeManager:
     """Manages transaction type configurations"""
+    
     TYPE_CONFIG = {
         TransactionType.STANDARD: {
-            "prefixes": [],
+            "prefixes": [],  # ✅ No prefixes for standard transactions
             "confirmations": 8,
             "description": "Standard peer-to-peer transactions"
         },
@@ -34,18 +35,18 @@ class PaymentTypeManager:
         },
         TransactionType.COINBASE: {
             "prefixes": ["COINBASE-"],
-            "confirmations": 12,  # Coinbase transactions require 12 confirmations
+            "confirmations": 12,
             "description": "Block reward transactions"
         }
     }
 
     def get_transaction_type(self, tx_id: str) -> TransactionType:
         """Determine transaction type based on ID prefix"""
-        if not tx_id:  # ✅ Ensure tx_id is valid
-            return TransactionType.STANDARD  
+        if not tx_id:  
+            return TransactionType.STANDARD  # ✅ Default to STANDARD
 
         for tx_type, config in self.TYPE_CONFIG.items():
             if any(tx_id.startswith(prefix) for prefix in config["prefixes"]):
                 return tx_type
-
-        return TransactionType.STANDARD
+        
+        return TransactionType.STANDARD  # ✅ If no match, it's a standard transaction

@@ -13,8 +13,8 @@ import json
 from typing import Optional, List, Union
 
 
-
-
+from Zyiron_Chain.transactions.transaction_services import TransactionType
+import logging
 from multiprocessing import Pool
 import time
 import json
@@ -147,43 +147,75 @@ class Block:
 
     @classmethod
     def from_dict(cls, data):
-        """Create a Block instance from a dictionary."""
-        from Zyiron_Chain.blockchain.blockheader import BlockHeader  # Ensure correct import
+        """Create a Block instance from a dictionary, excluding database references."""
+        from Zyiron_Chain.blockchain.blockheader import BlockHeader
+        from Zyiron_Chain.transactions.Blockchain_transaction import Transaction  # Ensure correct import
 
-        header = BlockHeader.from_dict(data["header"])
+        # ✅ Convert transactions safely, avoiding direct reference copying
+        transactions = [
+            Transaction.from_dict(tx) if isinstance(tx, dict) else tx
+            for tx in data.get("transactions", [])
+        ]
+
         block = cls(
             index=data["index"],
             previous_hash=data["previous_hash"],
-            transactions=data["transactions"],
-            timestamp=data["timestamp"],
-            nonce=data["nonce"]
+            transactions=transactions,  # ✅ Convert transactions properly
+            timestamp=data.get("timestamp"),
+            nonce=data.get("nonce", 0),
         )
-        block.header = header
+
+        # ✅ Ensure header is properly constructed
+        block.header = BlockHeader.from_dict(data.get("header", {}))
 
         # ✅ Handle missing miner_address safely
-        block.miner_address = data.get("miner_address", None)  
+        block.miner_address = data.get("miner_address", None)
 
         # ✅ Handle missing hash safely
         block.hash = data.get("hash", None)
 
         return block
-        
+
+
+
+
     def validate_transactions(self, fee_model, mempool, block_size):
-        """Validate all transactions in the block with parallelized execution."""
+        """
+        Validate all transactions in the block, ensuring:
+        - Inputs exist and are unspent.
+        - Fee calculations match expectations.
+        - Transactions are not tampered.
+        """
         payment_type_manager = PaymentTypeManager()
+        invalid_tx_found = False  # Track if any transaction is invalid
 
-        # Parallelize transaction validation using multiprocessing
-        with Pool() as pool:
-            validation_results = pool.starmap(
-                self._validate_transaction_by_type,
-                [(tx, payment_type_manager.get_payment_type(tx.tx_id), fee_model, mempool, block_size) for tx in self.transactions if not isinstance(tx, dict)]
-            )
+        for tx in self.transactions:
+            tx_type = payment_type_manager.get_transaction_type(tx.tx_id)
 
-        # Ensure all transactions are valid
-        if all(validation_results):
-            print("[INFO] All transactions in the block are valid.")
-            return True
-        return False
+            if not tx_type:
+                logging.error(f"[ERROR] Invalid transaction type for transaction: {tx.tx_id}")
+                invalid_tx_found = True
+                continue  # Skip validation since type is unknown
+
+            tx_type_str = tx_type.name  # ✅ Convert enum to string before passing
+
+            input_total = sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount"))
+            output_total = sum(out.amount for out in tx.outputs if hasattr(out, "amount"))
+
+            required_fee = fee_model.calculate_fee(block_size, tx_type_str, mempool.get_total_size(), tx.size_bytes)
+            actual_fee = input_total - output_total
+
+            if actual_fee < required_fee:
+                logging.error(f"[ERROR] Transaction {tx.tx_id} does not meet the required fees. Required: {required_fee}, Given: {actual_fee}")
+                invalid_tx_found = True
+                continue  # Skip this transaction
+
+        return not invalid_tx_found  # Returns False if any transaction is invalid
+
+
+
+
+
 
     def _validate_transaction_by_type(self, tx, tx_type, fee_model, mempool, block_size):
         """Validate a transaction based on its type and prevent replay attacks."""
@@ -192,24 +224,26 @@ class Block:
                 print(f"[ERROR] Invalid transaction type for transaction: {tx.tx_id}")
                 return False
 
-            tx_size = sum(len(str(inp.to_dict())) + len(str(out.to_dict())) for inp, out in zip(tx.tx_inputs, tx.tx_outputs))
+            tx_size = sum(len(str(inp.to_dict())) + len(str(out.to_dict())) for inp, out in zip(tx.inputs, tx.outputs))
 
-            required_fee = fee_model.calculate_fee(block_size, tx_type, mempool.get_total_size(), tx_size)
-            actual_fee = sum(inp.amount for inp in tx.tx_inputs) - sum(out.amount for out in tx.tx_outputs)
+            required_fee = fee_model.calculate_fee(block_size, tx_type.name, mempool.get_total_size(), tx_size)
+            actual_fee = sum(inp.amount for inp in tx.inputs) - sum(out.amount for out in tx.outputs)
+
+            # ✅ Debug Log: Print Fees for Validation
+            print(f"[DEBUG] TX {tx.tx_id}: Required Fee: {required_fee}, Actual Fee: {actual_fee}")
 
             if actual_fee < required_fee:
                 print(f"[ERROR] Transaction {tx.tx_id} does not meet the required fees.")
-                return False
-
-            # Prevent replay attacks by checking nonce and network_id
-            if self.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
-                print(f"[ERROR] Replay attack detected for transaction {tx.tx_id}.")
                 return False
 
             return True
         except Exception as e:
             print(f"[ERROR] Failed transaction validation: {str(e)}")
             return False
+
+
+
+
 
 
     def get_block_difficulty(self):

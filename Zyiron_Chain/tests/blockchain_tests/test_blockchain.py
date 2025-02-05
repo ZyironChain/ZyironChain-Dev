@@ -36,7 +36,7 @@ from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool
 from Zyiron_Chain.transactions.fees import FundsAllocator
 import logging
-
+import copy  # ✅ Import copy module at the top
 logging.basicConfig(level=logging.INFO)
 
 class BlockchainTestSuite(unittest.TestCase):
@@ -85,13 +85,23 @@ class BlockchainTestSuite(unittest.TestCase):
         self.standard_mempool = StandardMempool()
         self.smart_mempool = SmartMempool()
 
+
+
     def test_01_block_validation(self):
+        """
+        Ensure that a valid block passes validation, but a tampered one fails.
+        """
         valid_block = self.create_valid_block()
         self.assertTrue(valid_block.validate_transactions(self.fee_model, self.standard_mempool, 1))
-        
-        tampered_block = valid_block.copy()
-        tampered_block.transactions[0].outputs[0].amount += 1
-        self.assertFalse(tampered_block.validate_transactions(self.fee_model, self.standard_mempool, 1))
+
+        # ✅ Tamper with the block
+        tampered_block = copy.deepcopy(valid_block)
+        tampered_block.transactions[0].outputs[0].amount += Decimal("1.0")  # Modify output amount
+
+        # ✅ Ensure that the tampered transaction is detected as invalid
+        self.assertFalse(tampered_block.validate_transactions(self.fee_model, self.standard_mempool, 1),
+                        "[ERROR] Tampered transaction should have failed validation!")
+
 
     def test_02_transaction_lifecycle(self):
         tx = self.create_valid_transaction()
@@ -128,13 +138,33 @@ class BlockchainTestSuite(unittest.TestCase):
         self.assertAlmostEqual(self.poc.block_manager.difficulty_target, expected_difficulty, delta=1)
 
     def create_valid_block(self):
+        """Create a valid block with at least one valid transaction."""
         last_block = self.poc.get_last_block()
+
+        # ✅ Ensure a UTXO exists before creating a transaction
+        test_utxo = {
+            "tx_out_id": "UTXO-1",
+            "amount": Decimal("10.0"),
+            "script_pub_key": "test-address"
+        }
+        self.poc.store_utxo("UTXO-1", test_utxo)  # ✅ Store a dummy UTXO for testing
+
+        # ✅ Create a valid transaction
+        sample_transaction = Transaction(
+            tx_id="TX-VALID-1",
+            inputs=[TransactionIn(tx_out_id="UTXO-1", script_sig="TEST-SIG")],  # ✅ Use a valid UTXO
+            outputs=[TransactionOut(script_pub_key="test-address", amount=Decimal("9.5"))],  # ✅ Valid output
+        )
+
+        # ✅ Create block with valid transactions
         return Block(
             index=last_block.index + 1,
             previous_hash=last_block.hash,
-            transactions=[],
+            transactions=[sample_transaction],  # ✅ Include valid transaction
             timestamp=int(time.time())
         )
+
+
     
     def create_valid_transaction(self, tx_id="TX-TEST"):
         return Transaction(

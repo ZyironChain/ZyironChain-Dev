@@ -20,16 +20,21 @@ from decimal import Decimal
 import hashlib
 logging.basicConfig(level=logging.INFO)
 
+import hashlib
+from decimal import Decimal
+from typing import Dict
+
 class TransactionOut:
     """Represents a transaction output (UTXO)"""
-    def __init__(self, script_pub_key: str, amount: float, locked: bool = False):
+
+    def __init__(self, script_pub_key: str, amount: Decimal, locked: bool = False):
         if not isinstance(amount, (int, float, Decimal)):
             raise ValueError("[ERROR] Amount must be a valid number.")
-        
-        self.script_pub_key = script_pub_key
-        self.amount = float(amount)
-        self.locked = locked
-        self.tx_out_id = self._calculate_tx_out_id()
+
+        self.script_pub_key = script_pub_key  # ✅ Address receiving funds
+        self.amount = Decimal(amount)  # ✅ Store as Decimal for precision
+        self.locked = locked  # ✅ If funds are locked (e.g., HTLCs)
+        self.tx_out_id = self._calculate_tx_out_id()  # ✅ Unique UTXO ID
 
     def _calculate_tx_out_id(self) -> str:
         """Generate SHA3-384 hash for UTXO identification"""
@@ -37,17 +42,22 @@ class TransactionOut:
         return hashlib.sha3_384(data).hexdigest()
 
     def to_dict(self) -> Dict:
+        """Serialize TransactionOut to a dictionary"""
         return {
             "script_pub_key": self.script_pub_key,
-            "amount": self.amount,
+            "amount": float(self.amount),  # ✅ Convert Decimal to float for serialization
             "locked": self.locked,
             "tx_out_id": self.tx_out_id
         }
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data):
+        """Create a TransactionOut instance from a dictionary or return an existing object."""
+        if isinstance(data, cls):  # ✅ If already an object, return it directly
+            return data  
+
         return cls(
-            script_pub_key=data["script_pub_key"],
-            amount=data["amount"],
-            locked=data.get("locked", False)
+            script_pub_key=data.get("script_pub_key", ""),  # ✅ Provide default value
+            amount=Decimal(data.get("amount", 0)),  # ✅ Convert amount safely
+            locked=data.get("locked", False)  # ✅ Default to False if missing
         )
