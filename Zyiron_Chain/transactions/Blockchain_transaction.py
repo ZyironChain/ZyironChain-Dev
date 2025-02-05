@@ -12,10 +12,18 @@ from typing import List, Dict
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
-from Zyiron_Chain.blockchain.helper import get_poc
 
-PoC = get_poc()  # ✅ Dynamically load PoC before using it
 
+def get_poc():
+    """Lazy import PoC to break circular dependencies."""
+    from Zyiron_Chain.database.poc import PoC
+    return PoC
+
+
+def get_transaction():
+    """Lazy import Transaction to break circular dependencies."""
+    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    return Transaction
 
 def get_poc_instance():
     """Dynamically import PoC only when needed to prevent circular imports."""
@@ -42,10 +50,6 @@ import time
 from decimal import Decimal
 from typing import List, Dict
 from Zyiron_Chain.transactions.transactiontype import TransactionType, PaymentTypeManager
-def sha3_384_hash(data: str) -> str:
-    """Universal SHA3-384 hashing function"""
-    return hashlib.sha3_384(data.encode()).hexdigest()
-
 def sha3_384_hash(data: str) -> str:
     """Universal SHA3-384 hashing function"""
     return hashlib.sha3_384(data.encode()).hexdigest()
@@ -97,7 +101,7 @@ class Transaction:
             self.type = PaymentTypeManager().get_transaction_type(tx_id)
             self.tx_id = tx_id if tx_id else self._generate_tx_id()
             self.hash = self.calculate_hash()
-            self.poc = poc  # ✅ PoC is now optional
+            self.poc = get_poc() 
             self.size_bytes = self._calculate_size()
             self.fee = self._calculate_fee()  # ✅ Ensure fee is calculated after all attributes are set
 
@@ -108,15 +112,32 @@ class Transaction:
         return UTXOManager(PoC())  # ✅ Provide a valid default instance
 
     @classmethod
-    def from_dict(cls, data: Dict, poc: PoC = None):
-        """Create a Transaction instance from a dictionary."""
+    def from_dict(cls, data: Dict) -> "Transaction":
+        """
+        Create a Transaction instance from a dictionary.
+        :param data: Dictionary containing transaction data.
+        :return: A Transaction instance.
+        """
+        if not isinstance(data, dict):
+            raise TypeError("[ERROR] Input data must be a dictionary.")
+
+        # ✅ Ensure all inputs are converted from dictionaries properly
+        inputs = [
+            TransactionIn.from_dict(inp) if isinstance(inp, dict) else inp
+            for inp in data.get("inputs", [])
+        ]
+
+        # ✅ Ensure all outputs are converted from dictionaries properly
+        outputs = [
+            TransactionOut.from_dict(out) if isinstance(out, dict) else out
+            for out in data.get("outputs", [])
+        ]
+
         return cls(
             tx_id=data.get("tx_id", ""),
-            inputs=[TransactionIn.from_dict(inp) for inp in data["inputs"]],
-            outputs=[TransactionOut.from_dict(out) for out in data["outputs"]],
-            poc=poc
+            inputs=inputs,
+            outputs=outputs
         )
-
 
     def _ensure_inputs(self, inputs):
         """Ensure all inputs have required fields and convert to dictionaries."""
@@ -150,11 +171,12 @@ class Transaction:
 
     def _calculate_fee(self) -> Decimal:
         """Calculate transaction fee as input_total - output_total."""
+        
         input_total = sum(
-            Decimal(utxo["amount"]) if (utxo := self.utxo_manager.get_utxo(inp.tx_out_id)) else Decimal(0)
+            Decimal(utxo.amount) if (utxo := self.utxo_manager.get_utxo(inp.tx_out_id)) else Decimal(0)
             for inp in self.inputs
         )
-        
+
         output_total = sum(
             Decimal(out.amount) if isinstance(out, TransactionOut) else Decimal(out.get("amount", 0))
             for out in self.outputs
@@ -229,15 +251,44 @@ class Transaction:
 
 class TransactionFactory:
     """Factory for creating transactions"""
+
     @staticmethod
-    def create_transaction(tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict], poc: PoC) -> Transaction:
-        """Create a new transaction of the specified type"""
-        prefix = PaymentTypeManager().TYPE_CONFIG[tx_type]["prefixes"][0] if tx_type != TransactionType.STANDARD else ""
+    def create_transaction(tx_type: "TransactionType", inputs: List[Dict], outputs: List[Dict], poc=None) -> "Transaction":
+        """
+        Create a new transaction of the specified type.
+
+        :param tx_type: Type of the transaction (e.g., Standard, Smart, Instant).
+        :param inputs: List of transaction inputs (UTXOs).
+        :param outputs: List of transaction outputs (Recipients, Amounts).
+        :param poc: (Optional) PoC instance for transaction verification and routing.
+        :return: Transaction instance.
+        """
+
+        def get_poc():
+            """Lazy import PoC to break circular dependencies."""
+            from Zyiron_Chain.database.poc import PoC
+            return PoC()
+
+        if poc is None:
+            poc = get_poc()  # ✅ Load PoC dynamically to prevent import errors
+
+        # ✅ Ensure `tx_type` is valid
+        payment_manager = PaymentTypeManager()
+        if tx_type not in payment_manager.TYPE_CONFIG:
+            raise ValueError(f"[ERROR] Invalid transaction type: {tx_type}")
+
+        prefix = payment_manager.TYPE_CONFIG[tx_type]["prefixes"][0] if tx_type != TransactionType.STANDARD else ""
+
+        # ✅ Generate a unique transaction ID using SHA3-384 hashing
         base_data = f"{prefix}{','.join(str(i['amount']) for i in inputs)}"
         tx_id = hashlib.sha3_384(f"{base_data}{str(time.time())}".encode()).hexdigest()[:64]
-        return Transaction(inputs=inputs, outputs=outputs, tx_id=tx_id, poc=poc)
 
-
+        return Transaction(
+            inputs=[TransactionIn.from_dict(inp) for inp in inputs],
+            outputs=[TransactionOut.from_dict(out) for out in outputs],
+            tx_id=tx_id,
+            poc=poc
+        )
 
 
 
@@ -246,20 +297,45 @@ class TransactionIn:
     """
     Represents a transaction input, referencing a previous UTXO.
     """
+
     def __init__(self, tx_out_id: str, script_sig: str):
+        """
+        Initialize a Transaction Input.
+        :param tx_out_id: The UTXO being referenced.
+        :param script_sig: The unlocking script (signature).
+        """
+        if not isinstance(tx_out_id, str) or not tx_out_id:
+            raise ValueError("[ERROR] tx_out_id must be a valid string.")
+        if not isinstance(script_sig, str) or not script_sig:
+            raise ValueError("[ERROR] script_sig must be a valid string.")
+
         self.tx_out_id = tx_out_id
         self.script_sig = script_sig
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, str]:
+        """
+        Convert the Transaction Input to a dictionary format.
+        :return: Dictionary representation of the transaction input.
+        """
         return {
             "tx_out_id": self.tx_out_id,
             "script_sig": self.script_sig
         }
-    
+
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: Dict) -> "TransactionIn":
+        """
+        Create a TransactionIn instance from a dictionary.
+        :param data: Dictionary containing transaction input data.
+        :return: A TransactionIn instance.
+        """
+        if not isinstance(data, dict):
+            raise TypeError("[ERROR] Input data must be a dictionary.")
+
+        if "tx_out_id" not in data or "script_sig" not in data:
+            raise KeyError("[ERROR] Missing required fields: 'tx_out_id' or 'script_sig'.")
+
         return cls(
             tx_out_id=data["tx_out_id"],
             script_sig=data["script_sig"]
         )
-

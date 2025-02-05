@@ -25,17 +25,24 @@ class UTXOManager:
         logging.info(f"Registered UTXO: {tx_out.tx_out_id}")
 
     def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
-        """Retrieve UTXO from cache or PoC"""
+        """Retrieve UTXO from cache, PoC, or directly from SQLite"""
         if tx_out_id in self._cache:
             return TransactionOut.from_dict(self._cache[tx_out_id])
 
+        # Fetch from PoC
         utxo_data = self.poc.get_utxo(tx_out_id)
-        if utxo_data:
-            self._cache[tx_out_id] = utxo_data
-            return TransactionOut.from_dict(utxo_data)
 
-        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC.")
-        return None  # ✅ Explicitly return None if not found
+        # If not found in PoC, try SQLite directly
+        if not utxo_data:
+            utxo_data = self.poc.sqlite_db.get_utxo(tx_out_id)  # ✅ Ensure SQLite is queried directly
+            if not utxo_data:
+                logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC or SQLite.")
+                return None  # ✅ Explicitly return None if not found
+
+        # Cache the retrieved UTXO and return
+        self._cache[tx_out_id] = utxo_data
+        return TransactionOut.from_dict(utxo_data)
+
 
 
     def update_from_block(self, block: Dict):
@@ -58,9 +65,16 @@ class UTXOManager:
                 self.consume_utxo(tx_input["tx_out_id"])
 
     def consume_utxo(self, tx_out_id: str):
-        """Mark UTXO as spent and remove from system"""
+        """Mark UTXO as spent and remove from system ONLY if it exists"""
+        utxo = self.get_utxo(tx_out_id)
+        if not utxo:
+            logging.warning(f"[WARNING] Attempted to consume non-existent UTXO {tx_out_id}")
+            return  # ✅ Prevent removing an already non-existent UTXO
+
+        # ✅ Remove from cache and PoC
         if tx_out_id in self._cache:
             del self._cache[tx_out_id]
+
         self.poc.delete_utxo(tx_out_id)
         logging.info(f"Consumed UTXO: {tx_out_id}")
 
@@ -79,10 +93,21 @@ class UTXOManager:
             logging.info(f"Unlocked UTXO: {tx_out_id}")
 
     def validate_utxo(self, tx_out_id: str, amount: Decimal) -> bool:
-        """Validate UTXO for transaction spending"""
+        """Validate UTXO for transaction spending while ensuring no negative fee calculation"""
         utxo = self.get_utxo(tx_out_id)
-        return (
-            utxo is not None and
-            not utxo.locked and
-            Decimal(str(utxo.amount)) >= amount
-        )
+
+        # ✅ Ensure UTXO exists, is unlocked, and has enough balance
+        if utxo is None:
+            logging.error(f"[ERROR] UTXO {tx_out_id} does not exist.")
+            return False
+
+        if utxo.locked:
+            logging.error(f"[ERROR] UTXO {tx_out_id} is locked.")
+            return False
+
+        # ✅ Ensure amount is never greater than UTXO balance
+        if Decimal(str(utxo.amount)) < amount:
+            logging.error(f"[ERROR] UTXO {tx_out_id} has insufficient balance. Required: {amount}, Available: {utxo.amount}")
+            return False
+
+        return True
