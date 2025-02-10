@@ -160,7 +160,8 @@ class Miner:
         # Select transactions
         transactions = self.transaction_manager.select_transactions_for_block()
         total_fees = sum(
-            sum(inp.amount for inp in tx.tx_inputs) - sum(out.amount for out in tx.tx_outputs)
+            sum(inp.amount for inp in tx.inputs) - sum(out.amount for out in tx.outputs)
+
             for tx in transactions
         )
 

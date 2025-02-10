@@ -14,12 +14,15 @@ from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
 from Zyiron_Chain.blockchain.helper  import get_block
 from typing import Optional
+from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 import importlib
 from Zyiron_Chain.blockchain.block_manager import BlockManager
 from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.offchain.dispute import DisputeResolutionContract
 
 import sqlite3
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
@@ -68,10 +71,6 @@ class PoC:
         from Zyiron_Chain.blockchain.block_manager import BlockManager  # Ensure correct import
         self.block_manager = BlockManager(storage_manager=self.lmdb_manager)
 
-        # ✅ Lazy Load StandardMempool to Prevent Circular Import
-        StandardMempool = get_standard_mempool()
-        self.standard_mempool = StandardMempool()
-
         # ✅ Lazy Load FeeModel to Prevent Circular Import
         FeeModel = get_fee_model()
         self.fee_model = FeeModel(max_supply=Decimal("84096000"))
@@ -79,11 +78,18 @@ class PoC:
         # ✅ Initialize Payment Type Manager
         self.payment_type_manager = PaymentTypeManager()
 
-        # ✅ Set Default Mempool Reference
+        # ✅ Initialize Dispute Resolution Contract
+        self.dispute_contract = DisputeResolutionContract(self)
+
+        # ✅ Lazy Load StandardMempool with PoC Instance
+        StandardMempool = get_standard_mempool()
+        self.standard_mempool = StandardMempool(self)  # ✅ Fix: Pass `self` (PoC instance)
         self.mempool = self.standard_mempool  # Default to standard mempool
 
         # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
         self._cache = {}  # 🚀 This prevents `AttributeError`
+
+
 
 
     ### --------------------- Anti Farm Logic -------------------------------###
@@ -199,7 +205,7 @@ class PoC:
 
     def store_utxo(self, utxo_id, utxo_data):
         """
-        Store a UTXO in SQLite via PoC, ensuring type safety and handling missing fields.
+        Store a UTXO in SQLite via PoC, ensuring type safety and preventing duplicates.
         """
         try:
             if not isinstance(utxo_data, dict):
@@ -210,18 +216,18 @@ class PoC:
                 if key not in utxo_data:
                     raise KeyError(f"[ERROR] Missing required UTXO field: {key}")
 
-            # ✅ Convert types to ensure SQLite compatibility
+            # ✅ Convert types for SQLite storage
             tx_out_id = str(utxo_data["tx_out_id"])
             amount = float(utxo_data["amount"])  # ✅ Convert Decimal to float
             script_pub_key = str(utxo_data["script_pub_key"])
             locked = int(bool(utxo_data.get("locked", False)))  # ✅ Convert boolean to int (0 or 1)
             block_index = int(utxo_data.get("block_index", 0))  # ✅ Ensure block index is an integer
 
-            # ✅ Prevent storing duplicate UTXOs
+            # ✅ Remove existing UTXO if it exists
             existing_utxo = self.sqlite_db.get_utxo(tx_out_id)
             if existing_utxo:
-                logging.warning(f"[WARNING] Skipping duplicate UTXO insertion: {tx_out_id}")
-                return
+                logging.warning(f"[WARNING] UTXO {tx_out_id} already exists. Replacing with new data.")
+                self.sqlite_db.delete_utxo(tx_out_id)  # ✅ Remove old UTXO before inserting a new one
 
             # ✅ Store UTXO in SQLite
             self.sqlite_db.insert_utxo(
@@ -234,10 +240,12 @@ class PoC:
             )
 
             logging.info(f"[INFO] UTXO {utxo_id} successfully stored in SQLite.")
+            return True  # ✅ Indicate success
 
         except (KeyError, TypeError, ValueError) as e:
             logging.error(f"[ERROR] Failed to store UTXO {utxo_id}: {e}")
-            raise
+            return False  # ✅ Indicate failure
+
 
 
 
@@ -278,24 +286,32 @@ class PoC:
         logging.info(f"[INFO] Block {block.index} passed consistency checks.")
 
     def get_last_block(self):
-        """Fetch the latest block from the database."""
+        """Fetch the latest block from the database, returning a default block if empty."""
         from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
 
         logging.info("[POC] Fetching latest block...")
 
         blocks = self.unqlite_db.get_all_blocks()
         if not blocks:
-            logging.warning("[POC] No blocks found in database.")
-            return None  # No blocks exist
+            logging.warning("[POC] No blocks found in database. Creating Genesis Block...")
+            return Block(
+                index=0,
+                previous_hash="0" * 96,
+                transactions=[CoinbaseTx(block_height=0, miner_address="genesis", reward=Decimal("100.0"))],
+                timestamp=int(time.time()),
+                key_manager=KeyManager(),
+                nonce=0,
+                poc=self
+            )
 
         last_block_data = blocks[-1]  # Get the most recent block
 
-        # ✅ Ensure all critical fields exist
-        last_block_data.setdefault("index", len(blocks) - 1)  # Default index
-        last_block_data.setdefault("previous_hash", "0" * 96)  # Default genesis hash
-        last_block_data.setdefault("timestamp", time.time())  # Assign current timestamp
-        last_block_data.setdefault("merkle_root", "0" * 96)  # Default Merkle root
-        last_block_data.setdefault("nonce", 0)  # Default nonce
+        # ✅ Ensure critical fields exist
+        last_block_data.setdefault("index", len(blocks) - 1)  
+        last_block_data.setdefault("previous_hash", "0" * 96)  
+        last_block_data.setdefault("timestamp", time.time())  
+        last_block_data.setdefault("merkle_root", "0" * 96)  
+        last_block_data.setdefault("nonce", 0)  
         last_block_data.setdefault("header", {
             "version": 1,
             "index": last_block_data["index"],
@@ -503,9 +519,9 @@ class PoC:
         """
         Ensure a transaction has sufficient fees.
         """
-        transaction_size = len(str(transaction.tx_inputs)) + len(str(transaction.tx_outputs))
+        transaction_size = len(str(transaction.inputs)) + len(str(transaction.outputs))
         required_fee = self.fee_model.calculate_fee(transaction_size)
-        total_fee = sum(inp.amount for inp in transaction.tx_inputs) - sum(out.amount for out in transaction.tx_outputs)
+        total_fee = sum(inp.amount for inp in transaction.inputs) - sum(out.amount for out in transaction.outputs)
         return total_fee >= required_fee
 
 

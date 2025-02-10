@@ -76,29 +76,7 @@ class SQLiteDB:
         else:
             logging.error("[ERROR] SQLite connection is not initialized.")
 
-    def insert_utxo(self, utxo_id, tx_out_id, amount, script_pub_key, block_index, locked=False):
-        """
-        Insert a new UTXO into the database.
-        Ensures that `amount` is stored as a float instead of `Decimal`.
-        """
-        try:
-            amount = float(amount)  # ✅ Convert to float
-            locked = int(locked)  # ✅ Ensure boolean values are stored as integers
-            block_index = int(block_index)  # ✅ Ensure block index is stored as integer
 
-            self.cursor.execute("""
-                INSERT INTO utxos (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
-
-            self.connection.commit()  # ✅ Fix: Use `self.connection`
-            logging.info(f"[INFO] UTXO {utxo_id} stored successfully.")
-
-        except sqlite3.IntegrityError as e:
-            logging.error(f"[ERROR] Failed to insert UTXO {utxo_id}: {e}")
-
-        except Exception as e:
-            logging.error(f"[ERROR] Unexpected error while inserting UTXO {utxo_id}: {e}")
 
 
 
@@ -175,7 +153,7 @@ class SQLiteDB:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
             
-            self.conn.commit()
+            self.connection .commit()
             logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
         
         except sqlite3.IntegrityError as e:
@@ -258,11 +236,8 @@ if __name__ == "__main__":
 
     # Insert test data
     db.insert_utxo("utxo1", "tx1", 100.5, "script1", 1, locked=False)
-    db.insert_transaction(
-        "tx_1",
-        [{"utxo_id": "utxo1", "script_sig": "sig1"}],
-        [{"amount": 50.0, "script_pub_key": "script1"}],
-    )
+    db.delete_transaction("tx_1")
+
 
     # Fetch and display data
     print("UTXOs:", db.fetch_all_utxos())

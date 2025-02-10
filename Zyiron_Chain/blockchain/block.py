@@ -202,7 +202,8 @@ class Block:
             input_total = sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount"))
             output_total = sum(out.amount for out in tx.outputs if hasattr(out, "amount"))
 
-            required_fee = fee_model.calculate_fee(block_size, tx_type_str, mempool.get_total_size(), tx.size_bytes)
+            required_fee = fee_model.calculate_fee(block_size, tx_type_str, mempool.get_total_size(), tx.size)
+
             actual_fee = input_total - output_total
 
             if actual_fee < required_fee:

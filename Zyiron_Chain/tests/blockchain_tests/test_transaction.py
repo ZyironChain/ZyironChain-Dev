@@ -26,7 +26,7 @@ def test_transaction_system():
 
     # Step 3: Create a Transaction
     print("\nCreating a transaction...")
-    transaction = Transaction(tx_inputs=[tx_in1, tx_in2], tx_outputs=[tx_out1, tx_out2])
+    transaction = Transaction(inputs=[tx_in1, tx_in2], outputs=[tx_out1, tx_out2])
     print(f"Transaction: {transaction.to_dict()}")
 
     # Step 4: Serialize and Deserialize Transaction

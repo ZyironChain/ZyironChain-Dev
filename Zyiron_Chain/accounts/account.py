@@ -20,7 +20,7 @@ class Account:
         self.secret_key = None
         self.public_key = None
 
-    def generate_keys(self, n=1024):
+    def generate_keys(self, n=512):
         """
         Generate a Falcon keypair.
         :param n: Security parameter, defaults to 1024.
