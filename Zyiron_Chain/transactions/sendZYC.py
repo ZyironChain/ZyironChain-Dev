@@ -149,7 +149,7 @@ class SendZYC:
         self.utxo_manager.lock_selected_utxos([tx.tx_out_id for tx in inputs])
 
         # Create the transaction
-        transaction = Transaction(tx_inputs=inputs, tx_outputs=outputs)
+        transaction = Transaction(inputs=inputs, outputs=outputs)
 
         # Sign the transaction
         self.sign_tx(transaction)
@@ -165,7 +165,7 @@ class SendZYC:
         :param transaction: Transaction object to sign.
         """
         private_key = self.get_private_key()
-        for tx_in in transaction.tx_inputs:
+        for tx_in in transaction.inputs:
             # Simulate signing using the private key (mock implementation)
             signature_data = f"{tx_in.tx_out_id}{private_key}"
             tx_in.script_sig = hashlib.sha3_384(signature_data.encode()).hexdigest()

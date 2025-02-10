@@ -60,13 +60,7 @@ class FundsAllocator:
             fund: (amount / self.max_supply) * Decimal('100')
             for fund, amount in self.allocated.items()
         }
-from decimal import Decimal
 
-from decimal import Decimal
-
-class FeeModel:
-    """Fee model with 7% allocation cap, congestion-based fees, and dynamic fee adjustments."""
-    
 class FeeModel:
     """Fee model with 7% allocation cap, congestion-based fees, and dynamic fee adjustments."""
     
@@ -82,6 +76,7 @@ class FeeModel:
             "MODERATE": {"STANDARD": Decimal('0.0024'), "SMART": Decimal('0.006'), "INSTANT": Decimal('0.012')},
             "HIGH": {"STANDARD": Decimal('0.006'), "SMART": Decimal('0.012'), "INSTANT": Decimal('0.024')},
         }
+
         
         # ✅ Generate congestion thresholds dynamically with interpolation for 2-4, 6-9
         self.congestion_thresholds = self._generate_interpolated_thresholds()
@@ -206,9 +201,9 @@ class FeeModel:
         tax_fee = base_fee * tax_rate
         miner_fee = base_fee - tax_fee
 
-        smart_contract_fund = tax_fee * (3 / 7)
-        governance_fund = tax_fee * (3 / 7)
-        network_contribution_fund = tax_fee * (1 / 7)
+        smart_contract_fund = tax_fee * Decimal("3") / Decimal("7")
+        governance_fund = tax_fee * Decimal("3") / Decimal("7")
+        network_contribution_fund = tax_fee * Decimal("1") / Decimal("7")
 
         total_fee_percentage = (base_fee / amount) * 100 if amount > 0 else 0
         tax_fee_percentage = (tax_fee / base_fee) * 100 if base_fee > 0 else 0

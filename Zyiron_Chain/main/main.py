@@ -60,8 +60,8 @@ def main():
         # Create sample transaction
         sample_tx = Transaction(
             tx_id="PID-12345678",
-            tx_inputs=[{"tx_out_id": "genesis_output", "amount": 50}],
-            tx_outputs=[{"recipient": "test_recipient", "amount": 45}],
+            inputs=[{"tx_out_id": "genesis_output", "amount": 50}],
+            outputs=[{"recipient": "test_recipient", "amount": 45}],
             poc=poc
         )
         

@@ -82,7 +82,8 @@ class TransactionManager:
         """
         return sum(
             len(str(inp.to_dict())) + len(str(out.to_dict()))
-            for inp, out in zip(tx.tx_inputs, tx.tx_outputs)
+            for inp, out in zip(tx.inputs, tx.outputs)
+
         )
 
     def validate_transaction(self, tx):

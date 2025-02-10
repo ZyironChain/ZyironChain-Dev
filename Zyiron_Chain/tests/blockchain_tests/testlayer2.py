@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from Zyiron_Chain.offchain.multihop import MultiHop, NetworkGraph
 from Zyiron_Chain.offchain.instantpay import PaymentChannel
 from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
-from Zyiron_Chain.transactions.txout import UTXOManager
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.offchain.dispute import DisputeResolutionContract
 import time
 
@@ -35,12 +35,12 @@ class MockTime:
 
 
 class DummyTransaction:
-    def __init__(self, tx_id, parent_id, utxo_id, tx_inputs, tx_outputs, sender, recipient, amount, fee, size, timestamp):
+    def __init__(self, tx_id, parent_id, utxo_id, inputs, outputs, sender, recipient, amount, fee, size, timestamp):
         self.tx_id = tx_id
         self.parent_id = parent_id
         self.utxo_id = utxo_id
-        self.tx_inputs = tx_inputs
-        self.tx_outputs = tx_outputs
+        self.inputs = inputs
+        self.outputs = outputs
         self.sender = sender
         self.recipient = recipient
         self.amount = amount
@@ -68,8 +68,8 @@ class DummyTransaction:
             tx_id=tx_id,
             parent_id=None if transaction_type != "Child" else "PID123",
             utxo_id=utxo_id,
-            tx_inputs=[{"tx_out_id": utxo_id, "index": 0}],
-            tx_outputs=[{"recipient": recipient, "amount": amount}],
+            inputs=[{"tx_out_id": utxo_id, "index": 0}],
+            outputs=[{"recipient": recipient, "amount": amount}],
             sender=sender,
             recipient=recipient,
             amount=amount,

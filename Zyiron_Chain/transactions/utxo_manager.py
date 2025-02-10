@@ -29,19 +29,18 @@ class UTXOManager:
         if tx_out_id in self._cache:
             return TransactionOut.from_dict(self._cache[tx_out_id])
 
-        # Fetch from PoC
         utxo_data = self.poc.get_utxo(tx_out_id)
-
-        # If not found in PoC, try SQLite directly
+        
+        # ✅ Ensure `None` returns are handled properly
         if not utxo_data:
-            utxo_data = self.poc.sqlite_db.get_utxo(tx_out_id)  # ✅ Ensure SQLite is queried directly
+            utxo_data = self.poc.sqlite_db.get_utxo(tx_out_id)  
             if not utxo_data:
                 logging.warning(f"[WARNING] UTXO {tx_out_id} not found in PoC or SQLite.")
-                return None  # ✅ Explicitly return None if not found
+                return None  # ✅ Explicitly return None
 
-        # Cache the retrieved UTXO and return
         self._cache[tx_out_id] = utxo_data
         return TransactionOut.from_dict(utxo_data)
+
 
 
 

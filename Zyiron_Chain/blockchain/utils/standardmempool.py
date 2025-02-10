@@ -1,3 +1,9 @@
+import sys
+import os
+
+
+# Add the project root directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
 
 
@@ -11,25 +17,29 @@ import time
 from threading import Lock
 from Zyiron_Chain.transactions.fees import FeeModel
 
-
+import logging
 
 class StandardMempool:
-    def __init__(self, max_size_mb=500, timeout=86400, expiry_time=86400):
+    def __init__(self, poc, max_size_mb=500, timeout=86400, expiry_time=86400):
         """
         Initialize the Standard Mempool.
 
+        :param poc: PoC instance to interact with blockchain storage.
         :param max_size_mb: Maximum size of the mempool in MB (default: 500 MB).
         :param timeout: Transaction expiration time in seconds (default: 24 hours).
         :param expiry_time: Transaction expiry time in seconds (default: 24 hours).
         """
+        self.poc = poc  # ✅ Fix: Store PoC instance inside StandardMempool
         self.transactions = {}  # Store transactions with their hash as key
         self.dependencies = {}  # Track parent-child relationships
         self.timeout = timeout  # Time in seconds for a transaction to expire
         self.expiry_time = expiry_time  # Time in seconds for a transaction to expire if not confirmed
-        self.lock = Lock()      # To handle concurrency
+        self.lock = Lock()  # To handle concurrency
         self.max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
         self.current_size_bytes = 0  # Track current memory usage
         self.fee_model = FeeModel(max_supply=Decimal("84096000"))  # Pass the required argument
+
+
 
     def add_transaction(self, transaction, smart_contract, fee_model):
         """
@@ -44,17 +54,19 @@ class StandardMempool:
         if transaction.tx_id.startswith("S-"):
             print("[ERROR] Smart Transactions are not allowed in Standard Mempool.")
             return False
-        elif transaction.tx_id.startswith(("PID-", "CID-")):
-            transaction_type = "Instant" if transaction.tx_id.startswith("PID-,") else "Child"
+        elif transaction.tx_id.startswith(("PID-" "CID-")):
+            transaction_type = "Instant" if transaction.tx_id.startswith("PID-") else "Child"
         else:
             transaction_type = "Standard"
 
-        if not transaction.tx_inputs or not transaction.tx_outputs:
+        if not transaction.inputs or not transaction.outputs:
+
             print(f"[ERROR] Invalid {transaction_type} Transaction: Must have at least one input and one output.")
             return False
 
         # 🛑 Reject orphan transactions (Inputs must exist in chain or mempool)
         if not self.validate_transaction_inputs(transaction):
+
             print(f"[WARN] {transaction_type} Transaction {transaction.tx_id} rejected due to missing inputs.")
             return False
 
@@ -65,7 +77,15 @@ class StandardMempool:
 
         # 🏦 Ensure minimum fee threshold based on network congestion
         transaction_size = transaction.size
-        min_fee_required = fee_model.calculate_fee(transaction_size)
+        min_fee_required = fee_model.calculate_fee(
+            payment_type="Standard",
+            amount=sum(out.amount for out in transaction.outputs),  
+            tx_size=transaction.size,
+            block_size=1  # ✅ Fix: Added missing argument
+        )
+
+
+
         if transaction.fee < min_fee_required:
             print(f"[ERROR] {transaction_type} Transaction {transaction.tx_id} rejected due to insufficient fee.")
             return False
@@ -102,7 +122,8 @@ class StandardMempool:
                 self.current_size_bytes += transaction_size
 
                 # 🔗 Maintain parent-child relationships for validation
-                for parent_tx_id in transaction.tx_inputs:
+                for parent_tx_id in transaction.inputs:
+
                     if parent_tx_id in self.transactions:
                         self.transactions[parent_tx_id]["children"].add(transaction.tx_id)
 
@@ -116,9 +137,21 @@ class StandardMempool:
                 return False
 
 
+
+
+    def is_utxo_available(self, tx_out_id):
+        """Check if a UTXO exists in the PoC database."""
+        utxo = self.poc.get_utxo(tx_out_id)  # ✅ Fetch UTXO from PoC layer
+        return utxo is not None
+
+
+
+
+
     def validate_transaction_inputs(self, transaction):
         """Ensure all transaction inputs exist before accepting."""
-        for tx_input in transaction.tx_inputs:
+        for tx_input in transaction.inputs:
+
             if not self.is_utxo_available(tx_input.tx_out_id):
                 return False
         return True

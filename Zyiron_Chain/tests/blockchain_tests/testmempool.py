@@ -105,11 +105,11 @@ if __name__ == "__main__":
         # Step 5: Output detailed transaction info
         print("\n[DETAILED TRANSACTION REPORT]")
         print(f"Transaction ID: {tx_id}")
-        print(f"Inputs: {len(transaction.tx_inputs)}")
-        print(f"Outputs: {len(transaction.tx_outputs)}")
-        for i, tx_in in enumerate(transaction.tx_inputs, 1):
+        print(f"Inputs: {len(transaction.inputs)}")
+        print(f"Outputs: {len(transaction.outputs)}")
+        for i, tx_in in enumerate(transaction.inputs, 1):
             print(f"  Input {i}: {tx_in.tx_out_id}")
-        for i, tx_out in enumerate(transaction.tx_outputs, 1):
+        for i, tx_out in enumerate(transaction.outputs, 1):
             print(f"  Output {i}: {tx_out.amount:.8f} to {tx_out.script_pub_key}")
 
     except Exception as e:

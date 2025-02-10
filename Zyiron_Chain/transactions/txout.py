@@ -45,19 +45,20 @@ class TransactionOut:
         """Serialize TransactionOut to a dictionary"""
         return {
             "script_pub_key": self.script_pub_key,
-            "amount": float(self.amount),  # ✅ Convert Decimal to float for serialization
+            "amount": str(self.amount),  # ✅ Store as string to avoid precision loss
             "locked": self.locked,
             "tx_out_id": self.tx_out_id
         }
 
+
     @classmethod
     def from_dict(cls, data):
-        """Create a TransactionOut instance from a dictionary or return an existing object."""
-        if isinstance(data, cls):  # ✅ If already an object, return it directly
+        """Create a TransactionOut instance from a dictionary"""
+        if isinstance(data, cls):
             return data  
 
         return cls(
-            script_pub_key=data.get("script_pub_key", ""),  # ✅ Provide default value
-            amount=Decimal(data.get("amount", 0)),  # ✅ Convert amount safely
-            locked=data.get("locked", False)  # ✅ Default to False if missing
+            script_pub_key=data.get("script_pub_key", ""),
+            amount=Decimal(str(data.get("amount", "0"))),  # ✅ Convert back from string
+            locked=data.get("locked", False)
         )

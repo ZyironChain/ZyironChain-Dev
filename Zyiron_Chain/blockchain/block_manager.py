@@ -33,29 +33,41 @@ class BlockManager:
         self.difficulty_adjustment_interval = 24  # Adjust every 24 blocks (~2 hours)
 
     def create_genesis_block(self, key_manager):
+        """Create the Genesis block if it doesn't exist."""
         if self.storage_manager.poc.get_block("block:0"):
             logging.info("Genesis block already exists.")
             return
 
         try:
-            genesis_transaction = get_transaction(
-                tx_inputs=[],
-                tx_outputs=[TransactionOut(script_pub_key="genesis_output", amount=50, locked=False)]
+            # ✅ Fix: Correctly instantiate Transaction
+            Transaction = get_transaction()  # ✅ Get the Transaction class
+
+            # ✅ Use correct argument structure for Transaction
+            genesis_transaction = Transaction(
+                inputs=[],  # Coinbase transactions have no inputs
+                outputs=[TransactionOut(script_pub_key="genesis_output", amount=50, locked=False)]
             )
-            
+
             merkle_root = self.calculate_merkle_root([genesis_transaction])
-            genesis_block = get_block(
+
+            # ✅ Fix: Correctly instantiate Block
+            Block = get_block()  # ✅ Get the Block class
+
+            genesis_block = Block(
                 index=0,
                 previous_hash=self.ZERO_HASH,
                 transactions=[genesis_transaction],
                 timestamp=int(time.time()),
                 merkle_root=merkle_root,
             )
+
+            # ✅ Set miner address
             genesis_block.miner_address = key_manager.get_default_public_key("testnet", "miner")
 
             # ✅ Use fixed 4 leading zeros for Genesis Block
             genesis_target = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 
+            # ✅ Mine the Genesis Block
             if genesis_block.mine(genesis_target, None, None, None, False):
                 self.chain.append(genesis_block)
                 self.storage_manager.store_block(genesis_block, self.difficulty)
@@ -65,7 +77,8 @@ class BlockManager:
 
         except Exception as e:
             logging.error(f"Error creating genesis block: {str(e)}")
-            raise
+            raise RuntimeError(f"Genesis Block Creation Failed: {str(e)}") from e  # ✅ Proper Exception Handling
+
 
     def validate_chain(self):
         for i in range(1, len(self.chain)):
