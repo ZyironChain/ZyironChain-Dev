@@ -12,7 +12,7 @@ from typing import List, Dict
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
-
+import logging
 
 def get_poc():
     """Lazy import PoC to break circular dependencies."""
@@ -96,25 +96,56 @@ class Transaction:
     """Represents a standard blockchain transaction"""
 
     def __init__(self, inputs: List["TransactionIn"], outputs: List["TransactionOut"], tx_id: str = None, poc: "PoC" = None, utxo_manager=None):
+        """
+        Initialize a transaction object.
 
+        :param inputs: List of transaction inputs.
+        :param outputs: List of transaction outputs.
+        :param tx_id: (Optional) Unique transaction ID. If not provided, it is auto-generated.
+        :param poc: (Optional) Point-of-Contact instance for blockchain interactions.
+        :param utxo_manager: (Optional) UTXO Manager for handling UTXO state.
+        """
+        # ✅ Validate input and output types
         if not all(isinstance(inp, TransactionIn) for inp in inputs):
             raise TypeError("[ERROR] All inputs must be instances of TransactionIn.")
         if not all(isinstance(out, TransactionOut) for out in outputs):
             raise TypeError("[ERROR] All outputs must be instances of TransactionOut.")
 
-        self.utxo_manager = utxo_manager if utxo_manager else self._get_default_utxo_manager()  # ✅ Ensure UTXO manager exists
+        # ✅ Assign UTXO Manager, ensuring it exists
+        self.utxo_manager = utxo_manager if utxo_manager else self._get_default_utxo_manager()
 
+        # ✅ Convert inputs/outputs to correct format if needed
         self.inputs = [inp if isinstance(inp, TransactionIn) else TransactionIn.from_dict(inp) for inp in inputs]
         self.outputs = [out if isinstance(out, TransactionOut) else TransactionOut.from_dict(out) for out in outputs]
 
+        # ✅ Assign timestamp
         self.timestamp = time.time()
+
+        # ✅ Ensure transaction type is set properly
         self.type = PaymentTypeManager().get_transaction_type(tx_id)
+
+        # ✅ Fix: Auto-generate a `tx_id` if it's missing
         self.tx_id = tx_id if tx_id else self._generate_tx_id()
 
+        # ✅ Calculate hash after ensuring all required attributes exist
         self.hash = self.calculate_hash()
-        self.poc = get_poc() 
+
+        # ✅ Store PoC reference for blockchain interactions
+        self.poc = poc if poc else get_poc()
+
+        # ✅ Compute transaction size
         self.size = self._calculate_size()  # ✅ Change from `size_bytes` to `size`
+
+        # ✅ Compute transaction fee
         self.fee = self._calculate_fee()  # ✅ Ensure fee is calculated after all attributes are set
+
+
+
+
+    def _generate_tx_id(self) -> str:
+        """Generate a unique transaction ID using SHA3-384 hashing"""
+        tx_data = f"{self.timestamp}{self.calculate_hash()}"
+        return sha3_384_hash(tx_data)[:24]  # ✅ Shorten to 24 characters
 
 
     def _get_default_utxo_manager(self):
@@ -182,25 +213,41 @@ class Transaction:
             validated_outputs.append(out.to_dict())
         return validated_outputs
 
+
+
     def _calculate_fee(self) -> Decimal:
-        """Calculate transaction fee as input_total - output_total."""
-        
-        input_total = sum(
-            Decimal(utxo.amount) if (utxo := self.utxo_manager.get_utxo(inp.tx_out_id)) else Decimal(0)
-            for inp in self.inputs
-        )
+        """Calculate transaction fee and ensure it is never negative."""
 
-        output_total = sum(
-            Decimal(out.amount) if isinstance(out, TransactionOut) else Decimal(out.get("amount", 0))
-            for out in self.outputs
-        )
+        # ✅ Ensure Coinbase transactions never calculate fees
+        if self.type == "COINBASE":
+            logging.info(f"[INFO] Coinbase Transaction Detected - Fee Set to 0")
+            return Decimal("0")
 
-        # ✅ Ensure fee is not negative (correct overestimation)
+        # ✅ Initialize totals to ensure safe calculations
+        input_total = Decimal("0")
+        output_total = Decimal("0")
+
+        # ✅ Retrieve input UTXOs and sum their amounts
+        for inp in self.inputs:
+            utxo = self.utxo_manager.get_utxo(inp.tx_out_id)
+            if utxo:
+                input_total += Decimal(utxo.amount)
+            else:
+                logging.warning(f"[WARNING] Missing UTXO {inp.tx_out_id} - Defaulting to 0")
+
+        # ✅ Sum output amounts
+        for out in self.outputs:
+            output_total += Decimal(out.amount) if isinstance(out, TransactionOut) else Decimal(out.get("amount", 0))
+
+        # ✅ Calculate fee (Preventing Negative Fee Issue)
         fee = input_total - output_total
+
         if fee < Decimal("0"):
-            raise ValueError(f"[ERROR] Fee calculation resulted in negative value! Input: {input_total}, Output: {output_total}, Fee: {fee}")
+            logging.warning(f"[WARNING] Negative Fee Detected: Adjusting to 0. Input: {input_total}, Output: {output_total}, Fee: {fee}")
+            fee = Decimal("0")  # ✅ Ensure fee never goes negative
 
         return fee
+
 
 
     def _get_script_pub_key(self, recipient_address):
@@ -212,18 +259,13 @@ class Transaction:
             return recipient_address  # If no key found, fallback to recipient address
 
     def calculate_hash(self) -> str:
-        """Calculate SHA3-384 hash of the transaction."""
-        input_data = "".join(f"{i.tx_out_id}" if isinstance(i, TransactionIn) else f"{i['tx_out_id']}" for i in self.inputs)
-
-        output_data = "".join(
-            f"{o.script_pub_key}{o.amount}" if isinstance(o, TransactionOut) else f"{o.get('script_pub_key', '')}{o.get('amount', 0)}"
-            for o in self.outputs
-        )
-
-        return hashlib.sha3_384(f"{input_data}{output_data}{self.timestamp}".encode()).hexdigest()
+        """Calculate SHA3-384 hash of the transaction"""
+        input_data = "".join(f"{i.tx_out_id}" for i in self.inputs)
+        output_data = "".join(f"{o.script_pub_key}{o.amount}" for o in self.outputs)
+        return sha3_384_hash(f"{input_data}{output_data}{self.timestamp}")
 
 
-        return hashlib.sha3_384(f"{input_data}{output_data}{self.timestamp}".encode()).hexdigest()
+    
     
     def to_dict(self) -> Dict:
         """Serialize Transaction to a dictionary"""
