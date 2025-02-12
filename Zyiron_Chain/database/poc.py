@@ -71,6 +71,15 @@ class PoC:
         from Zyiron_Chain.blockchain.block_manager import BlockManager  # Ensure correct import
         self.block_manager = BlockManager(storage_manager=self.lmdb_manager)
 
+        # ✅ Initialize `TransactionManager` to Fix Missing Attribute Error
+        from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
+        from Zyiron_Chain.blockchain.utils.key_manager import KeyManager  # Ensure KeyManager is available
+        self.key_manager = KeyManager()  # ✅ Ensure KeyManager is initialized
+        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
+
+        # ✅ Pass `transaction_manager` to `BlockManager`
+        self.block_manager = BlockManager(storage_manager=self.storage_manager, transaction_manager=self.transaction_manager)
+
         # ✅ Lazy Load FeeModel to Prevent Circular Import
         FeeModel = get_fee_model()
         self.fee_model = FeeModel(max_supply=Decimal("84096000"))
@@ -88,7 +97,6 @@ class PoC:
 
         # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
         self._cache = {}  # 🚀 This prevents `AttributeError`
-
 
 
 

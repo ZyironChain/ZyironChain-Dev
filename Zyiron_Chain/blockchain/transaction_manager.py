@@ -16,8 +16,9 @@ from Zyiron_Chain.smartpay.smartmempool import SmartMempool  # Add this import
 
 import logging
 
+
 class TransactionManager:
-    def __init__(self, storage_manager, key_manager):
+    def __init__(self, storage_manager, key_manager, poc):
         """
         Initialize the Transaction Manager.
         - Standard Mempool: Handles regular transactions.
@@ -26,9 +27,13 @@ class TransactionManager:
         """
         self.storage_manager = storage_manager
         self.key_manager = key_manager
-        self.standard_mempool = StandardMempool(timeout=86400)
+        self.poc = poc  # ✅ Store PoC instance for transaction routing
+
+        # ✅ Fix: Pass `poc` when initializing StandardMempool
+        self.standard_mempool = StandardMempool(self.poc, timeout=86400)
         self.smart_mempool = SmartMempool()
-        self.mempool_lock = Lock()
+
+        self.mempool_lock = Lock()  # ✅ Ensure mempool lock is properly initialized
 
     def store_transaction_in_mempool(self, transaction):
         """

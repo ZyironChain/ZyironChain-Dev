@@ -4,8 +4,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 
 import time
-from Zyiron_Chain.blockchain.block import Block
-from Zyiron_Chain.blockchain.block_manager import BlockManager
+
 
 import time
 import hashlib
@@ -25,7 +24,13 @@ import time
 
 class Miner:
     def __init__(self, block_manager, transaction_manager, storage_manager):
-        self.block_manager = block_manager
+        """
+        Initialize the Miner.
+        :param block_manager: BlockManager instance.
+        :param transaction_manager: TransactionManager instance.
+        :param storage_manager: StorageManager instance.
+        """
+        self.block_manager = block_manager  # ✅ Correctly store `block_manager`
         self.transaction_manager = transaction_manager
         self.storage_manager = storage_manager
         self.base_vram = 8 * 1024 * 1024  # Start at 8MB VRAM
@@ -143,29 +148,26 @@ class Miner:
             nonce += 1
 
 
+
     def mine_block(self, network="testnet"):
         """
-        Mine a new block using Anti-Farm PoW.
-        - Uses SHA3-384 with memory-hard VRAM scaling.
-        - Rotates algorithms dynamically.
-        - Maintains a strict 5-minute block time.
-
-        :param network: "testnet" or "mainnet"
-        :return: True if block is successfully mined.
+        Mine a new block using ASIC-resistant PoW.
         """
+        from Zyiron_Chain.blockchain.block_manager import BlockManager  # ✅ Lazy Import Fix
+        from Zyiron_Chain.blockchain.block import Block
+        from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+
         last_block = self.block_manager.chain[-1] if self.block_manager.chain else None
         block_height = last_block.index + 1 if last_block else 0
         prev_hash = last_block.hash if last_block else "0" * 96
 
-        # Select transactions
         transactions = self.transaction_manager.select_transactions_for_block()
         total_fees = sum(
-            sum(inp.amount for inp in tx.inputs) - sum(out.amount for out in tx.outputs)
-
+            sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount")) - 
+            sum(out.amount for out in tx.outputs if hasattr(out, "amount"))
             for tx in transactions
         )
 
-        # Create coinbase transaction
         coinbase_tx = self.transaction_manager.create_coinbase_tx(total_fees, network)
         transactions.insert(0, coinbase_tx)
 
@@ -177,7 +179,6 @@ class Miner:
             key_manager=self.transaction_manager.key_manager
         )
 
-        # Compute difficulty target (4 leading zeros at genesis)
         target = (
             0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
             if block_height == 0 else self.block_manager.calculate_target()
@@ -185,13 +186,11 @@ class Miner:
 
         print(f"[INFO] Mining block {block_height} with target {hex(target)}...")
 
-        # Perform ASIC-resistant PoW
         network_hashrate = self.block_manager.get_network_hashrate()
         new_block.header.nonce, new_block.hash = self.asic_resistant_pow(new_block.header, target, network_hashrate)
 
         print(f"[SUCCESS] Block {block_height} mined! Nonce: {new_block.header.nonce}, Hash: {new_block.hash}")
 
-        # Append the block to the chain
         self.block_manager.chain.append(new_block)
         self.storage_manager.store_block(new_block, self.block_manager.calculate_block_difficulty(new_block))
         self.storage_manager.save_blockchain_state(self.block_manager.chain, [])
@@ -204,26 +203,55 @@ class Miner:
 
     def mining_loop(self):
         """
-        Continuously mine new blocks until stopped by user or system.
+        Continuously mine new blocks until manually stopped (Ctrl+C).
+        - Automatically starts with the Genesis Block if needed.
+        - No user input is required; mining runs indefinitely.
         """
         while True:
             try:
                 if not self.block_manager.chain:
-                    print("Mining genesis block...")
-                    self.block_manager.create_genesis_block(self.transaction_manager.key_manager)
-                else:
-                    print(f"Mining block {len(self.block_manager.chain)}...")
-                    if self.mine_block():
-                        print("Block mined successfully!")
-                    else:
-                        print("Failed to mine block")
+                    print("[INFO] Mining Genesis Block...")
+                    self.block_manager.create_genesis_block()  # ✅ Remove extra argument
 
-                user_input = input("Mine another block? (y/n): ").lower()
-                if user_input != 'y':
-                    break
+                else:
+                    print(f"[INFO] Mining Block {len(self.block_manager.chain)}...")
+                    if self.mine_block():
+                        print("[SUCCESS] Block mined successfully!")
+                    else:
+                        print("[ERROR] Failed to mine block")
+
             except KeyboardInterrupt:
-                print("\nMining interrupted")
+                print("\n[INFO] Mining stopped by user (Ctrl+C).")
                 break
             except Exception as e:
-                print(f"Mining error: {str(e)}")
+                print(f"[ERROR] Mining error: {str(e)}")
                 break
+
+
+# Main Execution
+if __name__ == "__main__":
+    from Zyiron_Chain.database.poc import PoC
+    from Zyiron_Chain.blockchain.storage_manager import StorageManager
+    from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
+    from Zyiron_Chain.blockchain.block_manager import BlockManager
+    from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+
+    poc_instance = PoC()
+    storage_manager = StorageManager(poc_instance)
+    key_manager = KeyManager()
+    transaction_manager = TransactionManager(storage_manager, key_manager, poc_instance)
+
+    # ✅ Ensure `block_manager` is initialized with `transaction_manager`
+    block_manager = BlockManager(storage_manager, transaction_manager)
+
+    # ✅ Pass `block_manager` correctly to `Miner`
+    miner = Miner(
+        block_manager=block_manager,
+        transaction_manager=transaction_manager,
+        storage_manager=storage_manager
+    )
+
+    try:
+        miner.mining_loop()
+    except KeyboardInterrupt:
+        print("\nMining stopped by user")

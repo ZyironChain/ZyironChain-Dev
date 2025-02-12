@@ -32,7 +32,6 @@ BlockHeader = get_block_header()
 
 
 class Block:
-
     def __init__(self, index, previous_hash, transactions, timestamp=None, key_manager=None, nonce=0, poc=None):
         """
         Initialize a Block.
@@ -67,6 +66,7 @@ class Block:
 
 
     def _ensure_transactions(self, transactions, poc):
+        """Ensure transactions are valid and converted correctly."""
         return [Transaction.from_dict(tx, poc) if isinstance(tx, dict) else tx for tx in transactions]
 
 
@@ -138,9 +138,8 @@ class Block:
             "transactions": [tx.to_dict() for tx in self.transactions],
             "timestamp": self.timestamp,
             "nonce": self.nonce,
-            "miner_address": self.miner_address or KeyManager().get_default_public_key("mainnet", "miner"),  # ✅ Ensure miner address is always set
+            "miner_address": self.miner_address,
             "hash": self.hash or self.calculate_hash(),  # ✅ Ensure hash is never missing
-
             "merkle_root": self.merkle_root,
             "header": self.header.to_dict()
         }
@@ -243,6 +242,18 @@ class Block:
             return False
 
 
+    def mine_block(self, target):
+        """
+        Uses `Miner.asic_resistant_pow()` to mine the block.
+        :param target: The mining difficulty target.
+        """
+        from Zyiron_Chain.blockchain.miner import Miner  # ✅ Lazy Import Fix
+
+        miner = Miner(self.block_manager, self.transaction_manager, self.storage_manager)  # ✅ Ensure correct parameters
+        network_hashrate = miner.block_manager.get_network_hashrate()
+        self.header.nonce, self.hash = miner.asic_resistant_pow(self.header, target, network_hashrate)
+
+        return True  # ✅ Successfully mined the block
 
 
 
