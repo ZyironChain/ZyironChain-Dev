@@ -21,6 +21,8 @@ from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, Coinba
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+
+
 class MinerTestSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

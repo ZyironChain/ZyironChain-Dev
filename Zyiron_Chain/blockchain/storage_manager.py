@@ -10,17 +10,55 @@ from Zyiron_Chain.transactions. utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
 
 class StorageManager:
-    def __init__(self, poc_instance):
-        self.poc = poc_instance
-        self.utxo_manager = UTXOManager(poc_instance)
+    def __init__(self, poc_instance, block_manager=None):
+        """
+        Initialize the Storage Manager.
+        :param poc_instance: PoC instance for routing transactions.
+        :param block_manager: (Optional) BlockManager instance.
+        """
+        self.poc = poc_instance  # ✅ Store PoC instance
+        self.utxo_manager = UTXOManager(poc_instance)  # ✅ Initialize UTXO Manager
+        self.block_manager = block_manager  # ✅ Ensure block_manager is stored properly
+
+
 
     def load_chain(self):
         self.poc.load_blockchain_data()
         return self.poc.get_blockchain_data()
 
     def store_block(self, block, difficulty):
-        self.poc.store_block(block, difficulty)
-        self._store_block_metadata(block)
+        """
+        Save a mined block to the database.
+        - Stores block metadata, transactions, and difficulty.
+        - Prints the stored data.
+        """
+        try:
+            block_data = {
+                "index": block.index,
+                "previous_hash": block.previous_hash,
+                "hash": block.hash,
+                "timestamp": block.timestamp,
+                "difficulty": difficulty,
+                "transactions": [tx.to_dict() for tx in block.transactions]
+            }
+
+            self.poc.unqlite_db.put(f"block:{block.index}", block_data)  # ✅ Store block in UnQLite
+            self.poc.lmdb_manager.put(f"block_hash:{block.index}", block.hash)  # ✅ Store block hash in LMDB
+
+            print(f"\n[DB STORE] Block {block.index} stored in UnQLite & LMDB")
+            print(f"[DB DATA] {block_data}")
+
+            # ✅ Verify Storage
+            stored_block = self.poc.unqlite_db.get(f"block:{block.index}")
+            if stored_block:
+                print(f"[SUCCESS] Block {block.index} successfully saved in DB!")
+            else:
+                print(f"[ERROR] Block {block.index} did NOT save correctly!")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to store block {block.index}: {str(e)}")
+
+
 
     def _store_block_metadata(self, block):
         metadata = {

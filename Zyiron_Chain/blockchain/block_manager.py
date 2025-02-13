@@ -34,11 +34,16 @@ class BlockManager:
         :param storage_manager: Manages blockchain storage.
         :param transaction_manager: (Optional) Manages transactions.
         """
-        self.chain = []
+        self.chain = []  # ✅ Ensure chain is always initialized
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager  # ✅ Store transaction manager
         self.difficulty = 4  # Default to 4 leading zeros
         self.difficulty_adjustment_interval = 24  # Adjust every 24 blocks (~2 hours)
+
+        # ✅ Prevent NoneType errors when accessing chain
+        if self.storage_manager and hasattr(self.storage_manager, "block_manager"):
+            self.storage_manager.block_manager = self
+
 
        
 
@@ -148,20 +153,39 @@ class BlockManager:
             ]
 
         return tx_hashes[0] if tx_hashes else self.ZERO_HASH
-
+    
     def calculate_target(self):
-        """Dynamically calculate the mining target based on hashrate & VRAM scaling."""
-        last_block = self.chain[-1] if self.chain else None
+        """
+        Dynamically calculate the mining target.
+        - Ensures block mining takes approximately **10 seconds**.
+        - Reduces difficulty aggressively for testing.
+        """
+        if not self.chain:
+            return 0x00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # ✅ Lower Genesis Difficulty
 
-        # Genesis Block Target
-        if not last_block:
-            return 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 4 leading zeros
+        last_block = self.chain[-1]
 
-        # ✅ Adjust target dynamically every 24 blocks (~2 hours)
-        if last_block.index % self.difficulty_adjustment_interval == 0:
-            return self._adjust_target(last_block)
+        # ✅ Set Very Low Difficulty for First 200 Blocks for Easy Testing
+        if len(self.chain) < 200:
+            return 0x000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # ✅ Extremely low difficulty
+
+        # ✅ Adjust difficulty every 10 blocks based on actual block time
+        if last_block.index % 10 == 0 and len(self.chain) >= 10:
+            time_taken = last_block.timestamp - self.chain[-10].timestamp
+            expected_time = 10 * 10  # 10 blocks * **10 seconds** per block
+
+            # ✅ Adjust difficulty dynamically based on actual vs. expected block time
+            adjustment_ratio = expected_time / max(time_taken, 1)
+            new_target = int(last_block.header.difficulty * adjustment_ratio)
+
+            # ✅ Prevent difficulty from dropping too low
+            return max(new_target, 0x00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
 
         return last_block.header.difficulty
+
+
+
+
 
     def _adjust_target(self, last_block):
         """Adjusts difficulty dynamically every 24 blocks based on network hashrate."""
@@ -186,7 +210,7 @@ class BlockManager:
             
         prev_block = self.chain[-1]
         time_diff = block.timestamp - prev_block.timestamp
-        expected_time = 300  # 5-minute block target
+        expected_time = 10 # 5-minute block target
 
         if time_diff < expected_time:
             return prev_block.difficulty + 1
@@ -194,3 +218,23 @@ class BlockManager:
             return max(prev_block.difficulty - 1, 1)
         else:
             return prev_block.difficulty
+        
+
+
+    def get_network_hashrate(self):
+        """
+        Estimates the network hashrate based on recent block times.
+        - Uses timestamps of the last 10 blocks to calculate average hashrate.
+        """
+        if len(self.chain) < 10:
+            return 1e12  # ✅ Default hashrate if there aren't enough blocks
+
+        last_blocks = self.chain[-10:]  # ✅ Get the last 10 blocks
+        time_diffs = [last_blocks[i].timestamp - last_blocks[i - 1].timestamp for i in range(1, len(last_blocks))]
+        
+        avg_time_per_block = sum(time_diffs) / len(time_diffs)
+        if avg_time_per_block == 0:
+            return 1e12  # ✅ Prevent division by zero
+        
+        hashrate_estimate = 1 / avg_time_per_block  # ✅ Estimated hashrate
+        return hashrate_estimate * 1e12  # Convert to H/s

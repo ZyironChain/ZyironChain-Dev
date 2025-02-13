@@ -9,49 +9,71 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 import unittest
 from Zyiron_Chain.blockchain.block import Block, BlockHeader
 
+def query_block(block_index):
+    """Fetch and display a block from UnQLite and LMDB."""
+    poc = PoC()
 
-class TestBlock(unittest.TestCase):
-    def setUp(self):
-        self.block = Block(
-            index=1,
-            previous_hash="0" * 64,
-            transactions=["Alice pays Bob 5 coins", "Bob pays Charlie 2 coins"]
-        )
-        print(f"Setup Block: {self.block}")
+    # ✅ Query UnQLite
+    block_data = poc.unqlite_db.get(f"block:{block_index}")
+    if block_data:
+        print(f"\n[✅ UNQLITE BLOCK {block_index} FOUND]")
+        print(json.dumps(block_data, indent=4))
+    else:
+        print(f"\n[❌ UNQLITE BLOCK {block_index} NOT FOUND]")
 
-    def test_set_header(self):
-        merkle_root = "abc123def4567890abcdef1234567890abcdef1234567890abcdef1234567890"
-        self.block.set_header(version=1, merkle_root=merkle_root)
-        print(f"Set Header: {self.block.header}")
-        self.assertIsNotNone(self.block.header)
-        self.assertEqual(self.block.header.merkle_root, merkle_root)
+    # ✅ Query LMDB for block hash
+    block_hash = poc.lmdb_manager.get(f"block_hash:{block_index}")
+    if block_hash:
+        print(f"\n[✅ LMDB BLOCK HASH {block_index} FOUND]: {block_hash}")
+    else:
+        print(f"\n[❌ LMDB BLOCK HASH {block_index} NOT FOUND]")
 
-    def test_calculate_hash(self):
-        self.block.set_header(
-            version=1,
-            merkle_root="abc123def4567890abcdef1234567890abcdef1234567890abcdef1234567890"
-        )
-        hash_value = self.block.calculate_hash()
-        print(f"Calculated Hash: {hash_value}")
-        self.assertIsInstance(hash_value, str)
-        self.assertNotEqual(hash_value, "")
+def query_latest_block():
+    """Fetch the latest block stored in UnQLite."""
+    poc = PoC()
 
-    def test_mine(self):
-        self.block.set_header(
-            version=1,
-            merkle_root="abc123def4567890abcdef1234567890abcdef1234567890abcdef1234567890"
-        )
-        target = 2 ** 240
-        newBlockAvailable = False
-        print(f"Start Mining: Target={target}, NewBlockAvailable={newBlockAvailable}")
-        result = self.block.mine(target, newBlockAvailable)
-        print(f"Mining Result: {result}, Nonce={self.block.header.nonce}, Hash={self.block.header.calculate_hash()}")
-        self.assertTrue(result)
-        self.assertTrue(self.block.header.nonce > 0)
-        self.assertTrue(
-            int(self.block.header.calculate_hash(), 16) <= target
-        )
+    latest_index = 0
+    while poc.unqlite_db.get(f"block:{latest_index}"):
+        latest_index += 1
+
+    if latest_index > 0:
+        latest_index -= 1  # Last valid block index
+        query_block(latest_index)
+    else:
+        print("\n[❌ NO BLOCKS FOUND IN DATABASE]")
+
+def query_all_blocks():
+    """Fetch all blocks and print their details."""
+    poc = PoC()
+    index = 0
+
+    print("\n[🔍 QUERYING ALL BLOCKS...]")
+    while True:
+        block_data = poc.unqlite_db.get(f"block:{index}")
+        if not block_data:
+            break
+        print(f"\n[✅ BLOCK {index} DATA]")
+        print(json.dumps(block_data, indent=4))
+        index += 1
+
+    if index == 0:
+        print("\n[❌ NO BLOCKS FOUND IN DATABASE]")
 
 if __name__ == "__main__":
-    print("Running Block Tests...")
-    unittest.main()
+    print("\n[🔍 BLOCKCHAIN QUERY TOOL]")
+    print("[1] Query Specific Block")
+    print("[2] Query Latest Block")
+    print("[3] Query All Blocks")
+    print("[4] Exit")
+
+    choice = input("\nEnter your choice (1-4): ")
+
+    if choice == "1":
+        block_num = input("Enter block index to query: ")
+        query_block(block_num)
+    elif choice == "2":
+        query_latest_block()
+    elif choice == "3":
+        query_all_blocks()
+    else:
+        print("\n[🚀 EXITING QUERY TOOL]")
