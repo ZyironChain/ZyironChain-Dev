@@ -12,7 +12,7 @@ from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from threading import Lock
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool  # Add this import
-
+from decimal import Decimal
 
 import logging
 
@@ -65,7 +65,9 @@ class TransactionManager:
 
         # Fetch transactions from both mempools
         smart_txs = self.smart_mempool.get_smart_transactions(max_block_size_mb, current_height)
-        standard_txs = self.standard_mempool.get_pending_transactions()
+
+        # ✅ Fix: Pass `block_size_mb` to `get_pending_transactions()`
+        standard_txs = self.standard_mempool.get_pending_transactions(block_size_mb=max_block_size_mb)
 
         # Sort by fee per byte for optimal inclusion
         all_txs = sorted(smart_txs + standard_txs, key=lambda tx: tx.fee / self._calculate_transaction_size(tx), reverse=True)
@@ -79,6 +81,7 @@ class TransactionManager:
                 current_size += tx_size
 
         return selected_txs
+
 
     def _calculate_transaction_size(self, tx):
         """
@@ -119,17 +122,19 @@ class TransactionManager:
             logging.error(f"[ERROR] Transaction validation failed: {str(e)}")
             return False
 
-    def create_coinbase_tx(self, total_fees, network):
+    def create_coinbase_tx(self, total_fees, network, block_height):
         """
         Create a coinbase transaction for block rewards.
         - Uses the key manager to generate the miner's address.
         - Includes both block reward and collected transaction fees.
         """
+        miner_address = self.key_manager.get_default_public_key(network, "miner")  # ✅ Get miner address
+
+        # ✅ Fix: Remove `key_manager`, add `block_height`
         return CoinbaseTx(
-            key_manager=self.key_manager,
-            network=network,
-            utxo_manager=self.storage_manager.utxo_manager,
-            transaction_fees=total_fees
+            block_height=block_height,  # ✅ Required for transaction ID
+            miner_address=miner_address,  # ✅ Use miner's address instead
+            reward=Decimal(100.00) + total_fees  # ✅ Include transaction fees
         )
 
     def store_transaction_in_mempool(self, transaction):

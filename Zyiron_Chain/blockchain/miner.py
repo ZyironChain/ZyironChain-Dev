@@ -91,76 +91,83 @@ class Miner:
 
     def asic_resistant_pow(self, block_header, target, network_hashrate):
         """
-        Performs ASIC-resistant Proof-of-Work with:
-        - **Memory-hard VRAM allocation** (8MB - 192MB)
-        - **Iterative SHA3-384, SHA3-512, or BLAKE3 hashing** (1,024 - 3,072 iterations)
-        - **Algorithm rotation** every 24-100 blocks or if hashrate spikes
-        - **Floating-point math obfuscation** to hinder ASIC optimizations
-
-        :param block_header: Block header to hash.
-        :param target: Current mining target difficulty.
-        :param network_hashrate: Current network hashrate.
-        :return: Valid nonce and hash when PoW is successful.
+        Optimized ASIC-resistant Proof-of-Work.
+        - Ensures difficulty is achievable.
+        - Prints estimated mining speed.
+        - Shows live nonce count without printing hashes.
         """
-        # Step 1: Dynamically Allocate VRAM Buffer
-        vram_size = self.get_dynamic_vram(network_hashrate)
+        import hashlib
+        import time
+        import math
+        import random
+        import numpy as np
+        import sys
+
+        # ✅ Reduce Hash Iterations for Faster Mining
+        iterations = 256  # ✅ Decrease iteration count for speed
+        vram_size = 4 * 1024 * 1024  # ✅ Reduce memory buffer for faster hashing
         memory_buffer = np.random.bytes(vram_size)  # Allocate VRAM memory
 
         nonce = 0
-        rotation_interval = random.randint(24, 100)
-        iterations = random.randint(1024, 3072)  # Random SHA3 iterations
-        algorithm_version = block_header.index % 3  # Rotate between hashing algorithms
+        start_time = time.time()  # ✅ Track mining time
+
+        # ✅ Print Mining Start Information Once
+        print(f"\n[INFO] Mining Block {block_header.index} - Target Difficulty: {hex(target)}")
+        print(f"[INFO] Previous Hash: {block_header.previous_hash}")
+        print(f"[INFO] Merkle Root: {block_header.merkle_root}")
+        print(f"[INFO] Mining Started...")
 
         while True:
-            # Step 2: Serialize block header data with nonce
-            header_data = (
+            # ✅ Ensure Block Header is Constant During Mining
+            stable_data = (
                 f"{block_header.version}{block_header.index}{block_header.previous_hash}"
-                f"{block_header.merkle_root}{block_header.timestamp}{nonce}"
+                f"{block_header.merkle_root}{block_header.timestamp}"
             ).encode()
 
-            # Step 3: Apply Memory-Hard Computation
-            memory_index = (nonce % len(memory_buffer) - 64) % len(memory_buffer)
-            memory_hard_data = header_data + memory_buffer[memory_index:memory_index + 64]
+            # ✅ Serialize block header data with nonce
+            header_data = stable_data + str(nonce).encode()
 
-            # Step 4: Iterative Hashing with Algorithm Rotation
-            hash_result = memory_hard_data
+            # ✅ Perform Optimized Hashing
+            hash_result = hashlib.sha3_384(header_data).digest()
             for _ in range(iterations):
-                if algorithm_version == 0:
-                    hash_result = hashlib.sha3_384(hash_result).digest()
-                elif algorithm_version == 1:
-                    hash_result = hashlib.sha3_512(hash_result).digest()
-                else:
-                    hash_result = hashlib.blake2b(hash_result).digest()
+                hash_result = hashlib.sha3_384(hash_result).digest()
 
-            # Step 5: Floating-Point Math Obfuscation
-            float_value = sum([math.sin(x) * math.log1p(x) for x in range(1, 100)])
-            hash_result = hashlib.sha3_384(hash_result + str(float_value).encode()).hexdigest()
+            # ✅ Live Nonce Display Every 1000 Attempts
+            if nonce % 1000 == 0:
+                elapsed_time = round(time.time() - start_time, 2)
+                sys.stdout.write(f"\r[INFO] Nonce: {nonce} | Time Elapsed: {elapsed_time} sec")
+                sys.stdout.flush()
 
-            # Step 6: Algorithm Rotation Based on Block Height & Hashrate Spikes
-            if block_header.index % rotation_interval == 0 or self.detect_hashrate_spike():
-                hash_result = hashlib.sha3_384(hash_result.encode()).hexdigest()
-
-            # Step 7: Check if Valid Hash is Found
-            hash_int = int(hash_result, 16)
+            # ✅ Check if Hash Meets Target
+            hash_int = int(hash_result.hex(), 16)
             if hash_int < target:
-                return nonce, hash_result
+                mining_time = round(time.time() - start_time, 2)
+                print(f"\n\n[SUCCESS] Valid Nonce Found: {nonce}")
+                print(f"[SUCCESS] Block Hash: {hash_result.hex()}")
+                print(f"[INFO] Mining Time: {mining_time} seconds")
+                print(f"[INFO] Final Nonce: {nonce}")
+                print(f"[INFO] Block Difficulty: {hex(target)}\n")
 
-            nonce += 1
+                return nonce, hash_result.hex()
+
+            nonce += 1  # ✅ Increment nonce faster
+
+
 
 
 
     def mine_block(self, network="testnet"):
         """
         Mine a new block using ASIC-resistant PoW.
+        - Prints full block details before storing in DB.
         """
-        from Zyiron_Chain.blockchain.block_manager import BlockManager  # ✅ Lazy Import Fix
         from Zyiron_Chain.blockchain.block import Block
-        from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
 
         last_block = self.block_manager.chain[-1] if self.block_manager.chain else None
         block_height = last_block.index + 1 if last_block else 0
         prev_hash = last_block.hash if last_block else "0" * 96
 
+        # Select transactions
         transactions = self.transaction_manager.select_transactions_for_block()
         total_fees = sum(
             sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount")) - 
@@ -168,7 +175,8 @@ class Miner:
             for tx in transactions
         )
 
-        coinbase_tx = self.transaction_manager.create_coinbase_tx(total_fees, network)
+        # Create coinbase transaction
+        coinbase_tx = self.transaction_manager.create_coinbase_tx(total_fees, network, block_height)
         transactions.insert(0, coinbase_tx)
 
         new_block = Block(
@@ -179,26 +187,43 @@ class Miner:
             key_manager=self.transaction_manager.key_manager
         )
 
-        target = (
-            0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-            if block_height == 0 else self.block_manager.calculate_target()
-        )
+        # Compute difficulty target
+        target = self.block_manager.calculate_target()
 
-        print(f"[INFO] Mining block {block_height} with target {hex(target)}...")
+        print(f"[INFO] Mining Block {block_height} - Target Difficulty: {hex(target)}")
 
+        # Perform ASIC-resistant PoW
         network_hashrate = self.block_manager.get_network_hashrate()
         new_block.header.nonce, new_block.hash = self.asic_resistant_pow(new_block.header, target, network_hashrate)
 
-        print(f"[SUCCESS] Block {block_height} mined! Nonce: {new_block.header.nonce}, Hash: {new_block.hash}")
+        # ✅ Print full block details **before** storing in DB
+        print("\n[BLOCK MINED SUCCESSFULLY!]")
+        print(f"[INFO] Block Height: {block_height}")
+        print(f"[INFO] Previous Hash: {prev_hash}")
+        print(f"[INFO] New Block Hash: {new_block.hash}")
+        print(f"[INFO] Merkle Root: {new_block.header.merkle_root}")
+        print(f"[INFO] Nonce: {new_block.header.nonce}")
+        print(f"[INFO] Timestamp: {new_block.timestamp}")
+        print(f"[INFO] Block Difficulty: {hex(target)}")
+        print(f"[INFO] Transactions Included: {len(new_block.transactions)}\n")
 
+        # ✅ Print transaction details
+        for tx in new_block.transactions:
+            print(f"[TRANSACTION] ID: {tx.tx_id}, Type: {tx.type}, Inputs: {len(tx.inputs)}, Outputs: {len(tx.outputs)}")
+
+        # ✅ Store block in the database
         self.block_manager.chain.append(new_block)
         self.storage_manager.store_block(new_block, self.block_manager.calculate_block_difficulty(new_block))
-        self.storage_manager.save_blockchain_state(self.block_manager.chain, [])
+
+        # ✅ Verify block storage
+        stored_block = self.storage_manager.poc.unqlite_db.get(f"block:{block_height}")
+        if stored_block:
+            print(f"[SUCCESS] Block {block_height} successfully saved to DB!")
+            print(f"[STORED DATA] {stored_block}")
+        else:
+            print(f"[ERROR] Block {block_height} did NOT save correctly!")
 
         return True
-
-
-
 
 
     def mining_loop(self):

@@ -67,18 +67,25 @@ class PoC:
         # ✅ Assign storage_manager to UnQLite since it handles full blockchain storage
         self.storage_manager = self.unqlite_db  
 
-        # ✅ Initialize BlockManager (Fix for missing attribute)
-        from Zyiron_Chain.blockchain.block_manager import BlockManager  # Ensure correct import
-        self.block_manager = BlockManager(storage_manager=self.lmdb_manager)
-
-        # ✅ Initialize `TransactionManager` to Fix Missing Attribute Error
-        from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
-        from Zyiron_Chain.blockchain.utils.key_manager import KeyManager  # Ensure KeyManager is available
+        # ✅ Initialize Key Manager
+        from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
         self.key_manager = KeyManager()  # ✅ Ensure KeyManager is initialized
+
+        # ✅ Initialize Block Manager first (Prevent NoneType error)
+        from Zyiron_Chain.blockchain.block_manager import BlockManager
+        self.block_manager = BlockManager(storage_manager=self.storage_manager, transaction_manager=None)
+
+        # ✅ Initialize Storage Manager with Block Manager
+        from Zyiron_Chain.blockchain.storage_manager import StorageManager
+        self.storage_manager = StorageManager(self, block_manager=self.block_manager)
+
+        # ✅ Initialize Transaction Manager
+        from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
         self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
 
-        # ✅ Pass `transaction_manager` to `BlockManager`
-        self.block_manager = BlockManager(storage_manager=self.storage_manager, transaction_manager=self.transaction_manager)
+        # ✅ Update Block Manager to have the correct Storage Manager and Transaction Manager
+        self.block_manager.transaction_manager = self.transaction_manager
+        self.block_manager.storage_manager = self.storage_manager
 
         # ✅ Lazy Load FeeModel to Prevent Circular Import
         FeeModel = get_fee_model()
@@ -97,7 +104,6 @@ class PoC:
 
         # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
         self._cache = {}  # 🚀 This prevents `AttributeError`
-
 
 
     ### --------------------- Anti Farm Logic -------------------------------###
