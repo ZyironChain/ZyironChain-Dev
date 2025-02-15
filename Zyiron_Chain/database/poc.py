@@ -105,71 +105,19 @@ class PoC:
         # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
         self._cache = {}  # 🚀 This prevents `AttributeError`
 
+        # Initialize the mempools
+        from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
+        from Zyiron_Chain.smartpay.smartmempool import SmartMempool
 
-    ### --------------------- Anti Farm Logic -------------------------------###
+        # Fix: Pass a valid integer for `max_size_mb` (e.g., 500 MB)
+        self.standard_mempool = StandardMempool(self)
+        self.smart_mempool = SmartMempool(max_size_mb=500)  # Pass valid integer, e.g., 500MB
 
-    # 🚀 Dynamic VRAM Scaling (8MB - 192MB)
-    def get_vram_allocation(self):
-        """Determine dynamic VRAM requirement based on network hashrate."""
-        hashrate = self.get_network_hashrate()
+        # Initialize Transaction Manager with the mempools
+        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
 
-        if hashrate < 10_000:
-            return 8  # 8MB VRAM
-        elif hashrate < 50_000:
-            return 32
-        elif hashrate < 100_000:
-            return 64
-        elif hashrate < 500_000:
-            return 128
-        else:
-            return 192  # 192MB for high hashrate
-
-
-    # 🔁 Algorithm Rotation Based on Hashrate
-    def check_algorithm_rotation(self, block_index):
-        """Trigger algorithm rotation if hashrate jumps 10%+ in 2 hours."""
-        hashrate_change = self.get_network_hashrate_change()
-        if hashrate_change > 10:
-            logging.warning(f"[WARNING] Hashrate spiked {hashrate_change:.2f}%. Rotating algorithm.")
-            return True
-        return block_index % random.randint(24, 100) == 0  # Normal rotation every 24-100 blocks
-
-    # 🚨 ASIC & Farm Detection
-    def detect_farm_activity(self):
-        """Detect large mining farms based on unusual hashrate spikes."""
-        hashrate_change = self.get_network_hashrate_change()
-        if hashrate_change > 10:
-            logging.warning(f"[WARNING] Hashrate increased {hashrate_change:.2f}%. Activating countermeasures.")
-            self.increase_vram_allocation()
-            self.increase_difficulty()
-            self.force_algorithm_rotation()
-
-    # ⚙️ Real-Time Difficulty Adjustment (Every 24 Blocks)
-    def adjust_difficulty(self, block_index):
-        """Adjust mining difficulty dynamically every 24 blocks."""
-        if block_index % 24 == 0:
-            self.block_manager.recalculate_difficulty()
-
-    # ⏳ Network Hashrate Monitoring (Every 2 Hours)
-    def monitor_network_hashrate(self):
-        """Check network hashrate every 2 hours & adjust accordingly."""
-        while True:
-            time.sleep(7200)  # 2-hour intervals
-            hashrate_change = self.get_network_hashrate_change()
-            if hashrate_change < 5:
-                logging.info("[INFO] Minor hashrate change. No major adjustments needed.")
-            elif hashrate_change < 10:
-                logging.info("[INFO] Moderate hashrate increase detected. Adjusting difficulty.")
-                self.adjust_difficulty(self.get_latest_block_index())
-            else:
-                logging.warning(f"[WARNING] Major hashrate spike ({hashrate_change:.2f}%). Triggering countermeasures.")
-                self.detect_farm_activity()
-
-
-
-
-
-
+        # Set the default mempool to StandardMempool
+        self.mempool = self.standard_mempool  # You can switch to self.smart_mempool if needed
 
 
     ### -------------------- BLOCKCHAIN STORAGE & VALIDATION -------------------- ###
@@ -214,6 +162,21 @@ class PoC:
             self.lmdb_manager.rollback()
             logging.error(f"[ERROR] Block storage failed: {e}")
             raise
+
+
+
+    def get_all_blocks(self):
+        """
+        Retrieve all stored blocks from UnQLite.
+        """
+        try:
+            all_blocks = self.unqlite_db.get_all()  # ✅ Retrieve all blocks
+            print(f"[DEBUG] Blocks Retrieved from UnQLite: {all_blocks}")
+            return all_blocks
+
+        except Exception as e:
+            print(f"[ERROR] Failed to retrieve blocks: {str(e)}")
+            return []
 
 
 
@@ -300,70 +263,41 @@ class PoC:
         logging.info(f"[INFO] Block {block.index} passed consistency checks.")
 
     def get_last_block(self):
-        """Fetch the latest block from the database, returning a default block if empty."""
+        """Fetch the latest block from the database. Ensure Genesis Block is created and stored if missing."""
         from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
 
         logging.info("[POC] Fetching latest block...")
 
-        blocks = self.unqlite_db.get_all_blocks()
-        if not blocks:
-            logging.warning("[POC] No blocks found in database. Creating Genesis Block...")
-            return Block(
-                index=0,
-                previous_hash="0" * 96,
-                transactions=[CoinbaseTx(block_height=0, miner_address="genesis", reward=Decimal("100.0"))],
-                timestamp=int(time.time()),
-                key_manager=KeyManager(),
-                nonce=0,
-                poc=self
-            )
+        # ✅ Try fetching the latest stored block
+        block_data = self.unqlite_db.get_block("block:0")
 
-        last_block_data = blocks[-1]  # Get the most recent block
+        if not block_data:
+            logging.warning("[POC] No blocks found. Creating and storing Genesis Block...")
+            self.block_manager.create_genesis_block()  # ✅ Force-create Genesis Block
+            block_data = self.unqlite_db.get_block("block:0")  # ✅ Retry fetching it
 
-        # ✅ Ensure critical fields exist
-        last_block_data.setdefault("index", len(blocks) - 1)  
-        last_block_data.setdefault("previous_hash", "0" * 96)  
-        last_block_data.setdefault("timestamp", time.time())  
-        last_block_data.setdefault("merkle_root", "0" * 96)  
-        last_block_data.setdefault("nonce", 0)  
-        last_block_data.setdefault("header", {
-            "version": 1,
-            "index": last_block_data["index"],
-            "previous_hash": last_block_data["previous_hash"],
-            "merkle_root": last_block_data["merkle_root"],
-            "timestamp": last_block_data["timestamp"],
-            "nonce": last_block_data["nonce"]
-        })
+        if not block_data:
+            raise RuntimeError("[ERROR] Failed to retrieve or create Genesis Block!")
 
-        # ✅ Handle missing hash by recalculating it
-        if "hash" not in last_block_data:
-            logging.warning(f"[POC] Block {last_block_data['index']} missing 'hash'. Recalculating...")
-            temp_block = Block.from_dict(last_block_data)
-            last_block_data["hash"] = temp_block.calculate_hash()
-
-        return Block.from_dict(last_block_data)  # ✅ Ensures return type is Block object
+        # ✅ Convert block data to a Block object
+        return get_block.from_dict(block_data)
 
 
 
 
 
-    def get_block(self, block_hash):
-        """
-        Retrieve a block from the blockchain database by its hash.
-        """
-        logging.info(f"[POC] Fetching block with hash {block_hash}")
+
+    def get_block(self, block_hash: str):
+        """Get block from UnQLite with proper error handling"""
         try:
-            block_data = self.unqlite_db.get_block(block_hash)
-            if block_data:
-                return get_block.from_dict(block_data)  # Ensure return type is Block object
-            logging.warning(f"[POC] Block {block_hash} not found.")
+            return self.unqlite_db.get_block(block_hash)
+        except KeyError:
             return None
         except Exception as e:
-            logging.error(f"[POC] Failed to fetch block {block_hash}: {e}")
+            logging.error(f"Block retrieval failed: {str(e)}")
             return None
-    
-    
-        
+
+            
     def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
         """Retrieve UTXO from SQLite, ensuring correct row conversion and caching."""
         
