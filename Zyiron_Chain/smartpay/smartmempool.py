@@ -29,7 +29,6 @@ class SmartMempool:
         self.current_size_bytes = 0  # Track current memory usage
         self.confirmation_blocks = confirmation_blocks  # Block confirmation thresholds
 
-
     def add_transaction(self, transaction, current_block_height):
         """
         Add a Smart Transaction to the mempool if valid.

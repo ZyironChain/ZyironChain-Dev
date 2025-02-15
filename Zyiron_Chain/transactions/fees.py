@@ -260,44 +260,16 @@ class FeeModel:
 
 
         
-    def calculate_fee(self, block_size, payment_type, amount, tx_size):
-        """Calculate the base transaction fee based on congestion level and payment type."""
+    def calculate_fee(self, transaction):
+        """Calculate transaction fees, preventing negative fees."""
+        
+        input_total = sum(inp.amount for inp in transaction.inputs if hasattr(inp, "amount"))
+        output_total = sum(out.amount for out in transaction.outputs if hasattr(out, "amount"))
 
-        # ✅ Convert Enum type to uppercase string if necessary
-        if isinstance(payment_type, TransactionType):
-            payment_type = payment_type.name.upper()
+        fee = max(0, input_total - output_total)  # ✅ Prevent negative fees
 
-        valid_payment_types = ["STANDARD", "SMART", "INSTANT", "COINBASE"]
-        if payment_type not in valid_payment_types:
-            raise ValueError(f"[ERROR] Unsupported payment type: {payment_type}")
+        if fee < 0:
+            logging.warning(f"[WARNING] Negative Fee Detected: Adjusting to 0. Input: {input_total}, Output: {output_total}, Fee: {fee}")
 
-        congestion_level = self.get_congestion_level(block_size, payment_type, amount)
+        return fee
 
-        # ✅ Ensure congestion level exists in fee_percentages
-        if congestion_level not in self.fee_percentages:
-            raise KeyError(f"[ERROR] Congestion level '{congestion_level}' is missing from fee percentages.")
-
-        if payment_type not in self.fee_percentages[congestion_level]:
-            raise KeyError(f"[ERROR] Missing fee percentage for payment type: {payment_type} under congestion level {congestion_level}")
-
-        max_percentage = self.fee_percentages[congestion_level][payment_type]
-
-        # ✅ Ensure minimum base fee is respected
-        base_fee = Decimal(self.base_fee_rate) * Decimal(tx_size)
-
-        # ✅ Scale based on block size and congestion level
-        scaled_percentage = Decimal(max_percentage) * (Decimal(block_size) / Decimal(10))
-        calculated_fee = Decimal(amount) * scaled_percentage
-
-        # ✅ Ensure calculated fee is at least the base fee
-        final_fee = max(calculated_fee, base_fee)
-
-        # ✅ Ensure minimum transaction fee is applied
-        min_transaction_fee = Decimal("0.000001")  # Minimum fee per transaction
-        final_fee = max(final_fee, min_transaction_fee)
-
-        if final_fee < 0:
-            logging.error("[ERROR] Transaction fee calculation resulted in a negative fee!")
-            final_fee = Decimal("0.000001")  # ✅ Ensure it is not negative
-
-        return final_fee

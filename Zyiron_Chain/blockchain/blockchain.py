@@ -14,50 +14,85 @@ import time
 from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx, TransactionFactory, sha3_384_hash
 from Zyiron_Chain.transactions.transaction_services import TransactionService
 from Zyiron_Chain.transactions.fees import FeeModel, FundsAllocator
-
+from Zyiron_Chain.blockchain.block import Block
 from decimal import Decimal
 import time
 
 class Blockchain:
-    def __init__(self):
-        # Existing initialization
+    def __init__(self, storage_manager, transaction_manager, block_manager, key_manager):
+        """
+        Initialize the blockchain.
+        - Ensures the Genesis block exists at startup.
+        - Manages block storage, difficulty adjustment, and block rewards.
+        - Manages key handling via key_manager.
+        """
+        self.storage_manager = storage_manager
+        self.transaction_manager = transaction_manager
+        self.block_manager = block_manager
+        self.key_manager = key_manager  # Add this line to store key_manager
         self.fee_model = FeeModel(max_supply=Decimal('84096000'), base_fee_rate=Decimal('0.00015'))
 
-        self.allocator = FundsAllocator()
-        self.tx_service = TransactionService(self.fee_model, self.allocator)
-        self.pending_transactions = []
         self.chain = []
         self.ZERO_HASH = '0' * 96
         self.current_block_size = 1  # MB
         self.block_size_adjustment_interval = 288
 
-        # New monetary policy parameters
         self.initial_reward = Decimal('100.00')
-        self.halving_interval = 420480  # 4 years in 5-min blocks (4*365*24*12)
+        self.halving_interval = 420480  # 4 years in 5-min blocks
         self.max_supply = Decimal('84096000')
         self.total_issued = Decimal('0')
-        self.block_time_target = 300  # 5 minutes in seconds
+        self.block_time_target = 300  # 5 minutes
 
-        # Anti-Farm PoW Adjustments
-        self.vram_scaling = 8  # Starts at 8MB, increases dynamically
-        self.algorithm_rotation_interval = 24  # Rotates every 24 blocks minimum
-        self.difficulty_check_interval = 24  # Recalculates every 24 blocks
-        self.last_hashrate_check = time.time()  # For 2-hour monitoring
+        # Ensure the Genesis block exists
+        self._ensure_genesis_block()
+
+        # Initialize the Miner (pass key_manager)
+        self.miner = Miner(self.block_manager, self.transaction_manager, self.storage_manager, self.key_manager)
+
+
+    def _ensure_genesis_block(self):
+        """
+        Ensure the Genesis block exists in the blockchain.
+        - Tries to load the last stored block from UnQLite.
+        - If no block is found, mines a new Genesis block.
+        """
+        print("[INFO] Checking for stored blockchain data...")
+
+        try:
+            # ✅ FIX: Use the correct function from PoC instead of `get_all_blocks()`
+            stored_genesis = self.storage_manager.poc.get_block("block:0")
+
+            if stored_genesis:
+                print("[INFO] Loaded stored Genesis block from UnQLite.")
+                last_block = Block.from_dict(stored_genesis)
+                self.chain.append(last_block)
+                self.block_manager.chain.append(last_block)
+                return
+
+        except AttributeError as e:
+            print(f"[ERROR] UnQLite Retrieval Issue: {e}")
+        
+        print("[INFO] No stored blockchain data found. Auto-mining Genesis block...")
+        
+        genesis_block = self._create_genesis_block()
+
+        print(f"[DEBUG] Genesis Block Difficulty Before Storing: {hex(genesis_block.header.difficulty)}")
+
+        self.chain.append(genesis_block)
+        self.block_manager.chain.append(genesis_block)
+
+        # ✅ FIX: Use the correct function to store a block
+        self.storage_manager.store_block(genesis_block, genesis_block.header.difficulty)
+
+        print("[SUCCESS] Genesis block auto-mined and stored!")
 
 
 
-    def _detect_hashrate_spike(self):
-        """Check for hashrate spikes every 2 hours."""
-        if time.time() - self.last_hashrate_check >= 7200:  # Every 2 hours
-            self.last_hashrate_check = time.time()
-            previous_difficulty = self.chain[-self.difficulty_check_interval]['header']['difficulty']
-            current_difficulty = self.chain[-1]['header']['difficulty']
 
-            # Percentage change in hashrate
-            hashrate_change = ((current_difficulty - previous_difficulty) / previous_difficulty) * 100
-            return hashrate_change
 
-        return 0
+
+
+
 
 
     def _calculate_block_reward(self):
@@ -72,7 +107,13 @@ class Blockchain:
 
 
     def _create_coinbase(self, miner_address: str, fees: Decimal):
-        """Create coinbase transaction with protocol rules."""
+        """
+        Create coinbase transaction with protocol rules.
+        Fetch the miner address from the KeyManager based on the network and role.
+        """
+        # Fetch the miner's public key from KeyManager
+        miner_address = self.key_manager.get_default_public_key("mainnet", "miner")  # Assuming 'mainnet' and 'miner' roles
+
         block_reward = self._calculate_block_reward()
         total_reward = block_reward + fees
 
@@ -91,138 +132,120 @@ class Blockchain:
         }
 
 
-    def _calculate_difficulty(self):
-        """Adjust difficulty dynamically to maintain 5-minute block times while preventing extreme fluctuations."""
-        if len(self.chain) == 0:
-            return 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 4 Leading Zeros
-
-        if len(self.chain) < self.difficulty_check_interval:
-            return self.chain[-1]['header']['difficulty'] if self.chain else 1
-
-        # Calculate actual time for the last difficulty interval
-        actual_time = self.chain[-1]['header']['timestamp'] - self.chain[-self.difficulty_check_interval]['header']['timestamp']
-        target_time = self.difficulty_check_interval * self.block_time_target
-
-        # Adjust difficulty proportionally with clamping to prevent drastic changes
-        ratio = actual_time / target_time
-        new_difficulty = int(self.chain[-1]['header']['difficulty'] * max(0.75, min(1.25, ratio)))
-
-        return max(new_difficulty, 1)  # Ensure difficulty is never below 1
 
 
 
-    def create_block(self, miner_address: str):
-        """Create a new block with Anti-Farm PoW logic, dynamic VRAM scaling, and adaptive block sizes."""
-        
-        # ✅ Dynamically adjust block size based on network congestion
-        self._calculate_block_size()
+    def add_block(self, new_block):
+        """
+        Add a mined block to the blockchain.
+        - Stores the block in memory.
+        - Saves it to persistent storage.
+        - Ensures correct difficulty recalculation.
+        """
+        print(f"[INFO] Adding Block #{new_block.index} to blockchain...")
 
-        # ✅ Calculate total transaction fees
-        total_fees = sum(tx['fee'] for tx in self.pending_transactions)
+        # ✅ Append to in-memory chain
+        self.chain.append(new_block)
 
-        # ✅ Create coinbase transaction
-        coinbase_tx = self._create_coinbase(miner_address, Decimal(total_fees))
+        # ✅ Store Block in UnQLite
+        self.storage_manager.store_block(new_block, difficulty=new_block.header.difficulty)
 
-        # ✅ Dynamic Block Size Allocation
-        max_block_bytes = self.current_block_size * 1024 * 1024  # Converts MB to bytes
-        current_block_size = 0
-        selected_transactions = []
+        # ✅ Save Blockchain State
+        self.storage_manager.save_blockchain_state(self.chain, [])
 
-        for tx in list(self.pending_transactions):
-            tx_size = self._calculate_transaction_size(tx)
-            if current_block_size + tx_size <= max_block_bytes:
-                selected_transactions.append(tx)
-                current_block_size += tx_size
-                self.pending_transactions.remove(tx)
-            else:
-                break
+        print(f"[SUCCESS] Block #{new_block.index} added successfully!")
 
-        # ✅ Anti-Farm PoW Adjustments (Detect Hashrate Spikes & Adjust VRAM + Algorithm)
-        hashrate_change = self._detect_hashrate_spike()
 
-        if hashrate_change >= 10:
-            self.vram_scaling = min(192, self.vram_scaling * 1.5)  # Increase VRAM Scaling (Max: 192MB)
-            self.algorithm_rotation_interval = 24  # Rotate algorithm immediately
 
-        elif 5 <= hashrate_change < 10:
-            self.vram_scaling = min(192, self.vram_scaling * 1.2)  # Moderate VRAM scaling increase
-            self.algorithm_rotation_interval = 50  # Algorithm rotation slowed down
+    def create_block(self):
+        """
+        Delegate mining to the Miner class and create a new block.
+        """
+        # The miner mines a block and returns it
+        return self.miner.mine_block(network="mainnet")
 
-        # ✅ Assemble Block
-        block = {
-            "header": {
-                "version": 3,
-                "prev_hash": self.chain[-1]['header']['hash'] if self.chain else self.ZERO_HASH,
-                "merkle_root": self._calculate_merkle_root([coinbase_tx] + selected_transactions),
-                "timestamp": int(time.time()),
-                "difficulty": self._calculate_difficulty(),
-                "nonce": 0,
-                "block_size": self.current_block_size,  # ✅ Now dynamic (1MB-10MB)
-                "vram_usage": self.vram_scaling,  # ✅ Tracks current VRAM usage
-                "reward": float(self._calculate_block_reward())
-            },
-            "transactions": [coinbase_tx] + selected_transactions,
-            "hash": None
-        }
 
-        # ✅ Mining Logic (Anti-Farm PoW Mining)
-        while True:
-            block_data = f"{block['header']}{block['transactions']}"
-            block_hash = hashlib.sha3_384(block_data.encode()).hexdigest()
 
-            if block_hash.startswith('0' * self.chain[-1]['header']['difficulty']):  # ✅ Dynamic difficulty targeting
-                block["hash"] = block_hash
-                break
 
-            block['header']['nonce'] += 1  # Increment nonce for PoW
 
-        # ✅ Append Block to Chain
-        self.chain.append(block)
-
-        # ✅ Recalculate Block Size & Difficulty After Each Block
-        self._calculate_block_size()
-        self._calculate_difficulty()
-
-        return block
 
     def _create_genesis_block(self):
-        """Initialize genesis block with special rules"""
-        genesis = {
-            "header": {
-                "version": 1,
-                "prev_hash": self.ZERO_HASH,
-                "merkle_root": sha3_384_hash("genesis"),
-                "timestamp": int(time.time()),
-                "difficulty": 1,
-                "nonce": 0,
-                "block_size": 1,
-                "reward": float(self.initial_reward)
-            },
-            "transactions": [self._create_coinbase(
-                miner_address="genesis",
-                fees=Decimal('0')
-            )],
-            "hash": None
-        }
-        genesis['header']['hash'] = self._calculate_block_hash(genesis)
-        self.chain.append(genesis)
-        self.total_issued += self.initial_reward
+        """
+        Creates the Genesis block with an all-zero previous hash.
+        - Uses SHA3-384 hashing.
+        - Ensures correct difficulty initialization.
+        """
+        print("[INFO] Creating Genesis Block...")
 
+        coinbase_tx = CoinbaseTx(
+            block_height=0,
+            miner_address="genesis",
+            reward=self.initial_reward
+        )
 
+        genesis_block = Block(
+            index=0,
+            previous_hash="0" * 96,  # ✅ Ensures All-Zero Previous Hash
+            transactions=[coinbase_tx],
+            timestamp=int(time.time()),
+            nonce=0
+        )
+
+        # ✅ Lower Genesis Difficulty
+        genesis_difficulty = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+        genesis_block.header.difficulty = genesis_difficulty  
+        genesis_block.hash = genesis_block.calculate_hash()
+
+        print(f"[SUCCESS] Genesis block created with Difficulty: {hex(genesis_block.header.difficulty)}")
+
+        return genesis_block
+
+    def _adjust_difficulty(self, block_height):
+        """
+        Adjust difficulty every `difficulty_adjustment_interval` blocks based on the mining time.
+        """
+        if block_height % self.difficulty_adjustment_interval == 0:
+            # Check average mining time
+            avg_mining_time = self.average_block_time / self.difficulty_adjustment_interval
+            print(f"[DEBUG] Average Mining Time for last {self.difficulty_adjustment_interval} blocks: {avg_mining_time:.2f}s")
+
+            if avg_mining_time > self.block_time_target:
+                # If mining is too slow, decrease difficulty (more blocks should be mined in less time)
+                print("[INFO] Mining too slow, lowering difficulty.")
+                self._lower_difficulty()
+            elif avg_mining_time < self.block_time_target:
+                # If mining is too fast, increase difficulty
+                print("[INFO] Mining too fast, increasing difficulty.")
+                self._increase_difficulty()
+
+            # Reset the mining time tracker
+            self.average_block_time = 0
+
+    def _lower_difficulty(self):
+        """Lower the mining difficulty."""
+        current_difficulty = self.block_manager.calculate_target()
+        new_difficulty = current_difficulty * 2  # Make it easier to mine
+        self.block_manager.difficulty_target = new_difficulty
+        print(f"[INFO] New Difficulty (lowered): {hex(new_difficulty)}")
+
+    def _increase_difficulty(self):
+        """Increase the mining difficulty."""
+        current_difficulty = self.block_manager.calculate_target()
+        new_difficulty = current_difficulty // 2  # Make it harder to mine
+        self.block_manager.difficulty_target = new_difficulty
+        print(f"[INFO] New Difficulty (increased): {hex(new_difficulty)}")
     def _calculate_block_size(self):
         """
-        Dynamically adjust block size based on network congestion.
+        Dynamically adjust block size based on the number of pending transactions.
         Block sizes scale linearly from 1MB to 10MB based on transaction count.
         """
-        # Measure pending transactions
-        pending_tx_count = len(self.pending_transactions)
-        
-        # Define thresholds based on TPS analysis
+        pending_tx_count = len(self.transaction_manager.mempool)
+
         min_tx = 1000     # Minimum transactions for 1MB block
         max_tx = 50000    # Maximum transactions for 10MB block
         min_size = 1.0    # Minimum block size (MB)
         max_size = 10.0   # Maximum block size (MB)
-        
+
         # Ensure linear scaling of block size
         if pending_tx_count <= min_tx:
             new_block_size = min_size
@@ -230,8 +253,43 @@ class Blockchain:
             new_block_size = max_size
         else:
             new_block_size = min_size + ((max_size - min_size) * ((pending_tx_count - min_tx) / (max_tx - min_tx)))
-        
+
         # Ensure block size stays within valid limits
         self.current_block_size = max(min_size, min(new_block_size, max_size))
-        
+
         print(f"[INFO] Block size adjusted to {self.current_block_size:.2f}MB based on {pending_tx_count} transactions.")
+
+
+if __name__ == "__main__":
+    import time
+    from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+    from Zyiron_Chain.blockchain.blockchain import Blockchain
+    from Zyiron_Chain.blockchain.miner import Miner
+    from Zyiron_Chain.blockchain.storage_manager import StorageManager
+    from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
+    from Zyiron_Chain.blockchain.block_manager import BlockManager
+    from Zyiron_Chain.database.poc import PoC
+
+    # Initialize PoC instance
+    poc_instance = PoC()
+
+    # Initialize KeyManager
+    key_manager = KeyManager()
+
+    # Initialize StorageManager with PoC instance
+    storage_manager = StorageManager(poc_instance)
+
+    # Initialize TransactionManager
+    transaction_manager = TransactionManager(storage_manager, key_manager, poc_instance)
+
+    # Initialize BlockManager
+    block_manager = BlockManager(storage_manager, transaction_manager)
+
+    # Initialize Blockchain with KeyManager passed to Miner
+    blockchain = Blockchain(storage_manager, transaction_manager, block_manager, key_manager)
+
+    # Initialize Miner with KeyManager passed
+    miner = Miner(block_manager, transaction_manager, storage_manager, key_manager)
+
+    # Start the mining process
+    miner.mine_block(network="mainnet")

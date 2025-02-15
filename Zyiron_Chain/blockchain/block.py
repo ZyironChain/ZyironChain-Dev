@@ -121,14 +121,12 @@ class Block:
 
     def calculate_hash(self):
         """
-        Calculate the block hash using the block header.
+        Calculate the block hash using SHA3-384.
         :return: The computed block hash.
         """
-        if not self.header:
-            raise ValueError("Header must be set before calculating the hash.")
+        header_data = f"{self.header.version}{self.header.index}{self.header.previous_hash}{self.header.merkle_root}{self.header.timestamp}{self.header.nonce}".encode()
+        return hashlib.sha3_384(header_data).hexdigest()
 
-        self.hash = self.header.calculate_hash()
-        return self.hash
 
     def to_dict(self):
         """Convert Block into a serializable dictionary."""
@@ -242,46 +240,4 @@ class Block:
             return False
 
 
-    def mine_block(self, target):
-        """
-        Uses `Miner.asic_resistant_pow()` to mine the block.
-        :param target: The mining difficulty target.
-        """
-        from Zyiron_Chain.blockchain.miner import Miner  # ✅ Lazy Import Fix
 
-        miner = Miner(self.block_manager, self.transaction_manager, self.storage_manager)  # ✅ Ensure correct parameters
-        network_hashrate = miner.block_manager.get_network_hashrate()
-        self.header.nonce, self.hash = miner.asic_resistant_pow(self.header, target, network_hashrate)
-
-        return True  # ✅ Successfully mined the block
-
-
-
-
-    def get_block_difficulty(self):
-        """
-        Determines the difficulty for this block dynamically based on network hashrate.
-        :return: The adjusted difficulty.
-        """
-        poc = PoC()
-        return poc.block_manager.calculate_difficulty(self.index)
-
-    def check_farm_activity(self):
-        """
-        Detects potential mining farms based on network hashrate changes.
-        If hashrate increases too fast, activates countermeasures.
-        """
-        poc = PoC()
-        hashrate_change = poc.get_network_hashrate_change()
-
-        if hashrate_change > 10:
-            print(f"[WARNING] Hashrate increased by {hashrate_change:.2f}% in 2 hours. Activating countermeasures.")
-            poc.trigger_countermeasures(hashrate_change)
-
-    def __repr__(self):
-        """Return a string representation of the block."""
-        hash_preview = self.hash[:10] + "..." if self.hash else "None"
-        return (f"Block(index={self.index}, hash={hash_preview}, "
-                f"previous_hash={self.previous_hash[:10]}..., "
-                f"transactions={len(self.transactions)}, nonce={self.header.nonce}, "
-                f"timestamp={self.timestamp})")

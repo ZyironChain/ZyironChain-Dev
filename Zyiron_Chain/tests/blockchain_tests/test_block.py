@@ -4,8 +4,8 @@ import os
 # Add the project root directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
-
-
+from Zyiron_Chain.database.poc import PoC
+import json
 import unittest
 from Zyiron_Chain.blockchain.block import Block, BlockHeader
 
@@ -43,21 +43,22 @@ def query_latest_block():
         print("\n[❌ NO BLOCKS FOUND IN DATABASE]")
 
 def query_all_blocks():
-    """Fetch all blocks and print their details."""
-    poc = PoC()
+    """
+    Queries and prints all blocks from the UnQLite database.
+    """
+    print("\n[🔍 QUERYING ALL BLOCKS...]")
+    from Zyiron_Chain.database.poc import PoC
+
+    poc = PoC()  # ✅ Ensure PoC instance is created
     index = 0
 
-    print("\n[🔍 QUERYING ALL BLOCKS...]")
     while True:
-        block_data = poc.unqlite_db.get(f"block:{index}")
-        if not block_data:
-            break
-        print(f"\n[✅ BLOCK {index} DATA]")
-        print(json.dumps(block_data, indent=4))
+        block_data = poc.unqlite_db.get_block(f"block:{index}")  # ✅ FIXED HERE
+        if block_data is None:
+            break  # ✅ Stop when no more blocks exist
+        
+        print(f"\n[BLOCK {index}] {json.dumps(block_data, indent=4)}")  # ✅ Display block data
         index += 1
-
-    if index == 0:
-        print("\n[❌ NO BLOCKS FOUND IN DATABASE]")
 
 if __name__ == "__main__":
     print("\n[🔍 BLOCKCHAIN QUERY TOOL]")
