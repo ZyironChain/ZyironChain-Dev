@@ -16,6 +16,24 @@ from decimal import Decimal
 
 import logging
 
+# Remove all existing handlers (prevents log conflicts across modules)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Set up clean logging for this module
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+log = logging.getLogger(__name__)  # Each module gets its own logger
+
+log.info(f"{__name__} logger initialized.")
+
+
+# Ensure this is at the very top of your script, before any other code
+
 class TransactionManager:
     def __init__(self, storage_manager, key_manager, poc):
         """
@@ -28,23 +46,45 @@ class TransactionManager:
 
         # Initialize the mempools
         self.standard_mempool = StandardMempool(self.poc)
-        self.smart_mempool = SmartMempool(self.poc)
+        self.smart_mempool = SmartMempool(max_size_mb=1024)
+
+
+
+        # Set the default mempool to StandardMempool
+        self._mempool = self.standard_mempool  # Default to standard mempool
+
+
+    @property
+    def mempool(self):
+        """ Return the active mempool """
+        return self._mempool
+
+    def set_mempool(self, mempool_type="standard"):
+        """
+        Switch between StandardMempool and SmartMempool based on the type.
+        :param mempool_type: "standard" or "smart"
+        """
+        if mempool_type == "standard":
+            self._mempool = self.standard_mempool
+        elif mempool_type == "smart":
+            self._mempool = self.smart_mempool
+        else:
+            raise ValueError(f"Invalid mempool type: {mempool_type}")
 
     def store_transaction_in_mempool(self, transaction):
         """
-        Store a transaction in the appropriate mempool and route it via PoC.
+        Store a transaction in the appropriate mempool.
         """
-        with self.mempool_lock:
-            if transaction.tx_id.startswith("S-"):
-                current_height = len(self.storage_manager.block_manager.chain)
-                success = self.smart_mempool.add_transaction(transaction, current_height)
-            else:
-                success = self.standard_mempool.add_transaction(transaction)
+        if transaction.tx_id.startswith("S-"):
+            current_height = len(self.storage_manager.block_manager.chain)
+            success = self.smart_mempool.add_transaction(transaction, current_height)
+        else:
+            success = self.standard_mempool.add_transaction(transaction)
 
-            if success:
-                self.storage_manager.poc.route_transaction_to_mempool(transaction)
-            else:
-                logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the mempool.")
+        if success:
+            self.storage_manager.poc.route_transaction_to_mempool(transaction)
+        else:
+            logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the mempool.")
 
 
     def select_transactions_for_block(self, max_block_size_mb=10):
@@ -284,13 +324,12 @@ class TransactionManager:
 
 
 
-    def get_pending_transactions(self):
-        """
-        Get all pending transactions from both mempools.
-        """
-        # Retrieve transactions from both Smart and Standard mempools
-        standard_txs = self.standard_mempool.get_pending_transactions()
-        smart_txs = self.smart_mempool.get_pending_transactions()
-
-        # Combine both lists and return them
-        return standard_txs + smart_txs
+def get_pending_transactions(self, block_size_mb=None):
+    """
+    Get all pending transactions from the mempool.
+    :param block_size_mb: (Optional) Block size in MB.
+    """
+    if block_size_mb is not None:
+        # Filter transactions based on block size (if needed)
+        pass
+    return list(self.mempool.values())  # Return all pending transactions

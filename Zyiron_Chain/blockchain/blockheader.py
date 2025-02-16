@@ -2,34 +2,34 @@ import hashlib
 import time
 
 class BlockHeader:
-    def __init__(self, version, index, previous_hash, merkle_root, timestamp=None, nonce=0):
+    def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce, difficulty):
         """
-        Initialize a BlockHeader object.
-        :param version: The version of the block header.
-        :param index: The index of the block in the blockchain.
+        Initialize a BlockHeader.
+        :param version: The block version.
+        :param index: The block index.
         :param previous_hash: The hash of the previous block.
-        :param merkle_root: The Merkle root of the block's transactions.
-        :param timestamp: The timestamp of the block (defaults to current time).
+        :param merkle_root: The Merkle root of the transactions.
+        :param timestamp: The block creation timestamp.
         :param nonce: The nonce used for mining.
+        :param difficulty: The mining difficulty.
         """
         self.version = version
         self.index = index
         self.previous_hash = previous_hash
         self.merkle_root = merkle_root
-        self.timestamp = timestamp or time.time()
+        self.timestamp = timestamp
         self.nonce = nonce
+        self.difficulty = difficulty  # Add this line
 
     def to_dict(self):
-        """
-        Convert the BlockHeader object into a dictionary for serialization.
-        """
         return {
             "version": self.version,
             "index": self.index,
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
-            "nonce": self.nonce
+            "nonce": self.nonce,
+            "difficulty": self.difficulty  # Include difficulty in the dictionary
         }
 
     @classmethod
@@ -45,18 +45,18 @@ class BlockHeader:
             previous_hash=data["previous_hash"],
             merkle_root=data["merkle_root"],
             timestamp=data["timestamp"],
-            nonce=data["nonce"]
+            nonce=data["nonce"],
+            difficulty=data.get("difficulty", 0)  # Include difficulty
         )
 
     def calculate_hash(self):
         """
-        Calculates the double SHA-3 384 hash of the block header.
+        Calculates the SHA3-384 hash of the block header.
         """
         header_string = (
             f"{self.version}{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}"
         )
-        first_hash = hashlib.sha3_384(header_string.encode()).digest()
-        return hashlib.sha3_384(first_hash).hexdigest()
+        return hashlib.sha3_384(header_string.encode()).hexdigest()
 
     @property
     def hash_block(self):
@@ -81,6 +81,8 @@ class BlockHeader:
             raise ValueError("Invalid timestamp: Must be a positive number.")
         if not isinstance(self.nonce, int) or self.nonce < 0:
             raise ValueError("Invalid nonce: Must be a non-negative integer.")
+        if not isinstance(self.difficulty, int) or self.difficulty <= 0:
+            raise ValueError("Invalid difficulty: Must be a positive integer.")
 
     def __repr__(self):
         """
@@ -88,5 +90,6 @@ class BlockHeader:
         """
         return (
             f"BlockHeader(version={self.version}, index={self.index}, previous_hash={self.previous_hash[:10]}..., "
-            f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, timestamp={self.timestamp})"
+            f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, timestamp={self.timestamp}, "
+            f"difficulty={hex(self.difficulty)})"
         )

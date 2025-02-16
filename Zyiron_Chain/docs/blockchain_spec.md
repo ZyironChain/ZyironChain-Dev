@@ -1,1 +1,0 @@
-# Technical details of the blockchain

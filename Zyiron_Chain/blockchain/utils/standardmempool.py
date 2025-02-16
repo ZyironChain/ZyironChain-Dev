@@ -19,25 +19,51 @@ from Zyiron_Chain.transactions.fees import FeeModel
 
 import logging
 
+# Remove all existing handlers (prevents log conflicts across modules)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Set up clean logging for this module
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+log = logging.getLogger(__name__)  # Each module gets its own logger
+
+log.info(f"{__name__} logger initialized.")
+
+
+
+# Ensure this is at the very top of your script, before any other code
+
 class StandardMempool:
-    def __init__(self, poc, max_size_mb=500, timeout=86400, expiry_time=86400):
+    def __init__(self, poc, max_size_mb=1024, timeout=86400, expiry_time=86400):
         """
         Initialize the Standard Mempool.
 
         :param poc: PoC instance to interact with blockchain storage.
-        :param max_size_mb: Maximum size of the mempool in MB (default: 500 MB).
+        :param max_size_mb: Maximum size of the mempool in MB (default: 1024 MB).
         :param timeout: Transaction expiration time in seconds (default: 24 hours).
         :param expiry_time: Transaction expiry time in seconds (default: 24 hours).
         """
-        self.poc = poc  # ✅ Fix: Store PoC instance inside StandardMempool
+        self.poc = poc  # Store PoC instance inside StandardMempool
         self.transactions = {}  # Store transactions with their hash as key
-        self.dependencies = {}  # Track parent-child relationships
-        self.timeout = timeout  # Time in seconds for a transaction to expire
-        self.expiry_time = expiry_time  # Time in seconds for a transaction to expire if not confirmed
         self.lock = Lock()  # To handle concurrency
         self.max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
         self.current_size_bytes = 0  # Track current memory usage
-        self.fee_model = FeeModel(max_supply=Decimal("84096000"))  # Pass the required argument
+        self.timeout = timeout  # Time in seconds for a transaction to expire
+        self.expiry_time = expiry_time  # Time in seconds for a transaction to expire if not confirmed
+        self.fee_model = FeeModel(max_supply=Decimal("84096000"))  # FeeModel used for calculating fees
+
+
+
+    def __len__(self):
+        """Returns the number of transactions in the mempool."""
+        return len(self.transactions)
+
+
 
 
 
@@ -50,55 +76,41 @@ class StandardMempool:
         :param fee_model: Fee model to calculate minimum acceptable fees.
         :return: True if the transaction was added, False otherwise.
         """
-        # 🚨 Validate transaction type & structure
         if transaction.tx_id.startswith("S-"):
             print("[ERROR] Smart Transactions are not allowed in Standard Mempool.")
             return False
-        elif transaction.tx_id.startswith(("PID-" "CID-")):
-            transaction_type = "Instant" if transaction.tx_id.startswith("PID-") else "Child"
-        else:
-            transaction_type = "Standard"
 
         if not transaction.inputs or not transaction.outputs:
-
-            print(f"[ERROR] Invalid {transaction_type} Transaction: Must have at least one input and one output.")
+            print(f"[ERROR] Invalid Transaction: Must have at least one input and one output.")
             return False
 
-        # 🛑 Reject orphan transactions (Inputs must exist in chain or mempool)
         if not self.validate_transaction_inputs(transaction):
-
-            print(f"[WARN] {transaction_type} Transaction {transaction.tx_id} rejected due to missing inputs.")
+            print(f"[WARN] Transaction {transaction.tx_id} rejected due to missing inputs.")
             return False
 
-        # 🔄 Check for duplicate transactions
         if transaction.tx_id in self.transactions:
-            print(f"[WARN] {transaction_type} Transaction already exists in the Standard Mempool.")
+            print(f"[WARN] Transaction {transaction.tx_id} already exists in the Standard Mempool.")
             return False
 
-        # 🏦 Ensure minimum fee threshold based on network congestion
         transaction_size = transaction.size
         min_fee_required = fee_model.calculate_fee(
             payment_type="Standard",
-            amount=sum(out.amount for out in transaction.outputs),  
+            amount=sum(out.amount for out in transaction.outputs),
             tx_size=transaction.size,
-            block_size=1  # ✅ Fix: Added missing argument
+            block_size=1  # Adding missing argument
         )
 
-
-
         if transaction.fee < min_fee_required:
-            print(f"[ERROR] {transaction_type} Transaction {transaction.tx_id} rejected due to insufficient fee.")
+            print(f"[ERROR] Transaction {transaction.tx_id} rejected due to insufficient fee.")
             return False
 
-        # 📏 Ensure mempool does not exceed max size
         if self.current_size_bytes + transaction_size > self.max_size_bytes:
             print("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
             self.evict_transactions(transaction_size)
 
-        # 🔒 Lock mempool before adding transaction
         with self.lock:
             try:
-                # 🏛️ Register transaction in Dispute Resolution Contract
+                # Register transaction in Dispute Resolution Contract
                 smart_contract.register_transaction(
                     transaction_id=transaction.tx_id,
                     parent_id=getattr(transaction, "parent_id", None),
@@ -108,9 +120,8 @@ class StandardMempool:
                     amount=transaction.amount,
                     fee=transaction.fee
                 )
-                print(f"[INFO] {transaction_type} Transaction {transaction.tx_id} registered in smart contract.")
+                print(f"[INFO] Transaction {transaction.tx_id} registered in smart contract.")
 
-                # 📜 Add transaction to mempool
                 self.transactions[transaction.tx_id] = {
                     "transaction": transaction,
                     "timestamp": time.time(),
@@ -120,22 +131,14 @@ class StandardMempool:
                     "status": "Pending"
                 }
                 self.current_size_bytes += transaction_size
-
-                # 🔗 Maintain parent-child relationships for validation
-                for parent_tx_id in transaction.inputs:
-
-                    if parent_tx_id in self.transactions:
-                        self.transactions[parent_tx_id]["children"].add(transaction.tx_id)
-
-                print(f"[INFO] {transaction_type} Transaction {transaction.tx_id} added to the Standard Mempool.")
+                print(f"[INFO] Transaction {transaction.tx_id} added to the Standard Mempool.")
                 return True
 
             except KeyError as e:
                 print(f"[ERROR] Missing transaction field: {e}")
             except Exception as e:
-                print(f"[ERROR] Failed to register {transaction_type} Transaction in smart contract: {e}")
+                print(f"[ERROR] Failed to register transaction in smart contract: {e}")
                 return False
-
 
 
 
@@ -148,48 +151,25 @@ class StandardMempool:
 
 
 
+
     def validate_transaction_inputs(self, transaction):
         """Ensure all transaction inputs exist before accepting."""
         for tx_input in transaction.inputs:
-
             if not self.is_utxo_available(tx_input.tx_out_id):
                 return False
         return True
 
-    def get_pending_transactions(self, block_size_mb, transaction_type="Standard"):
+
+    # In the StandardMempool class, ensure get_pending_transactions handles block_size_mb
+    def get_pending_transactions(self, block_size_mb=None):
         """
-        Retrieve transactions for block inclusion, prioritizing high fees.
-        Allocates space based on transaction type: Instant (25%) or Standard (25%).
-
-        :param block_size_mb: Current block size in MB.
-        :param transaction_type: "Instant" or "Standard" to filter transactions.
-        :return: A list of transaction objects.
+        Get all pending transactions from the mempool.
+        :param block_size_mb: (Optional) Block size in MB.
         """
-        block_size_bytes = block_size_mb * 1024 * 1024
-        allocation = int(block_size_bytes * 0.25)  # 25% allocation for each type
-
-        with self.lock:
-            # Filter transactions by type
-            filtered_txs = [
-                tx for tx in self.transactions.values()
-                if (transaction_type == "Instant" and tx["transaction"].tx_id.startswith("PID-")) or
-                (transaction_type == "Standard" and not tx["transaction"].tx_id.startswith(("PID-", "CID-")))
-            ]
-
-            # Sort transactions by fee-per-byte
-            sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
-
-            # Select transactions within allocation
-            selected_txs = []
-            current_size = 0
-            for tx_data in sorted_txs:
-                if current_size + tx_data["transaction"].size > allocation:
-                    break
-                selected_txs.append(tx_data["transaction"])
-                current_size += tx_data["transaction"].size
-
-            return selected_txs
-
+        if block_size_mb is not None:
+            # Filter transactions based on block size (if needed)
+            pass
+        return list(self.mempool.values())  # Return all pending transactions
 
 
 
