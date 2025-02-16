@@ -1,7 +1,11 @@
 import hashlib
+from re import Pattern
+import re
 import time
 
 class BlockHeader:
+    _HASH_PATTERN: Pattern[str] = re.compile(r'^[a-fA-F0-9]{96}$')  # Class-level compiled pattern
+
     def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce, difficulty):
         """
         Initialize a BlockHeader.
@@ -19,7 +23,7 @@ class BlockHeader:
         self.merkle_root = merkle_root
         self.timestamp = timestamp
         self.nonce = nonce
-        self.difficulty = difficulty  # Add this line
+        self.difficulty = difficulty
 
     def to_dict(self):
         return {
@@ -29,7 +33,7 @@ class BlockHeader:
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
-            "difficulty": self.difficulty  # Include difficulty in the dictionary
+            "difficulty": self.difficulty
         }
 
     @classmethod
@@ -46,7 +50,7 @@ class BlockHeader:
             merkle_root=data["merkle_root"],
             timestamp=data["timestamp"],
             nonce=data["nonce"],
-            difficulty=data.get("difficulty", 0)  # Include difficulty
+            difficulty=data.get("difficulty", 0)
         )
 
     def calculate_hash(self):
@@ -54,7 +58,8 @@ class BlockHeader:
         Calculates the SHA3-384 hash of the block header.
         """
         header_string = (
-            f"{self.version}{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}"
+            f"{self.version}{self.index}{self.previous_hash}"
+            f"{self.merkle_root}{self.timestamp}{self.nonce}"
         )
         return hashlib.sha3_384(header_string.encode()).hexdigest()
 
@@ -67,29 +72,50 @@ class BlockHeader:
 
     def validate(self):
         """
-        Validate the integrity of the BlockHeader fields.
+        Comprehensive header validation with precise checks
         """
-        if not isinstance(self.version, int) or self.version <= 0:
-            raise ValueError("Invalid version: Must be a positive integer.")
+        validation_errors = []
+        
+        # Validate version
+        if not isinstance(self.version, int) or self.version != 1:
+            validation_errors.append("Invalid version: Must be integer 1")
+        
+        # Validate index
         if not isinstance(self.index, int) or self.index < 0:
-            raise ValueError("Invalid index: Must be a non-negative integer.")
-        if not isinstance(self.previous_hash, str) or len(self.previous_hash) != 96:
-            raise ValueError("Invalid previous_hash: Must be a 96-character string.")
-        if not isinstance(self.merkle_root, str) or len(self.merkle_root) != 96:
-            raise ValueError("Invalid merkle_root: Must be a 96-character string.")
-        if not isinstance(self.timestamp, (int, float)) or self.timestamp <= 0:
-            raise ValueError("Invalid timestamp: Must be a positive number.")
+            validation_errors.append("Invalid index: Must be non-negative integer")
+        
+        # Validate hashes using class-level pattern
+        if not self._HASH_PATTERN.fullmatch(str(self.previous_hash)):
+            validation_errors.append("Invalid previous_hash: 96-character hex required")
+        if not self._HASH_PATTERN.fullmatch(str(self.merkle_root)):
+            validation_errors.append("Invalid merkle_root: 96-character hex required")
+        
+        # Validate timestamp
+        max_time_drift = 7200  # 2 hours
+        current_time = time.time()
+        try:
+            ts = float(self.timestamp)
+            if not (current_time - max_time_drift <= ts <= current_time + max_time_drift):
+                validation_errors.append(f"Invalid timestamp: Drift exceeds 2 hours (value: {ts})")
+        except (TypeError, ValueError):
+            validation_errors.append("Invalid timestamp format: Must be numeric")
+        
+        # Validate mining parameters
         if not isinstance(self.nonce, int) or self.nonce < 0:
-            raise ValueError("Invalid nonce: Must be a non-negative integer.")
+            validation_errors.append("Invalid nonce: Must be non-negative integer")
         if not isinstance(self.difficulty, int) or self.difficulty <= 0:
-            raise ValueError("Invalid difficulty: Must be a positive integer.")
+            validation_errors.append("Invalid difficulty: Must be positive integer")
+        
+        if validation_errors:
+            raise ValueError("BlockHeader validation failed:\n- " + "\n- ".join(validation_errors))
 
     def __repr__(self):
         """
-        Returns a string representation of the block header for debugging.
+        Debug-friendly representation
         """
         return (
-            f"BlockHeader(version={self.version}, index={self.index}, previous_hash={self.previous_hash[:10]}..., "
-            f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, timestamp={self.timestamp}, "
-            f"difficulty={hex(self.difficulty)})"
+            f"BlockHeader(version={self.version}, index={self.index}, "
+            f"previous_hash={self.previous_hash[:10]}..., "
+            f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, "
+            f"timestamp={self.timestamp}, difficulty={hex(self.difficulty)})"
         )

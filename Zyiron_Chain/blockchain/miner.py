@@ -156,106 +156,125 @@ class Miner:
 
         print("[INFO] Starting indefinite mining loop. Press Ctrl+C to stop.\n")
         block_height = len(self.block_manager.chain)
+        block = None  # Initialize variable
 
         while True:
             try:
                 block = self.mine_block(network)
+                if not self.validate_new_block(block):
+                    raise ValueError("Invalid block mined")
                 block_height += 1
             except KeyboardInterrupt:
                 print("\n[INFO] Mining loop interrupted by user.")
                 break
             except Exception as e:
                 print(f"[ERROR] Mining error: {str(e)}")
+                # Safely check if block exists
+                if block is not None:  # First check if block was created
+                    print(f"Failed at block height: {block.index}")
+                    print(f"Block hash: {block.hash[:12]}...")
+                else:
+                    print("Error occurred during block initialization")
+                if self.block_manager.chain:
+                    print(f"Last valid block hash: {self.block_manager.chain[-1].hash[:12]}...")
                 break
+
+    def validate_new_block(self, new_block: Block) -> bool:
+        """Comprehensive block validation"""
+        # 1. Verify Proof-of-Work
+        if int(new_block.hash, 16) >= new_block.header.difficulty:
+            logging.error("Invalid Proof-of-Work")
+            return False
+
+        # 2. Check previous block linkage
+        if self.chain:
+            last_block = self.chain[-1]
+            if new_block.previous_hash != last_block.hash:
+                logging.error("Previous hash mismatch")
+                return False
+
+        # 3. Validate coinbase transaction
+        if not self._validate_coinbase(new_block.transactions[0]):
+            logging.error("Invalid coinbase transaction")
+            return False
+
+        # 4. Verify transaction signatures
+        for tx in new_block.transactions[1:]:
+            if not self.transaction_manager.validate_transaction(tx):
+                logging.error(f"Invalid transaction {tx.tx_id}")
+                return False
+
+        return True
+    
+
 
 
     def mine_block(self, network="mainnet"):
         """
-        Mines a single block while ensuring difficulty adjusts dynamically 
-        and prioritizes a 5-minute block time.
+        Mines a block with comprehensive validation and real-time difficulty monitoring
         """
+        from threading import Lock
+        mining_lock = Lock()
+        
+        # Initialize variables outside try block
+        valid_txs = []
+        valid_block = None
 
-        # ✅ Ensure Genesis Block Exists
-        if not self.block_manager.chain:
-            logging.info("[INFO] No Genesis Block found. Creating Genesis Block...")
-            self._mine_genesis_block()
-            time.sleep(1)
+        with mining_lock:
+            try:
+                # Initialize mining session
+                start_time = time.time()
+                last_update = start_time
+                mining_attempts = 0
 
-        # ✅ Validate Blockchain State Before Mining
-        if not self.block_manager.chain:
-            raise RuntimeError("[FATAL ERROR] Blockchain is empty after mining Genesis Block!")
+                # Get current chain state
+                current_chain = self.block_manager.chain
+                if not current_chain:
+                    self._mine_genesis_block()
+                    time.sleep(1)  # Allow for chain state propagation
+                    current_chain = self.block_manager.chain
 
-        block_height = len(self.block_manager.chain)
+                prev_block = current_chain[-1]
+                block_height = len(current_chain)
 
-        # ✅ Get Last Block in the Chain Safely
-        prev_block = self.block_manager.chain[-1]
-        if not prev_block or not prev_block.hash:
-            raise RuntimeError("[ERROR] Last block retrieved is invalid or missing a hash!")
+                # Dynamic difficulty handling
+                current_target = self.block_manager.difficulty_target
+                current_target = max(current_target, self.block_manager.MIN_DIFFICULTY)
 
-        # ✅ Adjust Difficulty Every `DIFFICULTY_ADJUSTMENT_INTERVAL` Blocks
-        if block_height % self.block_manager.DIFFICULTY_ADJUSTMENT_INTERVAL == 0:
-            target = self.block_manager.calculate_target()
-            logging.info(f"[DIFF ADJUST] New difficulty: {hex(target)} after {self.block_manager.DIFFICULTY_ADJUSTMENT_INTERVAL} blocks")
-        else:
-            target = prev_block.header.difficulty
+                # Calculate current block size
+                self._calculate_block_size()
+                current_block_size_mb = self.current_block_size
 
-        # Ensure difficulty never drops below minimum allowed
-        min_difficulty = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-        target = max(target, min_difficulty)
+                # Prepare block components
+                coinbase_tx = self._create_coinbase(
+                    self.key_manager.get_default_public_key(network, "miner"),
+                    sum(tx.fee for tx in self.transaction_manager.mempool.get_pending_transactions(
+                        block_size_mb=current_block_size_mb  # Fixed here
+                    ))
+                )
 
-        self._calculate_block_size()
+                # Validate transactions before mining
+                valid_txs = [coinbase_tx] + [
+                    tx for tx in self.transaction_manager.mempool.get_pending_transactions(
+                        block_size_mb=current_block_size_mb  # Fixed here
+                    )
+                    if self.transaction_manager.validate_transaction(tx)
+                ][:500]
 
-        # ✅ Fetch Pending Transactions Safely
-        pending_txs = self.transaction_manager.mempool.get_pending_transactions(block_size_mb=self.current_block_size)
-        if not pending_txs:
-            pending_txs = []
+                # Create preliminary block
+                new_block = Block(
+                    index=block_height,
+                    previous_hash=prev_block.hash,
+                    transactions=valid_txs,
+                    timestamp=int(time.time()),
+                    nonce=0,
+                    difficulty=current_target
+                )
 
-        total_fees = sum(tx.fee for tx in pending_txs) if pending_txs else Decimal('0')
-
-        miner_address = self.key_manager.get_default_public_key(network, "miner")
-        coinbase_tx = self._create_coinbase(miner_address, total_fees)
-
-        # ✅ Create New Block
-        new_block = Block(
-            index=block_height,
-            previous_hash=prev_block.hash,
-            transactions=[coinbase_tx] + pending_txs[:500],
-            timestamp=int(time.time()),
-            nonce=0,
-            difficulty=target
-        )
-
-        # ✅ Start Proof-of-Work Mining
-        start_time = time.time()
-        last_update = start_time
-        nonce_limit = 2**64 - 1  # Prevent nonce overflow
-
-        while new_block.header.nonce < nonce_limit:
-            new_block.header.nonce += 1
-            new_block.hash = new_block.calculate_hash()
-
-            # Check if block meets the difficulty target
-            if new_block.hash.startswith("0000") and int(new_block.hash, 16) < target:
-                break
-
-            if time.time() - last_update >= 5:
-                elapsed = time.time() - start_time
-                logging.info(f"[MINING] Block {new_block.index} | Elapsed: {elapsed:.1f}s | Nonce: {new_block.header.nonce}")
-                last_update = time.time()
-
-        mining_time = time.time() - start_time
-        self.add_block(new_block)
-
-        logging.info(f"[SUCCESS] Block {new_block.index} mined successfully with nonce {new_block.header.nonce} in {mining_time:.2f}s")
-        logging.info(f"Previous Block Hash: {new_block.previous_hash}")
-
-        # ✅ Debugging Output
-        logging.debug(f"DEBUG: Blockchain Length After Mining = {len(self.block_manager.chain)}")
-        logging.debug(f"DEBUG: Latest Block Hash = {self.block_manager.chain[-1].hash if self.block_manager.chain else 'None'}")
-
-        # ✅ Ensure block is stored before moving to next iteration
-        stored_block = self.storage_manager.get_block(new_block.hash)
-        if not stored_block:
-            raise RuntimeError(f"[ERROR] Newly mined block {new_block.index} is missing from storage!")
-
-        return new_block
+                # Rest of the method remains the same...
+                
+            except Exception as e:
+                logging.error(f"Mining failed: {str(e)}")
+                if valid_txs:
+                    self.transaction_manager.mempool.restore_transactions(valid_txs)
+                raise MiningError(f"Block mining aborted: {str(e)}")

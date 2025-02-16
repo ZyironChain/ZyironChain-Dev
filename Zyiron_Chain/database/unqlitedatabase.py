@@ -90,21 +90,18 @@ class BlockchainUnqliteDB:
             logging.error(f"[ERROR] Failed to store block {block_hash}: {e}")
             raise
 
-    def add_block(self, block_hash: str, block_header: Dict, transactions: List[Dict], size: int, difficulty: int):
-        """
-        Add a block to the UnQLite database.
-        """
+    def add_block(self, block_hash: str, block_header: dict, transactions: list, size: int, difficulty: int):
+        """Store all block components with explicit parameters"""
         block_data = {
-            "block_header": block_header,
+            "header": block_header,
             "transactions": transactions,
             "size": size,
             "difficulty": difficulty
         }
-        self.db[f"block:{block_hash}"] = json.dumps(block_data)  # Store block data
-        logging.info(f"[INFO] Block {block_hash} added.")
+        self.db[f"block:{block_hash}"] = json.dumps(block_data)
+        logging.info(f"Block {block_hash} stored")
 
-
-
+        
     def get_all_blocks(self):
         """
         Retrieve all stored blocks from UnQLite.

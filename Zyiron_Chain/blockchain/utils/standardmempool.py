@@ -160,20 +160,6 @@ class StandardMempool:
         return True
 
 
-    # In the StandardMempool class, ensure get_pending_transactions handles block_size_mb
-    def get_pending_transactions(self, block_size_mb=None):
-        """
-        Get all pending transactions from the mempool.
-        :param block_size_mb: (Optional) Block size in MB.
-        """
-        if block_size_mb is not None:
-            # Filter transactions based on block size (if needed)
-            pass
-        return list(self.mempool.values())  # Return all pending transactions
-
-
-
-
 
     def reallocate_space(self, remaining_space, current_block_height):
         """
@@ -249,40 +235,40 @@ class StandardMempool:
 
 
 
-    def get_pending_transactions(self, block_size_mb, transaction_type="Standard"):
-        """
-        Retrieve transactions for block inclusion, prioritizing high fees.
-        Allocates space based on transaction type: Instant (25%) or Standard (25%).
+    def get_pending_transactions(self, block_size_mb: float, transaction_type: str = "Standard") -> list:
+            """
+            Retrieve transactions for block inclusion, prioritizing high fees.
+            Allocates space based on transaction type: Instant (25%) or Standard (25%).
 
-        :param block_size_mb: Current block size in MB.
-        :param transaction_type: "Instant" or "Standard" to filter transactions.
-        :return: A list of transaction objects.
-        """
-        block_size_bytes = block_size_mb * 1024 * 1024
-        allocation = int(block_size_bytes * 0.25)  # 25% allocation for each type
+            :param block_size_mb: Current block size in MB.
+            :param transaction_type: "Instant" or "Standard" to filter transactions.
+            :return: A list of transaction objects.
+            """
+            block_size_bytes = block_size_mb * 1024 * 1024
+            allocation = int(block_size_bytes * 0.25)  # 25% allocation for each type
 
-        with self.lock:
-            # Filter transactions by type
-            filtered_txs = [
-                tx for tx in self.transactions.values()
-                if (transaction_type == "Instant" and tx["transaction"].tx_id.startswith("PID- CID")) or
-                (transaction_type == "Standard" and not tx["transaction"].tx_id.startswith(("PID-CID ")))
-            ]
+            with self.lock:
+                # Filter transactions by type
+                filtered_txs = [
+                    tx for tx in self.transactions.values()
+                    if (transaction_type == "Instant" and tx["transaction"].tx_id.startswith("PID-CID")) or
+                    (transaction_type == "Standard" and not tx["transaction"].tx_id.startswith("PID-CID"))
+                ]
 
-            # Sort transactions by fee-per-byte
-            sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
+                # Sort transactions by fee-per-byte
+                sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
 
-            # Select transactions within allocation
-            selected_txs = []
-            current_size = 0
-            for tx_data in sorted_txs:
-                if current_size + tx_data["transaction"].size > allocation:
-                    break
-                selected_txs.append(tx_data["transaction"])
-                current_size += tx_data["transaction"].size
+                # Select transactions within allocation
+                selected_txs = []
+                current_size = 0
+                for tx_data in sorted_txs:
+                    tx_size = tx_data["transaction"].size
+                    if current_size + tx_size > allocation:
+                        break
+                    selected_txs.append(tx_data["transaction"])
+                    current_size += tx_size
 
-            return selected_txs
-
+                return selected_txs
 
 
 

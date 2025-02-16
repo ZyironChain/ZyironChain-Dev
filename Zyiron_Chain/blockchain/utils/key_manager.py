@@ -223,7 +223,18 @@ class KeyManager:
             else:
                 print(colored("Invalid choice. Please try again.", "red"))
 
-
+    def validate_miner_key(self, network: str) -> bool:
+        """
+        Verify existence of default miner key without auto-generation
+        :param network: Network to check ('testnet' or 'mainnet')
+        :return: True if valid miner key exists, False otherwise
+        """
+        try:
+            # This will throw ValueError if no default key exists
+            self.get_default_public_key(network, "miner")
+            return True
+        except ValueError:
+            return False
 
     def get_raw_public_key(self, script_pub_key, network):
         """

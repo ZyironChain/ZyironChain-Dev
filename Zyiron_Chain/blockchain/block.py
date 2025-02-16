@@ -19,6 +19,7 @@ import time
 import json
 from typing import List, Dict, Union
 from decimal import Decimal
+from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain. transactions.transactiontype import PaymentTypeManager
 from Zyiron_Chain. transactions.fees import FeeModel
@@ -52,58 +53,66 @@ log.info(f"{__name__} logger initialized.")
 
 class Block:
     def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0, difficulty=None, miner_address=None):
-        """
-        Initialize a Block.
-        :param index: The block's index in the blockchain.
-        :param previous_hash: The hash of the previous block.
-        :param transactions: List of transactions in the block.
-        :param timestamp: The block's creation timestamp (default: current time).
-        :param nonce: The nonce used for mining (default: 0).
-        :param difficulty: The mining difficulty (default: None).
-        :param miner_address: The address of the miner who mined the block (default: None).
-        """
         self.index = index
         self.previous_hash = previous_hash
         self.transactions = transactions
-        self.timestamp = timestamp or time.time()
-        self.nonce = nonce
-        self.difficulty = difficulty
-        self.miner_address = miner_address  # Miner's address
-        self._merkle_root = None  # Initialize _merkle_root as None
-        self.merkle_root = self.calculate_merkle_root()  # Calculate Merkle root
+        self.miner_address = miner_address
+        self._merkle_root = None  # Private cache for Merkle root
+        
+        # Initialize header with computed values
         self.header = BlockHeader(
             version=1,
             index=self.index,
             previous_hash=self.previous_hash,
-            merkle_root=self.merkle_root,
-            timestamp=self.timestamp,
-            nonce=self.nonce,
-            difficulty=self.difficulty
+            merkle_root=self.merkle_root,  # Uses the property below
+            timestamp=int(timestamp or time.time()),
+            nonce=nonce,
+            difficulty=difficulty or Constants.GENESIS_TARGET
         )
         self.hash = self.calculate_hash()
 
-    def calculate_merkle_root(self):
-        """Compute the Merkle root from transaction IDs."""
-        if self._merkle_root:
-            return self._merkle_root  # Return cached value if already calculated
+    @property
+    def merkle_root(self):
+        """Lazily computed Merkle root property"""
+        if self._merkle_root is None:
+            self._merkle_root = self._compute_merkle_root()
+        return self._merkle_root
 
+    def _compute_merkle_root(self):
+        """Internal method to calculate Merkle root"""
+        if not self.transactions:
+            return hashlib.sha3_384(b'').hexdigest()
+            
         tx_hashes = [tx.tx_id for tx in self.transactions]
-
-        if not tx_hashes:
-            self._merkle_root = hashlib.sha3_384(b'').hexdigest()
-            return self._merkle_root
-
+        
         while len(tx_hashes) > 1:
             if len(tx_hashes) % 2 != 0:
                 tx_hashes.append(tx_hashes[-1])
-
             tx_hashes = [
-                hashlib.sha3_384((tx_hashes[i] + tx_hashes[i + 1]).encode()).hexdigest()
-                for i in range(0, len(tx_hashes), 2)
+                hashlib.sha3_384(f"{a}{b}".encode()).hexdigest()
+                for a, b in zip(tx_hashes[::2], tx_hashes[1::2])
             ]
+        
+        return tx_hashes[0]
 
-        self._merkle_root = tx_hashes[0]
-        return self._merkle_root
+    def calculate_hash(self):
+        """Calculate block hash using header data"""
+        header_data = (
+            f"{self.header.version}"
+            f"{self.header.index}"
+            f"{self.header.previous_hash}"
+            f"{self.header.merkle_root}"
+            f"{self.header.timestamp}"
+            f"{self.header.difficulty}"
+            f"{self.header.nonce}"
+        )
+        return hashlib.sha3_384(header_data.encode()).hexdigest()
+
+    @property
+    def timestamp(self):
+        """Read-only timestamp from header"""
+        return self.header.timestamp
+
     def store_block(self):
         """
         Use PoC to store the block and ensure proper routing.
@@ -112,9 +121,18 @@ class Block:
         poc = PoC()
         difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
         poc.store_block(self, difficulty)
+
     def calculate_hash(self):
-        """Include difficulty in hash calculation"""
-        header_data = f"{self.header.version}{self.header.index}{self.header.previous_hash}{self.header.merkle_root}{self.header.timestamp}{self.header.difficulty}{self.header.nonce}".encode()
+        """Calculate hash using header data"""
+        header_data = (
+            f"{self.header.version}"
+            f"{self.header.index}"
+            f"{self.header.previous_hash}"
+            f"{self.header.merkle_root}"
+            f"{self.header.timestamp}"
+            f"{self.header.difficulty}"
+            f"{self.header.nonce}"
+        ).encode()
         return hashlib.sha3_384(header_data).hexdigest()
 
     def to_dict(self):
@@ -133,30 +151,35 @@ class Block:
         }
 
     @classmethod
-    def from_dict(cls, data):
-        """Create a Block instance from a dictionary."""
-        from Zyiron_Chain.blockchain.blockheader import BlockHeader
-        from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    def from_dict(cls, data: dict):
+        """Create a Block from stored dictionary data"""
+        try:
+            header_data = data['header']
+            transactions = [
+                Transaction.from_dict(tx) 
+                for tx in data.get('transactions', [])
+            ]
+            
+            return cls(
+                index=header_data['index'],
+                previous_hash=header_data['previous_hash'],
+                transactions=transactions,
+                timestamp=header_data.get('timestamp'),
+                nonce=header_data['nonce'],
+                difficulty=header_data['difficulty'],
+                miner_address=data.get('miner_address')
+            )
+        except KeyError as e:
+            raise ValueError(f"Missing required field in block data: {str(e)}")
+        
 
-        transactions = [
-            Transaction.from_dict(tx) if isinstance(tx, dict) else tx
-            for tx in data.get("transactions", [])
-        ]
 
-        block = cls(
-            index=data["index"],
-            previous_hash=data["previous_hash"],
-            transactions=transactions,
-            timestamp=data.get("timestamp"),
-            nonce=data.get("nonce", 0),
-            difficulty=data.get("difficulty"),
-            miner_address=data.get("miner_address")  # Include miner_address
-        )
+    @property
+    def is_coinbase(self, tx_index=0) -> bool:
+        """Check if transaction is coinbase"""
+        return isinstance(self.transactions[tx_index], CoinbaseTx)
 
-        block.header = BlockHeader.from_dict(data.get("header", {}))
-        block.hash = data.get("hash", block.calculate_hash())
 
-        return block
 
     def validate_transactions(self, fee_model, mempool, block_size):
         """

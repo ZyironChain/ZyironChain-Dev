@@ -9,7 +9,8 @@ from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.transactions. utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
 import logging
-
+from Zyiron_Chain.blockchain.block import Block
+from Zyiron_Chain.blockchain.blockheader import BlockHeader
 import logging
 
 # Remove all existing handlers (prevents log conflicts across modules)
@@ -29,116 +30,146 @@ log.info(f"{__name__} logger initialized.")
 
 
 # Ensure this is at the very top of your script, before any other code
+import logging
+import json
+
 class StorageManager:
     def __init__(self, poc_instance, block_manager=None):
-        """
-        Initialize the Storage Manager.
-        :param poc_instance: PoC instance for routing transactions.
-        :param block_manager: (Optional) BlockManager instance.
-        """
-        self.poc = poc_instance  # ✅ Store PoC instance
-        self.utxo_manager = UTXOManager(poc_instance)  # ✅ Initialize UTXO Manager
-        self.block_manager = block_manager  # ✅ Ensure block_manager is stored properly
+        self.poc = poc_instance
+        self.utxo_manager = UTXOManager(poc_instance)
+        self.block_manager = block_manager
 
-        # ✅ FIX: Ensure `unqlite_db` is correctly assigned from PoC
-        if hasattr(self.poc, "unqlite_db"):
-            self.unqlite_db = self.poc.unqlite_db
-        else:
-            raise AttributeError("[ERROR] PoC instance does not have 'unqlite_db'.")
+        # Get unqlite_db from PoC with validation
+        self.unqlite_db = getattr(poc_instance, "unqlite_db", None)
+        if not self.unqlite_db:
+            raise AttributeError("[ERROR] PoC instance missing 'unqlite_db'")
+
+
+    def get_all_blocks(self):
+        """Retrieve and convert stored blocks"""
+        try:
+            raw_blocks = self.unqlite_db.get_all_blocks()
+            return [
+                {
+                    'header': {
+                        'index': b['header']['index'],
+                        'previous_hash': b['header']['previous_hash'],
+                        'merkle_root': b['header']['merkle_root'],
+                        'timestamp': b['header']['timestamp'],
+                        'nonce': b['header']['nonce'],
+                        'difficulty': b['header']['difficulty'],
+                        'version': b['header'].get('version', 1)
+                    },
+                    'transactions': b['transactions'],
+                    'miner_address': b.get('miner_address')
+                }
+                for b in raw_blocks
+            ]
+        except KeyError as e:
+            logging.error(f"Invalid block format in storage: {str(e)}")
+            return []
 
     def store_block(self, block, difficulty):
         try:
-            stored_data = {
-                "index": block.index,
-                "hash": block.hash,
-                "block_header": block.header.to_dict(),
-                "transactions": [tx.to_dict() for tx in block.transactions],
-                "size": len(block.transactions),
-                "difficulty": difficulty
-            }
-
-            if hasattr(self.unqlite_db, "add_block"):
-                self.unqlite_db.add_block(
-                    block.hash, stored_data, stored_data["transactions"], stored_data["size"], difficulty
-                )
-                logging.debug(f"Successfully stored Block {block.index} with Difficulty: {hex(difficulty)}")
-            else:
-                raise AttributeError("'unqlite_db' does not have 'add_block' method.")
-
-            # ✅ Debugging: Verify block retrieval
-            stored_block = self.get_block(block.hash)
-            if not stored_block:
-                raise RuntimeError(f"[ERROR] Block {block.index} failed to store in UnQLite!")
-
-        except AttributeError as e:
-            logging.error(f"Attribute error while storing block {block.index}: {str(e)}")
-            raise
+            self.unqlite_db.add_block(
+                block_hash=block.hash,  # ✅ Keep as keyword argument
+                block_header=block.header.to_dict(),
+                transactions=[tx.to_dict() for tx in block.transactions],
+                size=len(block.transactions),
+                difficulty=difficulty
+            )
         except Exception as e:
-            logging.error(f"Unexpected error while storing block {block.index}: {str(e)}")
+            logging.error(f"Block storage failed: {str(e)}")
             raise
-
-
 
 
     def get_block(self, block_hash):
-        """
-        Retrieves a block from UnQLite and verifies that it was correctly stored.
-        """
         try:
-            # 🚨 DEBUGGING: Check if `unqlite_db.get_block()` exists
-            if not hasattr(self.unqlite_db, "get_block"):
-                raise AttributeError("[ERROR] 'unqlite_db' does not have 'get_block' method.")
-
-            block_data = self.unqlite_db.get_block(block_hash)
-
-            # ✅ DEBUG: Print retrieved block information
-            if block_data:
-                logging.info(f"[DEBUG] Retrieved Block {block_hash} - Difficulty: {hex(block_data['block_header']['difficulty'])}")
-                return block_data
-            else:
-                logging.error(f"[ERROR] Block {block_hash} was not found in UnQLite!")
+            raw_data = self.unqlite_db.get_block(block_hash)
+            if not raw_data:
                 return None
-
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to retrieve block {block_hash}: {str(e)}")
+                
+            # Rebuild block header properly
+            header_data = raw_data["header"]
+            block_header = BlockHeader(
+                version=header_data["version"],
+                index=header_data["index"],  # Now included
+                previous_hash=header_data["previous_hash"],
+                merkle_root=header_data["merkle_root"],
+                timestamp=header_data["timestamp"],
+                nonce=header_data["nonce"],
+                difficulty=header_data["difficulty"]
+            )
+            
+            transactions = [
+                Transaction.from_dict(tx) 
+                for tx in raw_data["transactions"]
+            ]
+            
+            return Block(
+                index=header_data["index"],
+                previous_hash=header_data["previous_hash"],
+                transactions=transactions,
+                timestamp=header_data["timestamp"],
+                nonce=header_data["nonce"],
+                difficulty=header_data["difficulty"],
+                miner_address=None  # Add if available
+            )
+        
+        except KeyError as e:
+            logging.error(f"Missing key in stored block: {str(e)}")
             return None
+# In your StorageManager class
+    def verify_block_storage(self, block: Block) -> bool:
+        """Validate block exists using its hash"""
+        try:
+            stored_data = self.unqlite_db.get_block(block.hash)
+            return stored_data is not None
+        except Exception as e:
+            logging.error(f"Storage verification failed: {str(e)}")
+            return False
 
+    def validate_block_structure(self, block):
+        """Validate critical block fields"""
+        required_fields = ['index', 'hash', 'header', 'transactions']
+        return all(hasattr(block, field) for field in required_fields)
 
+    def save_blockchain_state(self, chain, pending_transactions=None):
+        """Save state with atomic write operations"""
+        data = {
+            "chain": [self._block_to_storage_format(block) for block in chain],
+            "pending_transactions": [tx.to_dict() for tx in pending_transactions or []]
+        }
+        
+        try:
+            # Atomic write using temp file
+            with open("blockchain_state.tmp", "w") as f:
+                json.dump(data, f)
+            os.replace("blockchain_state.tmp", "blockchain_state.json")
+        except Exception as e:
+            logging.error(f"State save failed: {str(e)}")
+            raise
 
+    def _block_to_storage_format(self, block):
+        """Convert block to storage-safe format"""
+        return {
+            "header": block.header.to_dict(),
+            "transactions": [tx.to_dict() for tx in block.transactions],
+            "hash": block.hash,
+            "size": len(block.transactions)
+        }
 
+    # Maintained existing methods with attribute access fixes
     def load_chain(self):
-        self.poc.load_blockchain_data()
-        return self.poc.get_blockchain_data()
-
-
-
-
-
+        return self.poc.load_blockchain_data()
 
     def _store_block_metadata(self, block):
         metadata = {
             "height": block.index,
             "parent_hash": block.previous_hash,
-            "timestamp": block.timestamp,
+            "timestamp": block.header.timestamp  # Fixed timestamp access
         }
         self.poc.lmdb_manager.put(f"block_metadata:{block.hash}", json.dumps(metadata))
-
-    def save_blockchain_state(self, chain, pending_transactions=None):
-        """
-        Save the current state of the blockchain.
-        :param chain: The blockchain (list of blocks).
-        :param pending_transactions: (Optional) List of pending transactions.
-        """
-        if pending_transactions is None:
-            pending_transactions = []  # Default to an empty list if not provided
-
-        data = {
-            "chain": [block.to_dict() for block in chain],
-            "pending_transactions": [tx.to_dict() for tx in pending_transactions]
-        }
-        with open("blockchain_state.json", "w") as f:
-            json.dump(data, f, indent=4)
-
 
     def export_utxos(self):
         for utxo_key, utxo_value in self.utxo_manager.get_all_utxos().items():

@@ -60,22 +60,23 @@ import json
 import hashlib
 
 class BlockManager:
-    # Adjusted constants
-    MIN_DIFFICULTY = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-    MAX_TARGET = 0x000000000000000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-    INITIAL_TARGET = MAX_TARGET  # Start with easier difficulty (higher target)
-    DIFFICULTY_ADJUSTMENT_INTERVAL = 2 # Adjusted to every 10 blocks
-    TARGET_BLOCK_TIME = 300  # 5-minute blocks
-    GENESIS_TARGET = INITIAL_TARGET  # Use INITIAL_TARGET for Genesis
+    # Constants for difficulty (7 leading zeros)
+# Constants (hex values for 7 leading zeros)
+# Should be set like this:
+    INITIAL_DIFFICULTY = 0x0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 7 zeros
+    MIN_DIFFICULTY = 0x000000000000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # Hardest (smallest number)
+    MAX_DIFFICULTY = 0x0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # Easiest (largest number)
+    TARGET_BLOCK_TIME = 300  # 5 minutes in seconds
+    DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # Adjust every 10 blocks
 
-    def __init__(self, storage_manager, transaction_manager=None):
+    def __init__(self, storage_manager, transaction_manager):  # Add transaction_manager
         self.chain = []
         self.storage_manager = storage_manager
-        self.transaction_manager = transaction_manager
-        self.difficulty_target = self.INITIAL_TARGET  # Start at max difficulty
+        self.transaction_manager = transaction_manager  # Store transaction_manager
+        self.difficulty_target = self.INITIAL_DIFFICULTY
 
-        logging.info("[INIT] ⏳ 5-minute block target, retarget every 10 blocks.")
-        logging.info(f"[INIT] 🚀 Starting difficulty target: {hex(self.difficulty_target)}")
+        logging.info(f"[INIT] 🔧 Difficulty Target set to {hex(self.difficulty_target)}")
+        logging.info(f"[INIT] ⏳ Blocks should take ~5 minutes")
 
     def validate_chain(self):
         """
@@ -113,37 +114,42 @@ class BlockManager:
 
     def calculate_target(self):
         """
-        Corrected difficulty adjustment using actual_time / expected_time.
+        Difficulty adjustment using total time between first and last block in interval
         """
         if len(self.chain) < self.DIFFICULTY_ADJUSTMENT_INTERVAL:
-            return self.INITIAL_TARGET
+            return self.INITIAL_DIFFICULTY
 
-        last_n_blocks = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL:]
-        actual_times = [
-            last_n_blocks[i].timestamp - last_n_blocks[i-1].timestamp
-            for i in range(1, len(last_n_blocks))
-        ]
-
-        if not actual_times:
+        # Get first and last blocks using header timestamps
+        first_block = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL]
+        last_block = self.chain[-1]
+        
+        # Access timestamps through block headers
+        total_time = last_block.header.timestamp - first_block.header.timestamp
+        num_blocks = self.DIFFICULTY_ADJUSTMENT_INTERVAL - 1
+        
+        if total_time <= 0 or num_blocks <= 0:
+            logging.error("⚠️ Invalid time calculation, using fallback difficulty")
             return self.difficulty_target
 
-        actual_time = sum(actual_times) / len(actual_times)
-        expected_time = self.TARGET_BLOCK_TIME
+        avg_block_time = total_time / num_blocks
+        adjustment_factor = self.TARGET_BLOCK_TIME / avg_block_time
 
-        if actual_time <= 0:
-            logging.error("Prevented division by zero, using fallback difficulty.")
-            return self.difficulty_target
+        # Exponential response for fast blocks
+        if avg_block_time < self.TARGET_BLOCK_TIME / 4:
+            adjustment_factor **= 2  # Quadratic increase
 
-        # Corrected adjustment factor
-        adjustment_factor = actual_time / expected_time
-        last_difficulty = self.chain[-1].header.difficulty
-        new_target = int(last_difficulty * adjustment_factor)
+        # Controlled adjustment range
+        adjustment_factor = max(0.25, min(4.0, adjustment_factor))
 
-        # Ensure difficulty doesn't drop below minimum
-        new_target = max(new_target, self.MIN_DIFFICULTY)
-        self.difficulty_target = new_target
-
-        logging.info(f"New difficulty: {hex(new_target)} (Factor: {adjustment_factor:.4f})")
+        new_target = int(self.difficulty_target * adjustment_factor)
+        new_target = max(self.MIN_DIFFICULTY, min(new_target, self.MAX_DIFFICULTY))
+        
+        logging.info(
+            f"⏳ Difficulty Adjusted | "
+            f"Avg Time: {avg_block_time:.1f}s | "
+            f"Factor: {adjustment_factor:.2f}x | "
+            f"New: {hex(new_target)}"
+        )
         return new_target
 
 
@@ -191,17 +197,15 @@ class BlockManager:
             logging.error(f"[ERROR] ❌ Failed to store block {block.index}: {e}")
             raise
 
-    def add_block(self, block):
-        """
-        Add a new block to the blockchain and store it.
-        """
-        if block.index == 0 and not self.chain:
-            logging.info("[INFO] ⛓️ Storing Genesis Block.")
-        else:
-            logging.info(f"[INFO] 📦 Adding Block {block.index} to chain.")
 
+    def add_block(self, block):
         self.chain.append(block)
-        self.storage_manager.store_block(block)
+        # Change from block['index'] to block.index
+        logging.info(f"[INFO] ✅ Block {block.index} added. Difficulty: {hex(self.difficulty_target)}")
+        
+        if len(self.chain) % self.DIFFICULTY_ADJUSTMENT_INTERVAL == 0:
+            self.adjust_difficulty()
+
 
     def get_latest_block(self):
         """
@@ -212,39 +216,23 @@ class BlockManager:
 
 
 
-    def adjust_difficulty(self, previous_difficulty, previous_timestamp, current_timestamp):
-        """
-        Dynamically adjusts difficulty based on actual mining speed.
+    def adjust_difficulty(self):
+        if len(self.chain) < self.DIFFICULTY_ADJUSTMENT_INTERVAL:
+            return
 
-        - Uses a faster adjustment formula for better reaction
-        - Implements emergency difficulty increase if blocks are way too fast
-        - Caps difficulty changes for more gradual adjustments
-        """
+        # Use header timestamps for accurate calculation
+        first = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL]
+        last = self.chain[-1]
+        
+        time_window = last.header.timestamp - first.header.timestamp
+        avg_block_time = time_window / (self.DIFFICULTY_ADJUSTMENT_INTERVAL - 1)
 
-        # ✅ Ensure valid timestamps to prevent division by zero
-        time_diff = current_timestamp - previous_timestamp
-        if time_diff <= 0:
-            logging.warning("[DIFF ADJUST] ⚠️ Invalid block time detected! Setting to 1 second to prevent errors.")
-            time_diff = 3  # Prevent zero division
+        # Controlled adjustment with bounds
+        adjustment = self.TARGET_BLOCK_TIME / avg_block_time
+        adjustment = max(0.25, min(4.0, adjustment))  # 4x max adjustment
 
-        # 🚨 Emergency difficulty increase (if blocks are WAY too fast)
-        if time_diff < self.TARGET_BLOCK_TIME / 10:  # If blocks found in <30s
-            logging.warning("[DIFF ADJUST] ⚠️ Emergency difficulty increase: Mining is WAY too fast!")
-            return int(previous_difficulty * 1.5)  # Force a 1.5x increase
-
-        # ✅ Calculate difficulty adjustment factor (faster reaction)
-        expected_time = self.TARGET_BLOCK_TIME  # 300 seconds per block
-        adjustment_factor = min(3.0, max(0.5, expected_time / time_diff))  # React faster
-
-        # 🚀 Compute new difficulty
-        new_difficulty = int(previous_difficulty * adjustment_factor)
-
-        # ✅ Ensure difficulty never drops below the minimum allowed
-        new_difficulty = max(new_difficulty, self.MIN_DIFFICULTY)
-
-        # ✅ Log difficulty changes
-        logging.info(f"[DIFF ADJUST] ⏳ Time Diff: {time_diff}s | Adj. Factor: {adjustment_factor:.4f}")
-        logging.info(f"[DIFF ADJUST] 🔄 New Difficulty: {hex(new_difficulty)} (Prev: {hex(previous_difficulty)})")
-
-        return new_difficulty
-
+        new_target = int(self.difficulty_target * adjustment)
+        self.difficulty_target = max(
+            self.MIN_DIFFICULTY, 
+            min(new_target, self.MAX_DIFFICULTY)
+    )

@@ -13,7 +13,7 @@ from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from threading import Lock
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool  # Add this import
 from decimal import Decimal
-
+import time 
 import logging
 
 # Remove all existing handlers (prevents log conflicts across modules)
@@ -126,35 +126,86 @@ class TransactionManager:
             for inp, out in zip(tx.inputs, tx.outputs)
 
         )
-
     def validate_transaction(self, tx):
         """
-        Validate transaction integrity:
-        - Signature verification.
-        - Input/output balance check.
-        - Prevent replay attacks by ensuring unique nonce and network_id.
+        Comprehensive transaction validation:
+        - Signature verification
+        - Input/output balance check
+        - UTXO validation
+        - Replay attack prevention
+        - Fee validation
+        - Coinbase transaction handling
         """
         try:
+            # 1. Validate coinbase transactions separately
+            if tx.is_coinbase:
+                if len(tx.inputs) != 0 or len(tx.outputs) != 1:
+                    logging.error(f"Invalid coinbase transaction structure: {tx.tx_id}")
+                    return False
+                return True  # Coinbase has special rules
+
+            # 2. Verify cryptographic signatures
             if not tx.verify_signature():
+                logging.error(f"Signature verification failed: {tx.tx_id}")
                 return False
 
-            input_sum = sum(inp.amount for inp in tx.tx_inputs)
-            output_sum = sum(out.amount for out in tx.tx_outputs)
+            # 3. Validate UTXO references
+            input_sum = Decimal('0')
+            for tx_input in tx.inputs:
+                utxo = self.utxo_manager.get_utxo(tx_input.tx_out_id)
+                if not utxo:
+                    logging.error(f"Missing UTXO: {tx_input.tx_out_id}")
+                    return False
+                if utxo.spent:
+                    logging.error(f"UTXO already spent: {tx_input.tx_out_id}")
+                    return False
+                input_sum += Decimal(str(utxo.amount))
 
+            # 4. Validate outputs
+            output_sum = sum(Decimal(str(out.amount)) for out in tx.outputs)
+            
+            # 5. Check value conservation
             if input_sum < output_sum:
+                logging.error(f"Inputs < Outputs ({input_sum} < {output_sum})")
                 return False
 
-            # Check for replay attack prevention
-            if self.storage_manager.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
-                logging.error(f"[ERROR] Replay attack detected for transaction {tx.tx_id}.")
+            # 6. Validate fees
+            calculated_fee = input_sum - output_sum
+            required_fee = self.fee_model.calculate_fee(
+                tx_size=tx.size,
+                tx_type=tx.type,
+                network_congestion=self.mempool.size
+            )
+            
+            if calculated_fee < required_fee:
+                logging.error(f"Insufficient fee: {calculated_fee} < {required_fee}")
+                return False
+
+            # 7. Prevent replay attacks
+            if self.storage_manager.check_transaction_exists(
+                tx.tx_id, 
+                nonce=tx.nonce,
+                network_id=tx.network_id
+            ):
+                logging.error(f"Replay attack detected: {tx.tx_id}")
+                return False
+
+            # 8. Validate locktimes and sequence numbers
+            if tx.lock_time > time.time():
+                logging.error(f"Transaction locked until {tx.lock_time}")
                 return False
 
             return True
 
-        except Exception as e:
-            logging.error(f"[ERROR] Transaction validation failed: {str(e)}")
+        except AttributeError as ae:
+            logging.error(f"Malformed transaction structure: {str(ae)}")
             return False
-
+        except ValueError as ve:
+            logging.error(f"Invalid transaction values: {str(ve)}")
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected validation error: {str(e)}")
+            return False
 
     def _calculate_block_reward(self, block_height):
         """
