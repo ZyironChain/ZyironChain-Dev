@@ -1,1 +1,0 @@
-# High-level system architecture

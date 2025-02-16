@@ -15,8 +15,23 @@ from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
 from Zyiron_Chain.blockchain.block_manager import BlockManager
 from Zyiron_Chain.blockchain.miner import Miner
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+import logging
 
-logging.basicConfig(level=logging.INFO)
+# Remove all existing handlers (prevents log conflicts across modules)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Set up clean logging for this module
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+log = logging.getLogger(__name__)  # Each module gets its own logger
+
+log.info(f"{__name__} logger initialized.")
+
 
 class BlockchainMain:
     def __init__(self):

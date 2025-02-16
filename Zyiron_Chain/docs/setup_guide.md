@@ -1,1 +1,0 @@
-# Setup instructions for developers
