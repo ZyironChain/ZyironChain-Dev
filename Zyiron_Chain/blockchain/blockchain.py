@@ -56,6 +56,11 @@ class Blockchain:
         self._ensure_genesis_block()
 
 
+
+
+
+
+
     def _load_chain_from_storage(self):
         """Load and validate stored blocks"""
         try:

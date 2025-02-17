@@ -32,7 +32,7 @@ log.info(f"{__name__} logger initialized.")
 # Ensure this is at the very top of your script, before any other code
 import logging
 import json
-
+from Zyiron_Chain.blockchain.constants import Constants
 class StorageManager:
     def __init__(self, poc_instance, block_manager=None):
         self.poc = poc_instance
@@ -48,27 +48,32 @@ class StorageManager:
 
     def get_latest_block(self):
         """
-        Retrieve the most recent block from UnQLite storage, ensuring proper decoding.
+        Retrieve the most recent block from storage.
+        Returns None if no blocks are found.
         """
         try:
-            all_blocks = self.poc.get_all_blocks()
+            all_blocks = self.get_all_blocks()
             if not all_blocks:
-                logging.warning("[StorageManager] No stored blocks found.")
-                return None  # No blocks in storage
+                return None  # No blocks exist in storage
 
-            # Sort blocks by index to find the latest one
+            # Sort by index to find the latest block
             latest_block_data = max(all_blocks, key=lambda b: b['header']['index'])
 
-            logging.info(f"[StorageManager] Loaded latest block {latest_block_data['header']['index']} (Hash: {latest_block_data['hash']})")
+            # Ensure hash and difficulty are set
+            block_hash = latest_block_data.get("hash", None)
+            block_difficulty = latest_block_data.get("difficulty", Constants.MIN_DIFFICULTY)
 
-            # ✅ Ensure correct decoding of transactions before converting to Block object
+            if not block_hash:
+                logging.error(f"[ERROR] Retrieved block is missing 'hash' key: {latest_block_data}")
+                return None  # Skip invalid block
+
             return Block(
                 index=latest_block_data['header']['index'],
                 previous_hash=latest_block_data['header']['previous_hash'],
-                transactions=[Transaction.from_dict(pickle.loads(tx)) if isinstance(tx, bytes) else Transaction.from_dict(tx) for tx in latest_block_data["transactions"]],
+                transactions=[Transaction.from_dict(tx) for tx in latest_block_data["transactions"]],
                 timestamp=latest_block_data['header']['timestamp'],
                 nonce=latest_block_data['header']['nonce'],
-                difficulty=latest_block_data['header']['difficulty'],
+                difficulty=block_difficulty,  # ✅ Ensure difficulty is properly set
                 miner_address=latest_block_data.get('miner_address')
             )
 
@@ -90,50 +95,79 @@ class StorageManager:
             raise
 
     def get_all_blocks(self):
-        """Retrieve and convert stored blocks"""
+        """Retrieve and convert stored blocks, ensuring hash inclusion."""
         try:
             raw_blocks = self.unqlite_db.get_all_blocks()
-            return [
-                {
-                    'header': {
-                        'index': b['header']['index'],
-                        'previous_hash': b['header']['previous_hash'],
-                        'merkle_root': b['header']['merkle_root'],
-                        'timestamp': b['header']['timestamp'],
-                        'nonce': b['header']['nonce'],
-                        'difficulty': b['header']['difficulty'],
-                        'version': b['header'].get('version', 1)
+            processed_blocks = []
+            
+            for b in raw_blocks:
+                block_hash = b.get("hash", None)  # Ensure hash is included
+                if not block_hash:
+                    logging.error(f"[ERROR] Retrieved block is missing 'hash' key: {b}")
+                    continue  # Skip blocks with missing hash
+                
+                processed_blocks.append({
+                    "hash": block_hash,  # ✅ Ensure hash is always present
+                    "header": {
+                        "index": b["header"]["index"],
+                        "previous_hash": b["header"]["previous_hash"],
+                        "merkle_root": b["header"]["merkle_root"],
+                        "timestamp": b["header"]["timestamp"],
+                        "nonce": b["header"]["nonce"],
+                        "difficulty": b["header"].get("difficulty", Constants.MIN_DIFFICULTY),
+                        "version": b["header"].get("version", 1)
                     },
-                    'transactions': b['transactions'],
-                    'miner_address': b.get('miner_address')
-                }
-                for b in raw_blocks
-            ]
+                    "transactions": b["transactions"],
+                    "size": b["size"],
+                    "difficulty": b.get("difficulty", Constants.MIN_DIFFICULTY),  # ✅ Ensure difficulty is included
+                    "miner_address": b.get("miner_address")
+                })
+
+            logging.info(f"[DEBUG] Successfully retrieved {len(processed_blocks)} blocks from UnQLite.")
+            return processed_blocks
+
         except KeyError as e:
-            logging.error(f"Invalid block format in storage: {str(e)}")
+            logging.error(f"[ERROR] Invalid block format in storage: {str(e)}")
             return []
+
+
 
     def store_block(self, block, difficulty):
         """
-        Store a block in UnQLite as compressed binary data.
+        Store a block in UnQLite, ensuring the 'hash' key is included.
         """
         try:
-            # ✅ Convert block to binary using pickle (faster than JSON)
-            block_data = pickle.dumps({
-                "hash": block.hash,
-                "header": block.header.to_dict(),
-                "transactions": [tx.to_dict() for tx in block.transactions],
-                "size": len(block.transactions),
+            block_header = block.header.to_dict() if hasattr(block.header, "to_dict") else block.header
+
+            transactions = [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions]
+
+            size = len(transactions)
+
+            # ✅ Ensure 'hash' is included at the top level
+            block_data = {
+                "hash": block.hash,  # ✅ Ensure block hash is stored
+                "header": block_header,
+                "transactions": transactions,
+                "size": size,
                 "difficulty": difficulty
-            })
+            }
 
-            # ✅ Store in UnQLite as binary
-            self.unqlite_db.add_block(block.hash, block_data)
+            self.unqlite_db.add_block(
+                block_hash=block.hash,
+                block_header=block_header,
+                transactions=transactions,
+                size=size,
+                difficulty=difficulty
+            )
 
-            logging.info(f"[INFO] Block {block.index} stored successfully in UnQLite as binary.")
+            logging.info(f"[INFO] Block {block.index} stored successfully in UnQLite.")
+
         except Exception as e:
             logging.error(f"[ERROR] Block storage failed: {str(e)}")
             raise
+
+
+
 
 
     def get_block(self, block_hash):

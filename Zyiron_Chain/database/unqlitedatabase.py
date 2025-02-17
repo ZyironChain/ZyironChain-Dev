@@ -55,49 +55,56 @@ class BlockchainUnqliteDB:
             self.transaction_active = False
 
     # --------------------- Blockchain Storage ---------------------
-    def store_block(self, block_hash: str, block_header: Dict, transactions: List[Dict], size: int, difficulty: int):
+    def store_block(self, block, difficulty):
         """
-        Store a block in the immutable blockchain database.
-        - Fixes missing 'transaction_active' attribute.
-        - Ensures proper storage of transactions.
+        Store a block in UnQLite, ensuring all required fields are passed.
         """
         try:
-            self.transaction_active = True  # Start transaction flag
+            # Ensure block header is a dictionary
+            block_header = block.header.to_dict() if hasattr(block.header, "to_dict") else block.header
 
-            # Convert block_header to a dictionary if possible
-            if hasattr(block_header, 'to_dict'):
-                block_header = block_header.to_dict()
+            # Ensure transactions are properly formatted
+            transactions = []
+            for tx in block.transactions:
+                if hasattr(tx, "to_dict"):
+                    transactions.append(tx.to_dict())
+                elif isinstance(tx, dict):
+                    transactions.append(tx)  # Already a dict
+                else:
+                    logging.warning(f"[WARNING] Skipping invalid transaction format: {tx}")
 
-            serialized_transactions = [
-                tx.to_dict() if hasattr(tx, 'to_dict') else tx for tx in transactions
-            ]
+            # ✅ Ensure size is the correct transaction count
+            size = len(transactions)
 
-            block_data = {
-                "block_header": block_header,
-                "transactions": serialized_transactions,
-                "size": size,
-                "difficulty": difficulty
-            }
+            # ✅ Call `add_block()` with all required parameters
+            self.unqlite_db.add_block(
+                block_hash=block.hash,
+                block_header=block_header,
+                transactions=transactions,
+                size=size,
+                difficulty=difficulty
+            )
 
-            self.db[f"block:{block_hash}"] = json.dumps(block_data)
-            self.transaction_active = False  # Reset transaction flag
+            logging.info(f"[INFO] Block {block.index} stored successfully in UnQLite.")
 
-            logging.info(f"[INFO] Block {block_hash} successfully stored.")
         except Exception as e:
-            self.transaction_active = False
-            logging.error(f"[ERROR] Failed to store block {block_hash}: {e}")
+            logging.error(f"[ERROR] Block storage failed: {str(e)}")
             raise
 
+
     def add_block(self, block_hash: str, block_header: dict, transactions: list, size: int, difficulty: int):
-        """Store all block components with explicit parameters."""
+        """Store all block components with explicit parameters, ensuring the hash is included."""
         block_data = {
+            "hash": block_hash,  # ✅ Ensure hash is explicitly stored
             "header": block_header,
             "transactions": transactions,
             "size": size,
             "difficulty": difficulty
         }
-        self.db[f"block:{block_hash}"] = json.dumps(block_data)
-        logging.info(f"Block {block_hash} stored")
+        self.db[f"block:{block_hash}"] = json.dumps(block_data)  # ✅ Store properly
+        logging.info(f"✅ Block {block_hash} stored successfully in UnQLite.")
+
+
 
     def get_all_blocks(self):
         """

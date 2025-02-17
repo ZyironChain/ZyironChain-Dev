@@ -116,41 +116,42 @@ class BlockManager:
         return True
 
 
+
+
     def calculate_target(self):
         """
-        Dynamically adjust difficulty based on the block intervals.
-        Genesis starts with Constants.GENESIS_TARGET and adjusts every Constants.DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
+        Adjusts difficulty dynamically based on past blocks.
+        Uses Constants.DIFFICULTY_ADJUSTMENT_INTERVAL to control changes.
         """
-        if len(self.chain) < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
-            return Constants.GENESIS_TARGET  # Use value from constants
+        latest_blocks = self.storage_manager.get_all_blocks()
+        num_blocks = len(latest_blocks)
 
-        # Get first and last blocks in the adjustment interval
-        first_block = self.chain[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
-        last_block = self.chain[-1]
+        if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
+            return Constants.GENESIS_TARGET  # Start with Genesis Target
 
-        # Calculate total time taken vs expected time
-        total_time = last_block.header.timestamp - first_block.header.timestamp
-        target_time = Constants.TARGET_BLOCK_TIME * Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
+        # Get the latest adjustment block
+        last_adjustment_block = latest_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
+        current_block = latest_blocks[-1]
 
-        if total_time <= 0:
-            return self.difficulty_target
+        actual_time_taken = current_block["header"]["timestamp"] - last_adjustment_block["header"]["timestamp"]
+        expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
 
-        # Compute adjustment factor
-        adjustment_factor = target_time / total_time
-        adjustment_factor = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_factor))
-
-        # Apply adjustment
-        new_target = int(self.difficulty_target * adjustment_factor)
-        new_target = max(Constants.MIN_DIFFICULTY, min(new_target, Constants.MAX_DIFFICULTY))
-
-        logging.info(
-            f"⏳ Difficulty Adjusted | "
-            f"Time: {total_time:.1f}s | "
-            f"Factor: {adjustment_factor:.2f}x | "
-            f"New: {hex(new_target)}"
+        # Calculate adjustment factor (how much slower/faster mining is than expected)
+        adjustment_factor = max(
+            Constants.MIN_DIFFICULTY_FACTOR,
+            min(Constants.MAX_DIFFICULTY_FACTOR, actual_time_taken / expected_time)
         )
 
+        # New difficulty calculation
+        new_target = math.floor(last_adjustment_block["header"]["difficulty"] * adjustment_factor)
+
+        # Ensure it remains within the allowed range
+        new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
+        logging.info(f"[DIFFICULTY] Adjusted difficulty to {new_target} at block {num_blocks}")
+        
         return new_target
+
 
 
 

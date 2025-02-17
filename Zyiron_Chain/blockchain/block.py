@@ -57,19 +57,23 @@ class Block:
         self.previous_hash = previous_hash
         self.transactions = transactions
         self.miner_address = miner_address
+        self.difficulty = difficulty or Constants.GENESIS_TARGET  # ✅ Store difficulty
+        self.nonce = nonce  # ✅ Store nonce explicitly
         self._merkle_root = None  # Private cache for Merkle root
-        
+
         # Initialize header with computed values
         self.header = BlockHeader(
             version=1,
             index=self.index,
             previous_hash=self.previous_hash,
-            merkle_root=self.merkle_root,  # Uses the property below
+            merkle_root=self.merkle_root,
             timestamp=int(timestamp or time.time()),
-            nonce=nonce,
-            difficulty=difficulty or Constants.GENESIS_TARGET
+            nonce=self.nonce,  # ✅ Store nonce in header
+            difficulty=self.difficulty
         )
         self.hash = self.calculate_hash()
+
+
 
     @property
     def merkle_root(self):
@@ -144,26 +148,24 @@ class Block:
             "previous_hash": self.previous_hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
             "timestamp": self.timestamp,
-            "nonce": self.nonce,
+            "nonce": self.nonce,  # ✅ Ensure nonce is explicitly stored
             "difficulty": self.difficulty,
-            "miner_address": self.miner_address,  # Include miner_address
+            "miner_address": self.miner_address,
             "hash": self.hash,
             "merkle_root": self.merkle_root,
             "header": self.header.to_dict()
         }
 
+
+
     @classmethod
     def from_dict(cls, data: dict):
         """Create a Block from stored dictionary data"""
         try:
-            transactions = []
-            for tx_data in data.get('transactions', []):
-                # Handle coinbase transactions properly
-                if tx_data.get('type') == 'COINBASE':
-                    tx = CoinbaseTx.from_dict(tx_data)
-                else:
-                    tx = Transaction.from_dict(tx_data)
-                transactions.append(tx)
+            transactions = [
+                CoinbaseTx.from_dict(tx_data) if tx_data.get('type') == 'COINBASE' else Transaction.from_dict(tx_data)
+                for tx_data in data.get('transactions', [])
+            ]
             
             header_data = data['header']
             return cls(
@@ -171,13 +173,13 @@ class Block:
                 previous_hash=header_data['previous_hash'],
                 transactions=transactions,
                 timestamp=header_data.get('timestamp'),
-                nonce=header_data['nonce'],
-                difficulty=header_data['difficulty'],
+                nonce=header_data['nonce'],  # ✅ Ensure nonce is loaded properly
+                difficulty=header_data.get('difficulty', Constants.GENESIS_TARGET),
                 miner_address=data.get('miner_address')
             )
         except KeyError as e:
             raise ValueError(f"Missing required field in block data: {str(e)}")
-        
+
 
 
     @property

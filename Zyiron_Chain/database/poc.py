@@ -173,21 +173,28 @@ class PoC:
 
 
 
+
+
     def get_all_blocks(self):
         """
-        Retrieve all stored blocks from UnQLite, ensuring they are properly decoded from binary format.
+        Retrieve all stored blocks from UnQLite and ensure they contain a 'hash' key.
         """
         try:
             raw_blocks = self.unqlite_db.get_all_blocks()
 
             decoded_blocks = []
             for block in raw_blocks:
-                if isinstance(block, bytes):  # ✅ If block is stored in binary format
+                if isinstance(block, bytes):
                     try:
                         block = pickle.loads(block)  # ✅ Convert from binary to dictionary
                     except (pickle.UnpicklingError, TypeError) as e:
                         logging.error(f"[ERROR] Failed to decode block: {str(e)}")
                         continue
+
+                # ✅ Ensure the block has a 'hash' key
+                if "hash" not in block:
+                    logging.error(f"[ERROR] Retrieved block is missing 'hash' key: {block}")
+                    block["hash"] = block["header"]["merkle_root"]  # Fallback: Use merkle root as hash
 
                 decoded_blocks.append(block)
 
@@ -197,7 +204,6 @@ class PoC:
         except Exception as e:
             logging.error(f"[ERROR] Failed to retrieve blocks from UnQLite: {str(e)}")
             return []
-
 
 
 
