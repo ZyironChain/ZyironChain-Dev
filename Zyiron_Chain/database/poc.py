@@ -14,7 +14,6 @@ from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
 from Zyiron_Chain.blockchain.helper  import get_block
 from typing import Optional
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
@@ -23,12 +22,19 @@ import importlib
 from Zyiron_Chain.blockchain.block_manager import BlockManager
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.offchain.dispute import DisputeResolutionContract
-
+import pickle
 import sqlite3
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 from datetime import datetime
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 from decimal import Decimal
+import logging
+from typing import TYPE_CHECKING
+
+# For type checking only; do not perform a runtime import.
+if TYPE_CHECKING:
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+
 def get_transaction():
     """Lazy import Transaction to break circular dependencies."""
     module = importlib.import_module("Zyiron_Chain.transactions.Blockchain_transaction")
@@ -165,18 +171,33 @@ class PoC:
 
 
 
+
+
     def get_all_blocks(self):
         """
-        Retrieve all stored blocks from UnQLite.
+        Retrieve all stored blocks from UnQLite, ensuring they are properly decoded from binary format.
         """
         try:
-            all_blocks = self.unqlite_db.get_all()  # ✅ Retrieve all blocks
-            print(f"[DEBUG] Blocks Retrieved from UnQLite: {all_blocks}")
-            return all_blocks
+            raw_blocks = self.unqlite_db.get_all_blocks()
+
+            decoded_blocks = []
+            for block in raw_blocks:
+                if isinstance(block, bytes):  # ✅ If block is stored in binary format
+                    try:
+                        block = pickle.loads(block)  # ✅ Convert from binary to dictionary
+                    except (pickle.UnpicklingError, TypeError) as e:
+                        logging.error(f"[ERROR] Failed to decode block: {str(e)}")
+                        continue
+
+                decoded_blocks.append(block)
+
+            logging.info(f"[DEBUG] Successfully retrieved {len(decoded_blocks)} blocks from UnQLite.")
+            return decoded_blocks
 
         except Exception as e:
-            print(f"[ERROR] Failed to retrieve blocks: {str(e)}")
+            logging.error(f"[ERROR] Failed to retrieve blocks from UnQLite: {str(e)}")
             return []
+
 
 
 

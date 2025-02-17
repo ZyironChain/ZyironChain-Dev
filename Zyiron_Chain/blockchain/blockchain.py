@@ -36,18 +36,25 @@ class Blockchain:
         self.transaction_manager = transaction_manager
         self.block_manager = block_manager
         self.key_manager = key_manager
-        
+
         self.chain = []
         self.fee_model = FeeModel(
             max_supply=Decimal('84096000'),
             base_fee_rate=Decimal('0.00015')
         )
         self.miner = Miner(self.block_manager, self.transaction_manager, 
-                         self.storage_manager, self.key_manager)
-        
-        # Initialize chain state
-        self._load_chain_from_storage()
+                        self.storage_manager, self.key_manager)
+
+        try:
+            stored_blocks = self.storage_manager.get_all_blocks()
+            if stored_blocks:
+                self._load_chain_from_storage()
+        except Exception as e:
+            logging.error(f"Chain reset required: {str(e)}")
+            self.storage_manager.purge_chain()
+        # Ensure genesis block exists and is loaded
         self._ensure_genesis_block()
+
 
     def _load_chain_from_storage(self):
         """Load and validate stored blocks"""
@@ -73,7 +80,10 @@ class Blockchain:
 
     # In your Blockchain class
     def _create_genesis_block(self):
-        """Create and mine genesis block with proper validation"""
+        """
+        Create, mine, and validate the Genesis block with proper attributes,
+        using SHA3-384 and a difficulty target that requires 4 leading zeros.
+        """
         try:
             miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
             coinbase_tx = CoinbaseTx(
@@ -81,24 +91,27 @@ class Blockchain:
                 miner_address=miner_address,
                 reward=Decimal("100.00")
             )
+            coinbase_tx.fee = Decimal("0")  # Ensure coinbase fee is zero
 
             genesis_block = Block(
                 index=0,
-                previous_hash=self.ZERO_HASH,
+                previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
-                difficulty=self.GENESIS_TARGET,
+                timestamp=int(time.time()),
+                nonce=0,
+                difficulty=Constants.GENESIS_TARGET,  # Target requiring 4 leading zeros
                 miner_address=miner_address
             )
-
-            # Mine the genesis block
-            while int(genesis_block.hash, 16) >= genesis_block.header.difficulty:
-                genesis_block.header.nonce += 1
-                genesis_block.hash = genesis_block.calculate_hash()
-
+            self._mine_genesis_block(genesis_block)
+            if not self.validate_new_block(genesis_block):
+                raise ValueError("Generated Genesis block failed validation")
             return genesis_block
         except Exception as e:
             logging.error(f"Genesis creation failed: {str(e)}")
             raise
+
+
+
 
     def _store_and_validate_genesis(self, genesis_block):
         """Store and verify genesis block integrity"""
@@ -125,13 +138,49 @@ class Blockchain:
             raise
 
 
-    def _mine_genesis_block(self, block: Block):
-        """Mine genesis block with proper validation"""
+    def _mine_genesis_block(self, block=None):
+        """
+        Mine the genesis block using SHA3-384:
+        Iterate the nonce until the block's hash (computed with SHA3-384)
+        is below the difficulty target (which requires a hash starting with 4 zeros).
+        Shows live nonce count, attempts, and elapsed time every second.
+        """
+        from Zyiron_Chain.blockchain.block import Block  # Lazy import
+        if block is None:
+            miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
+            from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx  # Lazy import
+            coinbase_tx = CoinbaseTx(
+                block_height=0,
+                miner_address=miner_address,
+                reward=Decimal("100.00")
+            )
+            coinbase_tx.fee = Decimal("0")
+            block = Block(
+                index=0,
+                previous_hash=Constants.ZERO_HASH,
+                transactions=[coinbase_tx],
+                timestamp=int(time.time()),
+                nonce=0,
+                difficulty=Constants.GENESIS_TARGET,  # Using our new target for 4 zeros
+                miner_address=miner_address
+            )
+        logging.info("Mining genesis block...")
+        start_time = time.time()
+        last_update = start_time
+        attempts = 0
+
+        # Loop: recalculate the SHA3-384 hash until it meets the target.
         while int(block.hash, 16) >= block.header.difficulty:
             block.header.nonce += 1
-            block.hash = block.calculate_hash()
+            block.hash = block.calculate_hash()  # calculate_hash() uses hashlib.sha3_384
+            attempts += 1
+            current_time = time.time()
+            if current_time - last_update >= 1:  # Print every second
+                elapsed = current_time - start_time
+                print(f"[LIVE] Nonce: {block.header.nonce}, Attempts: {attempts}, Elapsed Time: {elapsed:.2f}s")
+                last_update = current_time
 
-        # Store and verify
+        logging.info(f"Genesis block mined: nonce={block.header.nonce}, hash={block.hash}")
         self.storage_manager.store_block(block, Constants.GENESIS_TARGET)
         if not self.storage_manager.verify_block_storage(block):
             raise RuntimeError("Genesis block storage verification failed")
@@ -140,24 +189,38 @@ class Blockchain:
 
 
 
-    def _ensure_genesis_block(self):
-        """Ensure valid genesis block exists in both storage and memory"""
-        try:
-            # Check if genesis exists in loaded chain
-            if any(block.index == 0 for block in self.chain):
-                return
 
-            # Create and store new genesis block
+
+    def _ensure_genesis_block(self):
+        """Ensure a valid genesis block exists with proper structure and add it to the chain."""
+        try:
+            stored_blocks = self.storage_manager.get_all_blocks()
+            if stored_blocks:
+                genesis_data = stored_blocks[0]
+                if genesis_data['header']['index'] != 0 or genesis_data['header']['previous_hash'] != self.ZERO_HASH:
+                    raise ValueError("Corrupted genesis block in storage")
+                genesis_block = Block.from_dict(genesis_data)
+                # Add the genesis block to the chain if not already present.
+                if not self.chain:
+                    self.chain.append(genesis_block)
+                    self.block_manager.chain.append(genesis_block)
+                return
+            # No stored genesis block; create a new one.
             genesis_block = self._create_genesis_block()
+            genesis_block.previous_hash = self.ZERO_HASH
+            if not self.validate_new_block(genesis_block):
+                raise ValueError("Generated genesis block failed validation")
             self._store_and_validate_genesis(genesis_block)
-            
-            # Add to both chains
+            # Now add the newly created genesis block to the chain.
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)
-
+            logging.info("Successfully initialized new genesis block")
         except Exception as e:
             logging.error(f"Genesis initialization failed: {str(e)}")
+            logging.info("Purging corrupted chain data...")
+            self.storage_manager.purge_chain()
             raise
+
 
 
     def add_block(self, new_block):
@@ -200,10 +263,20 @@ class Blockchain:
             logging.error(f"Block {new_block.index} has invalid previous hash")
             return False
 
-        # 3. Validate coinbase transaction
+        # 3. Validate coinbase transaction structure
+        if len(new_block.transactions) == 0:
+            logging.error("Block contains no transactions")
+            return False
+            
         coinbase_tx = new_block.transactions[0]
         if not isinstance(coinbase_tx, CoinbaseTx):
-            logging.error("First transaction must be coinbase")
+            logging.error("First transaction must be CoinbaseTx instance")
+            return False
+            
+        if not (len(coinbase_tx.inputs) == 0 and 
+                len(coinbase_tx.outputs) == 1 and 
+                coinbase_tx.reward > 0):
+            logging.error("Invalid coinbase transaction structure")
             return False
 
         # 4. Validate transaction signatures (skip coinbase)
@@ -248,14 +321,22 @@ class Blockchain:
             logging.error(f"Coinbase creation failed: {str(e)}")
             raise
 
-    def _validate_coinbase(self, tx: CoinbaseTx) -> bool:
-        """Ensure coinbase transaction follows protocol rules"""
+    def _validate_coinbase(self, tx):
+        """
+        Ensure the coinbase transaction follows protocol rules:
+        - No inputs.
+        - Exactly one output.
+        - Transaction type is "COINBASE".
+        - Fee is zero.
+        """
+        from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx  # Lazy import
         return (
-            len(tx.inputs) == 0
-            and len(tx.outputs) == 1
-            and tx.type == "COINBASE"
-            and tx.fee == Decimal(0)
+            len(tx.inputs) == 0 and
+            len(tx.outputs) == 1 and
+            tx.type == "COINBASE" and
+            tx.fee == Decimal(0)
         )
+
 
 
 

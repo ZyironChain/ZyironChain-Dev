@@ -137,12 +137,9 @@ class TransactionManager:
         - Coinbase transaction handling
         """
         try:
-            # 1. Validate coinbase transactions separately
-            if tx.is_coinbase:
-                if len(tx.inputs) != 0 or len(tx.outputs) != 1:
-                    logging.error(f"Invalid coinbase transaction structure: {tx.tx_id}")
-                    return False
-                return True  # Coinbase has special rules
+            # 1. Skip validation for coinbase transactions
+            if isinstance(tx, CoinbaseTx):
+                return True
 
             # 2. Verify cryptographic signatures
             if not tx.verify_signature():
@@ -169,7 +166,7 @@ class TransactionManager:
                 logging.error(f"Inputs < Outputs ({input_sum} < {output_sum})")
                 return False
 
-            # 6. Validate fees
+            # 6. Validate fees (skip for coinbase)
             calculated_fee = input_sum - output_sum
             required_fee = self.fee_model.calculate_fee(
                 tx_size=tx.size,
@@ -190,11 +187,6 @@ class TransactionManager:
                 logging.error(f"Replay attack detected: {tx.tx_id}")
                 return False
 
-            # 8. Validate locktimes and sequence numbers
-            if tx.lock_time > time.time():
-                logging.error(f"Transaction locked until {tx.lock_time}")
-                return False
-
             return True
 
         except AttributeError as ae:
@@ -206,6 +198,7 @@ class TransactionManager:
         except Exception as e:
             logging.error(f"Unexpected validation error: {str(e)}")
             return False
+
 
     def _calculate_block_reward(self, block_height):
         """
@@ -312,34 +305,6 @@ class TransactionManager:
     
 
 
-    def validate_transaction(self, tx):
-        """
-        Validate transaction integrity:
-        - Signature verification.
-        - Input/output balance check.
-        - Prevent replay attacks by ensuring unique nonce and network_id.
-        """
-        try:
-            if not tx.verify_signature():
-                return False
-
-            input_sum = sum(inp.amount for inp in tx.tx_inputs)
-            output_sum = sum(out.amount for out in tx.tx_outputs)
-
-            if input_sum < output_sum:
-                return False
-
-            # Check for replay attack prevention
-            if self.storage_manager.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
-                logging.error(f"[ERROR] Replay attack detected for transaction {tx.tx_id}.")
-                return False
-
-            return True
-
-        except Exception as e:
-            logging.error(f"[ERROR] Transaction validation failed: {str(e)}")
-            return False
-        
 
 
 

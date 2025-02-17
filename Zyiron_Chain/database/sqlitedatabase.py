@@ -11,7 +11,18 @@ import sqlite3
 import json
 from datetime import datetime
 import logging
-from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionIn, TransactionOut, CoinbaseTx
+import sqlite3
+import json
+from datetime import datetime
+from typing import Optional, TYPE_CHECKING
+from decimal import Decimal
+import logging
+
+
+# Import for type checking only (does not execute at runtime)
+if TYPE_CHECKING:
+    from Zyiron_Chain.transactions.Blockchain_transaction import TransactionIn, TransactionOut, CoinbaseTx
+
 def get_transaction():
     """Lazy import Transaction to break circular dependencies."""
     from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
@@ -61,7 +72,6 @@ class SQLiteDB:
         else:
             logging.error("[ERROR] SQLite connection is not initialized.")
 
-
     def commit(self):
         """Commit the active transaction."""
         if self.connection:
@@ -75,10 +85,6 @@ class SQLiteDB:
             self.connection.rollback()
         else:
             logging.error("[ERROR] SQLite connection is not initialized.")
-
-
-
-
 
     def update_utxo_lock(self, utxo_id, locked):
         """
@@ -110,12 +116,6 @@ class SQLiteDB:
         except sqlite3.Error as e:
             logging.error(f"[ERROR] SQLite failed to fetch UTXO {tx_out_id}: {e}")
             return None
-
-
-
-
-
-
 
     def delete_utxo(self, utxo_id):
         """
@@ -153,7 +153,7 @@ class SQLiteDB:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (utxo_id, tx_out_id, amount, script_pub_key, locked, block_index))
             
-            self.connection .commit()
+            self.connection.commit()
             logging.info(f"[INFO] UTXO {utxo_id} stored in SQLite successfully.")
         
         except sqlite3.IntegrityError as e:
@@ -161,7 +161,6 @@ class SQLiteDB:
         
         except Exception as e:
             logging.error(f"[ERROR] Unexpected error while inserting UTXO {utxo_id}: {e}")
-
 
     def update_transaction_status(self, tx_id, status):
         """
@@ -206,7 +205,6 @@ class SQLiteDB:
             logging.error(f"[ERROR] Failed to fetch UTXOs from SQLite: {e}")
             return []
 
-
     def fetch_all_transactions(self):
         """
         Fetch all transactions.
@@ -237,7 +235,6 @@ if __name__ == "__main__":
     # Insert test data
     db.insert_utxo("utxo1", "tx1", 100.5, "script1", 1, locked=False)
     db.delete_transaction("tx_1")
-
 
     # Fetch and display data
     print("UTXOs:", db.fetch_all_utxos())

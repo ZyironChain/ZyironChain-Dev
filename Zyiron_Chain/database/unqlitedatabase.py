@@ -5,12 +5,12 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from unqlite import UnQLite
 import json
 from typing import List, Dict
 import logging
 
 logging.basicConfig(level=logging.INFO)
+
 
 class BlockchainUnqliteDB:
     def __init__(self, db_file="blockchain.db"):
@@ -18,28 +18,25 @@ class BlockchainUnqliteDB:
         Initialize the UnQLite database for storing the immutable blockchain.
         """
         self.db = UnQLite(db_file)
-        self.transaction_active = False  # ✅ Ensure this attribute is initialized properly
-    
-    # ✅ Modified get_block method
+        self.transaction_active = False  # Ensure this attribute is initialized properly
+
     def get_block(self, block_hash: str) -> Dict:
         """
         Retrieve a block using proper UnQLite access.
         """
         try:
-            return json.loads(self.db[f"block:{block_hash}"])  # ✅ Use `self.db` correctly
+            return json.loads(self.db[f"block:{block_hash}"])
         except KeyError:
-            print(f"[WARNING] Block {block_hash} not found in UnQLite.")
+            logging.warning(f"[WARNING] Block {block_hash} not found in UnQLite.")
             return None
         except Exception as e:
-            logging.error(f"Error retrieving block: {str(e)}")
+            logging.error(f"[ERROR] Error retrieving block: {str(e)}")
             return None
-
 
     # --------------------- Transaction Handling (Simulated) ---------------------
     def begin_transaction(self):
         """Start a transaction if UnQLite supported it (simulated)."""
-        logging.info("[INFO] Simulating UnQLite transaction.")  # ✅ Just log instead of checking transaction_active
-
+        logging.info("[INFO] Simulating UnQLite transaction.")
 
     def commit(self):
         """
@@ -47,7 +44,7 @@ class BlockchainUnqliteDB:
         """
         if self.transaction_active:
             logging.info("[INFO] Committing UnQLite transaction.")
-            self.transaction_active = False  # Reset transaction flag
+            self.transaction_active = False
 
     def rollback(self):
         """
@@ -55,7 +52,7 @@ class BlockchainUnqliteDB:
         """
         if self.transaction_active:
             logging.warning("[WARNING] UnQLite does not support rollback. Manual data correction may be required.")
-            self.transaction_active = False  # Reset transaction flag
+            self.transaction_active = False
 
     # --------------------- Blockchain Storage ---------------------
     def store_block(self, block_hash: str, block_header: Dict, transactions: List[Dict], size: int, difficulty: int):
@@ -65,8 +62,9 @@ class BlockchainUnqliteDB:
         - Ensures proper storage of transactions.
         """
         try:
-            self.transaction_active = True  # ✅ Start transaction flag
+            self.transaction_active = True  # Start transaction flag
 
+            # Convert block_header to a dictionary if possible
             if hasattr(block_header, 'to_dict'):
                 block_header = block_header.to_dict()
 
@@ -81,8 +79,8 @@ class BlockchainUnqliteDB:
                 "difficulty": difficulty
             }
 
-            self.db[f"block:{block_hash}"] = json.dumps(block_data)  # ✅ Fix storage
-            self.transaction_active = False  # ✅ Reset transaction flag
+            self.db[f"block:{block_hash}"] = json.dumps(block_data)
+            self.transaction_active = False  # Reset transaction flag
 
             logging.info(f"[INFO] Block {block_hash} successfully stored.")
         except Exception as e:
@@ -91,7 +89,7 @@ class BlockchainUnqliteDB:
             raise
 
     def add_block(self, block_hash: str, block_header: dict, transactions: list, size: int, difficulty: int):
-        """Store all block components with explicit parameters"""
+        """Store all block components with explicit parameters."""
         block_data = {
             "header": block_header,
             "transactions": transactions,
@@ -101,27 +99,41 @@ class BlockchainUnqliteDB:
         self.db[f"block:{block_hash}"] = json.dumps(block_data)
         logging.info(f"Block {block_hash} stored")
 
-        
     def get_all_blocks(self):
         """
         Retrieve all stored blocks from UnQLite.
         """
         try:
             blocks = []
-            for key in self.db.keys():  # ✅ FIX: Use `self.db.keys()` instead of `self.unqlite_db.get_all()`
-                if key.startswith("block:"):
+            for key in self.db.keys():
+                # Convert key to string if it is in bytes
+                key_str = key.decode() if isinstance(key, bytes) else key
+                if key_str.startswith("block:"):
                     block_data = json.loads(self.db[key])
                     blocks.append(block_data)
-
-            print(f"[DEBUG] Blocks Retrieved from UnQLite: {blocks}")  # ✅ Log retrieved blocks
+            logging.debug(f"[DEBUG] Blocks Retrieved from UnQLite: {blocks}")
             return blocks
-
         except Exception as e:
-            print(f"[ERROR] Failed to retrieve blocks: {str(e)}")
+            logging.error(f"[ERROR] Failed to retrieve blocks: {str(e)}")
             return []
 
-
-
+    def delete_all_blocks(self):
+        """
+        Delete all blocks from the storage.
+        """
+        try:
+            # Gather keys to delete (ensuring proper decoding if keys are bytes)
+            keys_to_delete = []
+            for key in self.db.keys():
+                key_str = key.decode() if isinstance(key, bytes) else key
+                if key_str.startswith("block:"):
+                    keys_to_delete.append(key)
+            for key in keys_to_delete:
+                del self.db[key]
+            logging.info("[INFO] All blocks deleted from UnQLite storage.")
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to delete all blocks: {e}")
+            raise
 
     def delete_block(self, block_hash: str):
         """
@@ -153,9 +165,8 @@ class BlockchainUnqliteDB:
                 "outputs": outputs,
                 "timestamp": timestamp
             }
-            self.db[f"transaction:{tx_id}"] = json.dumps(transaction_data)  # Store as JSON
+            self.db[f"transaction:{tx_id}"] = json.dumps(transaction_data)
             logging.info(f"[INFO] Transaction {tx_id} stored.")
-
         except Exception as e:
             logging.error(f"[ERROR] Failed to store transaction {tx_id}: {e}")
             raise
@@ -183,7 +194,8 @@ class BlockchainUnqliteDB:
         transactions = []
         try:
             for key in self.db.keys():
-                if key.startswith("transaction:"):
+                key_str = key.decode() if isinstance(key, bytes) else key
+                if key_str.startswith("transaction:"):
                     transactions.append(json.loads(self.db[key]))
             logging.info(f"[INFO] Retrieved {len(transactions)} transactions.")
         except Exception as e:
@@ -211,3 +223,38 @@ class BlockchainUnqliteDB:
             logging.info("[INFO] Database connection closed.")
         except Exception as e:
             logging.error(f"[ERROR] Failed to close database connection: {e}")
+
+# Example Usage
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+    db = BlockchainUnqliteDB()
+
+    # Insert test data
+    db.store_block(
+        block_hash="dummyhash",
+        block_header={"index": 0, "previous_hash": "0", "timestamp": 1234567890, "nonce": 0, "difficulty": 1000},
+        transactions=[{"tx_id": "tx_dummy", "inputs": [], "outputs": [], "timestamp": 1234567890}],
+        size=1,
+        difficulty=1000
+    )
+    db.store_transaction(
+        tx_id="tx_dummy",
+        block_hash="dummyhash",
+        inputs=[{"tx_out_id": "utxo1", "script_sig": "sig1"}],
+        outputs=[{"script_pub_key": "pubkey1", "amount": 100.5}],
+        timestamp=1234567890
+    )
+
+    # Fetch and display data
+    print("UTXOs:", db.get_all_blocks())
+    print("Transactions:", db.get_all_transactions())
+
+    # Delete all blocks (for testing)
+    db.delete_all_blocks()
+
+    # Display data after deletion
+    print("After deletion, Blocks:", db.get_all_blocks())
+
+    # Clean up
+    db.clear_database()
+    db.close()

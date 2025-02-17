@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
-
+import pickle
 import json
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.transactions. utxo_manager import UTXOManager
@@ -45,6 +45,50 @@ class StorageManager:
             raise AttributeError("[ERROR] PoC instance missing 'unqlite_db'")
 
 
+
+    def get_latest_block(self):
+        """
+        Retrieve the most recent block from UnQLite storage, ensuring proper decoding.
+        """
+        try:
+            all_blocks = self.poc.get_all_blocks()
+            if not all_blocks:
+                logging.warning("[StorageManager] No stored blocks found.")
+                return None  # No blocks in storage
+
+            # Sort blocks by index to find the latest one
+            latest_block_data = max(all_blocks, key=lambda b: b['header']['index'])
+
+            logging.info(f"[StorageManager] Loaded latest block {latest_block_data['header']['index']} (Hash: {latest_block_data['hash']})")
+
+            # ✅ Ensure correct decoding of transactions before converting to Block object
+            return Block(
+                index=latest_block_data['header']['index'],
+                previous_hash=latest_block_data['header']['previous_hash'],
+                transactions=[Transaction.from_dict(pickle.loads(tx)) if isinstance(tx, bytes) else Transaction.from_dict(tx) for tx in latest_block_data["transactions"]],
+                timestamp=latest_block_data['header']['timestamp'],
+                nonce=latest_block_data['header']['nonce'],
+                difficulty=latest_block_data['header']['difficulty'],
+                miner_address=latest_block_data.get('miner_address')
+            )
+
+        except Exception as e:
+            logging.error(f"[StorageManager] Failed to retrieve latest block: {str(e)}")
+            return None
+
+
+
+
+    # In StorageManager class
+    def purge_chain(self):
+        """Delete all blockchain data"""
+        try:
+            self.unqlite_db.delete_all_blocks()
+            logging.info("Successfully purged chain data")
+        except Exception as e:
+            logging.error(f"Failed to purge chain: {str(e)}")
+            raise
+
     def get_all_blocks(self):
         """Retrieve and convert stored blocks"""
         try:
@@ -70,16 +114,25 @@ class StorageManager:
             return []
 
     def store_block(self, block, difficulty):
+        """
+        Store a block in UnQLite as compressed binary data.
+        """
         try:
-            self.unqlite_db.add_block(
-                block_hash=block.hash,  # ✅ Keep as keyword argument
-                block_header=block.header.to_dict(),
-                transactions=[tx.to_dict() for tx in block.transactions],
-                size=len(block.transactions),
-                difficulty=difficulty
-            )
+            # ✅ Convert block to binary using pickle (faster than JSON)
+            block_data = pickle.dumps({
+                "hash": block.hash,
+                "header": block.header.to_dict(),
+                "transactions": [tx.to_dict() for tx in block.transactions],
+                "size": len(block.transactions),
+                "difficulty": difficulty
+            })
+
+            # ✅ Store in UnQLite as binary
+            self.unqlite_db.add_block(block.hash, block_data)
+
+            logging.info(f"[INFO] Block {block.index} stored successfully in UnQLite as binary.")
         except Exception as e:
-            logging.error(f"Block storage failed: {str(e)}")
+            logging.error(f"[ERROR] Block storage failed: {str(e)}")
             raise
 
 

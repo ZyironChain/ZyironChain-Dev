@@ -45,7 +45,7 @@ def get_block():
 
 
 
-
+from Zyiron_Chain.blockchain.constants import Constants
 
 
 import json
@@ -63,11 +63,13 @@ class BlockManager:
     # Constants for difficulty (7 leading zeros)
 # Constants (hex values for 7 leading zeros)
 # Should be set like this:
-    INITIAL_DIFFICULTY = 0x0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # 7 zeros
-    MIN_DIFFICULTY = 0x000000000000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # Hardest (smallest number)
-    MAX_DIFFICULTY = 0x0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  # Easiest (largest number)
+# For a target requiring 4 leading zeros with SHA3-384:
+    INITIAL_DIFFICULTY = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    MIN_DIFFICULTY = 0x00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF # (Can often remain unchanged)
+    MAX_DIFFICULTY = INITIAL_DIFFICULTY  # Easiest is now the same as INITIAL_DIFFICULTY for startup
     TARGET_BLOCK_TIME = 300  # 5 minutes in seconds
-    DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # Adjust every 10 blocks
+    DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # (Ensure this is what you want—comment should match the value)
+
 
     def __init__(self, storage_manager, transaction_manager):  # Add transaction_manager
         self.chain = []
@@ -81,24 +83,25 @@ class BlockManager:
     def validate_chain(self):
         """
         Validate chain integrity:
-        - Ensures Block 0 and Block 1 meet the 4-zero difficulty rule.
+        - Ensures Block 0 (Genesis) meets the 4-zero difficulty rule.
         - Each block's previous_hash correctly links to the prior block's hash.
         - Each block's hash < block's difficulty.
         - Recomputes block hash to ensure no corruption.
         """
-        for i in range(1, len(self.chain)):
+        for i in range(len(self.chain)):
             current_block = self.chain[i]
-            prev_block = self.chain[i - 1]
 
-            # Ensure Blocks 0 & 1 use the required 4-zero difficulty
-            if i in (0, 1) and current_block.header.difficulty != self.GENESIS_TARGET:
-                logging.error(f"[VALIDATION ERROR] ❌ Block {i} does not meet required 4-zero difficulty.")
+            # Ensure Block 0 (Genesis) uses the required 4-zero difficulty
+            if i == 0 and current_block.header.difficulty != Constants.GENESIS_TARGET:
+                logging.error(f"[VALIDATION ERROR] ❌ Block {i} (Genesis) does not meet required 4-zero difficulty.")
                 return False
 
-            # Validate previous hash linkage
-            if current_block.previous_hash != prev_block.hash:
-                logging.error(f"[VALIDATION ERROR] ❌ Block {i} has a previous hash mismatch.")
-                return False
+            # Validate previous hash linkage (skip for Genesis block)
+            if i > 0:
+                prev_block = self.chain[i - 1]
+                if current_block.previous_hash != prev_block.hash:
+                    logging.error(f"[VALIDATION ERROR] ❌ Block {i} has a previous hash mismatch.")
+                    return False
 
             # Validate difficulty
             if int(current_block.hash, 16) >= current_block.header.difficulty:
@@ -112,45 +115,43 @@ class BlockManager:
 
         return True
 
+
     def calculate_target(self):
         """
-        Difficulty adjustment using total time between first and last block in interval
+        Dynamically adjust difficulty based on the block intervals.
+        Genesis starts with Constants.GENESIS_TARGET and adjusts every Constants.DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
         """
-        if len(self.chain) < self.DIFFICULTY_ADJUSTMENT_INTERVAL:
-            return self.INITIAL_DIFFICULTY
+        if len(self.chain) < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
+            return Constants.GENESIS_TARGET  # Use value from constants
 
-        # Get first and last blocks using header timestamps
-        first_block = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL]
+        # Get first and last blocks in the adjustment interval
+        first_block = self.chain[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
         last_block = self.chain[-1]
-        
-        # Access timestamps through block headers
+
+        # Calculate total time taken vs expected time
         total_time = last_block.header.timestamp - first_block.header.timestamp
-        num_blocks = self.DIFFICULTY_ADJUSTMENT_INTERVAL - 1
-        
-        if total_time <= 0 or num_blocks <= 0:
-            logging.error("⚠️ Invalid time calculation, using fallback difficulty")
+        target_time = Constants.TARGET_BLOCK_TIME * Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
+
+        if total_time <= 0:
             return self.difficulty_target
 
-        avg_block_time = total_time / num_blocks
-        adjustment_factor = self.TARGET_BLOCK_TIME / avg_block_time
+        # Compute adjustment factor
+        adjustment_factor = target_time / total_time
+        adjustment_factor = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_factor))
 
-        # Exponential response for fast blocks
-        if avg_block_time < self.TARGET_BLOCK_TIME / 4:
-            adjustment_factor **= 2  # Quadratic increase
-
-        # Controlled adjustment range
-        adjustment_factor = max(0.25, min(4.0, adjustment_factor))
-
+        # Apply adjustment
         new_target = int(self.difficulty_target * adjustment_factor)
-        new_target = max(self.MIN_DIFFICULTY, min(new_target, self.MAX_DIFFICULTY))
-        
+        new_target = max(Constants.MIN_DIFFICULTY, min(new_target, Constants.MAX_DIFFICULTY))
+
         logging.info(
             f"⏳ Difficulty Adjusted | "
-            f"Avg Time: {avg_block_time:.1f}s | "
+            f"Time: {total_time:.1f}s | "
             f"Factor: {adjustment_factor:.2f}x | "
             f"New: {hex(new_target)}"
         )
+
         return new_target
+
 
 
     def get_average_block_time(self, num_blocks=5):
@@ -217,22 +218,25 @@ class BlockManager:
 
 
     def adjust_difficulty(self):
+        """
+        Adjust difficulty based on the average block time over the last DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
+        """
         if len(self.chain) < self.DIFFICULTY_ADJUSTMENT_INTERVAL:
             return
 
         # Use header timestamps for accurate calculation
         first = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL]
         last = self.chain[-1]
-        
+
         time_window = last.header.timestamp - first.header.timestamp
         avg_block_time = time_window / (self.DIFFICULTY_ADJUSTMENT_INTERVAL - 1)
 
-        # Controlled adjustment with bounds
+        # Linear adjustment with bounds
         adjustment = self.TARGET_BLOCK_TIME / avg_block_time
         adjustment = max(0.25, min(4.0, adjustment))  # 4x max adjustment
 
         new_target = int(self.difficulty_target * adjustment)
         self.difficulty_target = max(
-            self.MIN_DIFFICULTY, 
+            self.MIN_DIFFICULTY,
             min(new_target, self.MAX_DIFFICULTY)
-    )
+        )

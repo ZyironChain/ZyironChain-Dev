@@ -96,7 +96,9 @@ class Block:
         return tx_hashes[0]
 
     def calculate_hash(self):
-        """Calculate block hash using header data"""
+        """
+        Calculate block hash using SHA3-384.
+        """
         header_data = (
             f"{self.header.version}"
             f"{self.header.index}"
@@ -105,8 +107,8 @@ class Block:
             f"{self.header.timestamp}"
             f"{self.header.difficulty}"
             f"{self.header.nonce}"
-        )
-        return hashlib.sha3_384(header_data.encode()).hexdigest()
+        ).encode()
+        return hashlib.sha3_384(header_data).hexdigest()
 
     @property
     def timestamp(self):
@@ -154,12 +156,16 @@ class Block:
     def from_dict(cls, data: dict):
         """Create a Block from stored dictionary data"""
         try:
-            header_data = data['header']
-            transactions = [
-                Transaction.from_dict(tx) 
-                for tx in data.get('transactions', [])
-            ]
+            transactions = []
+            for tx_data in data.get('transactions', []):
+                # Handle coinbase transactions properly
+                if tx_data.get('type') == 'COINBASE':
+                    tx = CoinbaseTx.from_dict(tx_data)
+                else:
+                    tx = Transaction.from_dict(tx_data)
+                transactions.append(tx)
             
+            header_data = data['header']
             return cls(
                 index=header_data['index'],
                 previous_hash=header_data['previous_hash'],
