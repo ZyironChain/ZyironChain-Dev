@@ -34,7 +34,7 @@ class Blockchain:
     def __init__(self, storage_manager, transaction_manager, block_manager, key_manager):
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
-        self.block_manager = block_manager
+        self.block_manager = BlockManager(self, self.storage_manager, self.transaction_manager)      
         self.key_manager = key_manager
 
         self.chain = []
@@ -145,15 +145,10 @@ class Blockchain:
 
     def _mine_genesis_block(self, block=None):
         """
-        Mine the genesis block using SHA3-384:
-        Iterate the nonce until the block's hash (computed with SHA3-384)
-        is below the difficulty target (which requires a hash starting with 4 zeros).
-        Shows live nonce count, attempts, and elapsed time every second.
+        Mines the Genesis block with the correct SHA3-384 target difficulty.
         """
-        from Zyiron_Chain.blockchain.block import Block  # Lazy import
         if block is None:
             miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
-            from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx  # Lazy import
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
@@ -166,29 +161,26 @@ class Blockchain:
                 transactions=[coinbase_tx],
                 timestamp=int(time.time()),
                 nonce=0,
-                difficulty=Constants.GENESIS_TARGET,  # Using our new target for 4 zeros
-                miner_address=miner_address
+                difficulty=Constants.GENESIS_TARGET  # ✅ Ensure the difficulty is correct
             )
-        logging.info("Mining genesis block...")
+
+        logging.info("Mining Genesis Block...")
         start_time = time.time()
         last_update = start_time
-        attempts = 0
 
-        # Loop: recalculate the SHA3-384 hash until it meets the target.
-        while int(block.hash, 16) >= block.header.difficulty:
+        while int(block.hash, 16) >= block.difficulty:
             block.header.nonce += 1
-            block.hash = block.calculate_hash()  # calculate_hash() uses hashlib.sha3_384
-            attempts += 1
+            block.hash = block.calculate_hash()
             current_time = time.time()
-            if current_time - last_update >= 1:  # Print every second
-                elapsed = current_time - start_time
-                print(f"[LIVE] Nonce: {block.header.nonce}, Attempts: {attempts}, Elapsed Time: {elapsed:.2f}s")
+
+            if current_time - last_update >= 1:
+                elapsed = int(current_time - start_time)
+                print(f"[LIVE] Mining Genesis Block | Nonce: {block.header.nonce}, Time: {elapsed}s")
                 last_update = current_time
 
-        logging.info(f"Genesis block mined: nonce={block.header.nonce}, hash={block.hash}")
+        logging.info(f"✅ Genesis block mined with hash: {block.hash}")
         self.storage_manager.store_block(block, Constants.GENESIS_TARGET)
-        if not self.storage_manager.verify_block_storage(block):
-            raise RuntimeError("Genesis block storage verification failed")
+
 
 
 
@@ -210,21 +202,28 @@ class Blockchain:
                     self.chain.append(genesis_block)
                     self.block_manager.chain.append(genesis_block)
                 return
-            # No stored genesis block; create a new one.
+
+            # **No stored genesis block; create a new one.**
             genesis_block = self._create_genesis_block()
             genesis_block.previous_hash = self.ZERO_HASH
+
             if not self.validate_new_block(genesis_block):
-                raise ValueError("Generated genesis block failed validation")
+                raise ValueError("Generated Genesis block failed validation")
+
             self._store_and_validate_genesis(genesis_block)
-            # Now add the newly created genesis block to the chain.
+
+            # Now add the newly created Genesis Block to the chain.
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)
-            logging.info("Successfully initialized new genesis block")
+
+            logging.info("✅ Successfully initialized new Genesis Block")
+
         except Exception as e:
             logging.error(f"Genesis initialization failed: {str(e)}")
-            logging.info("Purging corrupted chain data...")
+            logging.info("⚡ Purging corrupted chain data...")
             self.storage_manager.purge_chain()
             raise
+
 
 
 

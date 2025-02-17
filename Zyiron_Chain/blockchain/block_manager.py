@@ -59,26 +59,22 @@ import logging
 import json
 import hashlib
 
+
+
 class BlockManager:
-    # Constants for difficulty (7 leading zeros)
-# Constants (hex values for 7 leading zeros)
-# Should be set like this:
-# For a target requiring 4 leading zeros with SHA3-384:
-    INITIAL_DIFFICULTY = 0x0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-    MIN_DIFFICULTY = 0x00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF # (Can often remain unchanged)
-    MAX_DIFFICULTY = INITIAL_DIFFICULTY  # Easiest is now the same as INITIAL_DIFFICULTY for startup
-    TARGET_BLOCK_TIME = 300  # 5 minutes in seconds
-    DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # (Ensure this is what you want—comment should match the value)
-
-
-    def __init__(self, storage_manager, transaction_manager):  # Add transaction_manager
-        self.chain = []
+    def __init__(self, blockchain, storage_manager, transaction_manager):  
+        self.blockchain = blockchain  # ✅ Fix: Ensure BlockManager has blockchain reference
         self.storage_manager = storage_manager
-        self.transaction_manager = transaction_manager  # Store transaction_manager
-        self.difficulty_target = self.INITIAL_DIFFICULTY
+        self.transaction_manager = transaction_manager
+        self.chain = []
+
+        # ✅ Fix: Pull difficulty values from `Constants`
+        self.difficulty_target = Constants.INITIAL_DIFFICULTY
 
         logging.info(f"[INIT] 🔧 Difficulty Target set to {hex(self.difficulty_target)}")
-        logging.info(f"[INIT] ⏳ Blocks should take ~5 minutes")
+        logging.info(f"[INIT] ⏳ Blocks should take ~{Constants.TARGET_BLOCK_TIME} seconds")
+
+
 
     def validate_chain(self):
         """
@@ -118,59 +114,105 @@ class BlockManager:
 
 
 
-    def calculate_target(self):
+
+
+
+
+
+
+
+
+
+
+
+    def calculate_target(self, storage_manager):
         """
-        Adjusts difficulty dynamically based on past blocks.
-        Uses Constants.DIFFICULTY_ADJUSTMENT_INTERVAL to control changes.
+        Dynamically adjusts mining difficulty based on actual vs. expected block times.
+        Ensures difficulty is updated every `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
         """
-        latest_blocks = self.storage_manager.get_all_blocks()
-        num_blocks = len(latest_blocks)
+        try:
+            # ✅ Ensure `get_all_blocks()` exists
+            if not hasattr(storage_manager, "get_all_blocks"):
+                logging.error("[ERROR] StorageManager is missing 'get_all_blocks()' method!")
+                return Constants.GENESIS_TARGET  # Fallback to Genesis Target
 
-        if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
-            return Constants.GENESIS_TARGET  # Start with Genesis Target
+            stored_blocks = storage_manager.get_all_blocks()
+            num_blocks = len(stored_blocks)
 
-        # Get the latest adjustment block
-        last_adjustment_block = latest_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
-        current_block = latest_blocks[-1]
+            if num_blocks == 0:
+                logging.info("[DIFFICULTY] No blocks found. Using Genesis Target.")
+                return Constants.GENESIS_TARGET  
 
-        actual_time_taken = current_block["header"]["timestamp"] - last_adjustment_block["header"]["timestamp"]
-        expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
+            # ✅ Retrieve latest block for current difficulty reference
+            last_block = stored_blocks[-1]
+            last_difficulty_hex = last_block["header"].get("difficulty", hex(Constants.GENESIS_TARGET))  
+            
+            # ✅ Convert difficulty safely
+            last_difficulty = int(last_difficulty_hex, 16) if isinstance(last_difficulty_hex, str) else Constants.GENESIS_TARGET
 
-        # Calculate adjustment factor (how much slower/faster mining is than expected)
-        adjustment_factor = max(
-            Constants.MIN_DIFFICULTY_FACTOR,
-            min(Constants.MAX_DIFFICULTY_FACTOR, actual_time_taken / expected_time)
-        )
+            # ✅ If not enough blocks exist for an adjustment, use last difficulty
+            if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
+                logging.info("[DIFFICULTY] Not enough blocks for adjustment. Using last difficulty.")
+                return last_difficulty
 
-        # New difficulty calculation
-        new_target = math.floor(last_adjustment_block["header"]["difficulty"] * adjustment_factor)
+            # ✅ Get the block at the difficulty adjustment interval
+            first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
 
-        # Ensure it remains within the allowed range
-        new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+            # ✅ Compute actual vs expected mining time
+            actual_time_taken = last_block["header"]["timestamp"] - first_block["header"]["timestamp"]
+            expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
 
-        logging.info(f"[DIFFICULTY] Adjusted difficulty to {new_target} at block {num_blocks}")
-        
-        return new_target
+            # ✅ Compute difficulty adjustment ratio
+            adjustment_ratio = expected_time / max(actual_time_taken, 1)  # Prevent division by zero
+            adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
+
+            # ✅ Compute new target difficulty
+            new_target = int(last_difficulty * adjustment_ratio)
+
+            # ✅ Enforce difficulty limits
+            new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
+            logging.info(f"[DIFFICULTY] Adjusted difficulty to {hex(new_target)} at block {num_blocks}")
+
+            return new_target
+
+        except Exception as e:
+            logging.error(f"[ERROR] Exception in difficulty calculation: {str(e)}")
+            return Constants.GENESIS_TARGET  # Ensure fallback in case of errors
 
 
 
 
-    def get_average_block_time(self, num_blocks=5):
+
+
+
+
+
+
+
+
+    def get_average_block_time(storage_manager):
         """
-        Get the rolling average of the last `num_blocks` mined.
+        Get the rolling average block mining time over the last `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
         If not enough blocks exist, return the target block time.
         """
-        if len(self.chain) < num_blocks + 1:
-            return self.TARGET_BLOCK_TIME  
+        stored_blocks = storage_manager.get_all_blocks()
+        num_blocks = len(stored_blocks)
 
-        # Calculate block times over last `num_blocks`
+        if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL + 1:
+            logging.warning(f"[DIFFICULTY] Not enough blocks ({num_blocks}) for full difficulty adjustment.")
+            return Constants.TARGET_BLOCK_TIME  
+
+        # ✅ Compute block mining times over the last `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks
         times = [
-            self.chain[i].timestamp - self.chain[i - 1].timestamp
-            for i in range(len(self.chain) - num_blocks, len(self.chain))
+            stored_blocks[i]["header"]["timestamp"] - stored_blocks[i - 1]["header"]["timestamp"]
+            for i in range(num_blocks - Constants.DIFFICULTY_ADJUSTMENT_INTERVAL, num_blocks)
         ]
 
-        return sum(times) / len(times) if times else self.TARGET_BLOCK_TIME
-
+        avg_time = sum(times) / len(times) if times else Constants.TARGET_BLOCK_TIME
+        logging.info(f"[DIFFICULTY] Average block time: {avg_time:.2f} sec (Target: {Constants.TARGET_BLOCK_TIME} sec)")
+        
+        return avg_time
     def calculate_merkle_root(self, transactions):
         """
         Compute the Merkle root using SHA3-384.
@@ -218,26 +260,48 @@ class BlockManager:
 
 
 
-    def adjust_difficulty(self):
+
+
+    def adjust_difficulty(self, storage_manager):
         """
-        Adjust difficulty based on the average block time over the last DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
+        Force difficulty adjustment based on the actual mining time vs. the target block time.
+        Ensures that difficulty is updated every Constants.DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
         """
-        if len(self.chain) < self.DIFFICULTY_ADJUSTMENT_INTERVAL:
-            return
 
-        # Use header timestamps for accurate calculation
-        first = self.chain[-self.DIFFICULTY_ADJUSTMENT_INTERVAL]
-        last = self.chain[-1]
+        stored_blocks = storage_manager.get_all_blocks()
+        num_blocks = len(stored_blocks)
 
-        time_window = last.header.timestamp - first.header.timestamp
-        avg_block_time = time_window / (self.DIFFICULTY_ADJUSTMENT_INTERVAL - 1)
+        if num_blocks == 0:
+            logging.info("[DIFFICULTY] No blocks found. Using Genesis Target.")
+            return Constants.GENESIS_TARGET  
 
-        # Linear adjustment with bounds
-        adjustment = self.TARGET_BLOCK_TIME / avg_block_time
-        adjustment = max(0.25, min(4.0, adjustment))  # 4x max adjustment
+        if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
+            first_block = stored_blocks[0]  
+        else:
+            first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
 
-        new_target = int(self.difficulty_target * adjustment)
-        self.difficulty_target = max(
-            self.MIN_DIFFICULTY,
-            min(new_target, self.MAX_DIFFICULTY)
-        )
+        last_block = stored_blocks[-1]
+
+        # Compute time taken
+        actual_time_taken = last_block["header"]["timestamp"] - first_block["header"]["timestamp"]
+        expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
+
+        # Compute adjustment ratio
+        adjustment_ratio = expected_time / max(1, actual_time_taken)
+        adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
+
+        # Apply new difficulty
+        last_difficulty = int(last_block["header"]["difficulty"], 16)
+        new_target = int(last_difficulty * adjustment_ratio)
+
+        # Enforce limits
+        new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
+        # Store updated difficulty
+        self.difficulty_target = new_target
+
+        # Log enforced difficulty update
+        logging.info(f"[DIFFICULTY] Enforced difficulty: {hex(new_target)} at block {num_blocks} (Ratio: {adjustment_ratio:.4f})")
+
+        return new_target
+

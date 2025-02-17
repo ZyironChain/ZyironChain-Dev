@@ -94,42 +94,53 @@ class StorageManager:
             logging.error(f"Failed to purge chain: {str(e)}")
             raise
 
+
     def get_all_blocks(self):
-        """Retrieve and convert stored blocks, ensuring hash inclusion."""
+        """Retrieve and convert stored blocks, ensuring all critical fields are included."""
         try:
             raw_blocks = self.unqlite_db.get_all_blocks()
             processed_blocks = []
-            
+
             for b in raw_blocks:
-                block_hash = b.get("hash", None)  # Ensure hash is included
-                if not block_hash:
-                    logging.error(f"[ERROR] Retrieved block is missing 'hash' key: {b}")
-                    continue  # Skip blocks with missing hash
-                
+                # ✅ Enforce presence of essential block fields
+                block_hash = b.get("hash")
+                header = b.get("header", {})
+                transactions = b.get("transactions", [])
+                size = b.get("size", 0)
+                miner_address = b.get("miner_address", "Unknown")
+
+                # Skip blocks missing **critical** information
+                if not block_hash or "timestamp" not in header:
+                    logging.error(f"[ERROR] Block missing essential fields: {b}")
+                    continue
+
+                # ✅ Ensure difficulty is **always set** correctly
+                block_difficulty = int(header.get("difficulty", Constants.MIN_DIFFICULTY), 16)
+
+                # ✅ Process block safely
                 processed_blocks.append({
-                    "hash": block_hash,  # ✅ Ensure hash is always present
+                    "hash": block_hash,  # Enforced presence of block hash
                     "header": {
-                        "index": b["header"]["index"],
-                        "previous_hash": b["header"]["previous_hash"],
-                        "merkle_root": b["header"]["merkle_root"],
-                        "timestamp": b["header"]["timestamp"],
-                        "nonce": b["header"]["nonce"],
-                        "difficulty": b["header"].get("difficulty", Constants.MIN_DIFFICULTY),
-                        "version": b["header"].get("version", 1)
+                        "index": header.get("index", -1),
+                        "previous_hash": header.get("previous_hash", "0" * 64),  # Default to all zeros
+                        "merkle_root": header.get("merkle_root", "0" * 64),
+                        "timestamp": header["timestamp"],  # Guaranteed to exist
+                        "nonce": header.get("nonce", 0),
+                        "difficulty": block_difficulty,  # Enforced difficulty integrity
+                        "version": header.get("version", 1)
                     },
-                    "transactions": b["transactions"],
-                    "size": b["size"],
-                    "difficulty": b.get("difficulty", Constants.MIN_DIFFICULTY),  # ✅ Ensure difficulty is included
-                    "miner_address": b.get("miner_address")
+                    "transactions": transactions,
+                    "size": size,
+                    "difficulty": block_difficulty,  # Ensure **difficulty consistency**
+                    "miner_address": miner_address
                 })
 
             logging.info(f"[DEBUG] Successfully retrieved {len(processed_blocks)} blocks from UnQLite.")
             return processed_blocks
 
-        except KeyError as e:
-            logging.error(f"[ERROR] Invalid block format in storage: {str(e)}")
+        except Exception as e:
+            logging.error(f"[ERROR] Exception while retrieving blocks: {str(e)}")
             return []
-
 
 
     def store_block(self, block, difficulty):

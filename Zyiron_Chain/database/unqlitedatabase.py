@@ -236,32 +236,46 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     db = BlockchainUnqliteDB()
 
-    # Insert test data
-    db.store_block(
-        block_hash="dummyhash",
-        block_header={"index": 0, "previous_hash": "0", "timestamp": 1234567890, "nonce": 0, "difficulty": 1000},
-        transactions=[{"tx_id": "tx_dummy", "inputs": [], "outputs": [], "timestamp": 1234567890}],
-        size=1,
-        difficulty=1000
-    )
-    db.store_transaction(
-        tx_id="tx_dummy",
-        block_hash="dummyhash",
-        inputs=[{"tx_out_id": "utxo1", "script_sig": "sig1"}],
-        outputs=[{"script_pub_key": "pubkey1", "amount": 100.5}],
-        timestamp=1234567890
-    )
+    # ✅ Insert test block
+    block_data = {
+        "hash": "dummyhash",
+        "header": {
+            "index": 0,
+            "previous_hash": "0",
+            "timestamp": 1234567890,
+            "nonce": 0,
+            "difficulty": 1000
+        },
+        "transactions": [
+            {"tx_id": "tx_dummy", "inputs": [], "outputs": [], "timestamp": 1234567890}
+        ],
+        "size": 1,
+        "difficulty": 1000
+    }
 
-    # Fetch and display data
-    print("UTXOs:", db.get_all_blocks())
-    print("Transactions:", db.get_all_transactions())
+    db.store_block(block_data)  # ✅ Pass entire block dictionary
 
-    # Delete all blocks (for testing)
+    # ✅ Insert test transaction
+    tx_data = {
+        "tx_id": "tx_dummy",
+        "block_hash": "dummyhash",
+        "inputs": [{"tx_out_id": "utxo1", "script_sig": "sig1"}],
+        "outputs": [{"script_pub_key": "pubkey1", "amount": 100.5}],
+        "timestamp": 1234567890
+    }
+
+    db.store_transaction(tx_data)  # ✅ Pass transaction dictionary
+
+    # ✅ Fetch and display data
+    print("Blocks:", json.dumps(db.get_all_blocks(), indent=4))  # Pretty print
+    print("Transactions:", json.dumps(db.get_all_transactions(), indent=4))
+
+    # ✅ Delete all blocks (for testing)
     db.delete_all_blocks()
 
-    # Display data after deletion
+    # ✅ Display data after deletion
     print("After deletion, Blocks:", db.get_all_blocks())
 
-    # Clean up
+    # ✅ Clean up
     db.clear_database()
     db.close()

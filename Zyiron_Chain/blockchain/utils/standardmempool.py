@@ -236,42 +236,59 @@ class StandardMempool:
 
 
     def get_pending_transactions(self, block_size_mb: float, transaction_type: str = "Standard") -> list:
-            """
-            Retrieve transactions for block inclusion, prioritizing high fees.
-            Allocates space based on transaction type: Instant (25%) or Standard (25%).
+        """
+        Retrieve transactions for block inclusion, prioritizing high fees.
+        Allocates space based on transaction type: Instant (25%) or Standard (25%).
 
-            :param block_size_mb: Current block size in MB.
-            :param transaction_type: "Instant" or "Standard" to filter transactions.
-            :return: A list of transaction objects.
-            """
-            block_size_bytes = block_size_mb * 1024 * 1024
-            allocation = int(block_size_bytes * 0.25)  # 25% allocation for each type
+        :param block_size_mb: Current block size in MB.
+        :param transaction_type: "Instant" or "Standard" to filter transactions.
+        :return: A list of transaction objects.
+        """
+        block_size_bytes = block_size_mb * 1024 * 1024
+        allocation = int(block_size_bytes * 0.25)  # 25% allocation for each type
 
-            with self.lock:
-                # Filter transactions by type
-                filtered_txs = [
-                    tx for tx in self.transactions.values()
-                    if (transaction_type == "Instant" and tx["transaction"].tx_id.startswith("PID-CID")) or
-                    (transaction_type == "Standard" and not tx["transaction"].tx_id.startswith("PID-CID"))
-                ]
+        with self.lock:
+            # Filter transactions by type
+            filtered_txs = [
+                tx for tx in self.transactions.values()
+                if (transaction_type == "Instant" and tx["transaction"].tx_id.startswith("PID-CID")) or
+                (transaction_type == "Standard" and not tx["transaction"].tx_id.startswith("PID-CID"))
+            ]
 
-                # Sort transactions by fee-per-byte
-                sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
+            # Sort transactions by fee-per-byte
+            sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
 
-                # Select transactions within allocation
-                selected_txs = []
-                current_size = 0
-                for tx_data in sorted_txs:
-                    tx_size = tx_data["transaction"].size
-                    if current_size + tx_size > allocation:
-                        break
-                    selected_txs.append(tx_data["transaction"])
-                    current_size += tx_size
+            # Select transactions within allocation
+            selected_txs = []
+            current_size = 0
+            for tx_data in sorted_txs:
+                tx_size = tx_data["transaction"].size
+                if current_size + tx_size > allocation:
+                    break
+                selected_txs.append(tx_data["transaction"])
+                current_size += tx_size
 
-                return selected_txs
+            return selected_txs
 
 
 
+    def restore_transactions(self, transactions):
+        """
+        Restore transactions back into the mempool if mining fails.
+
+        :param transactions: List of transaction objects to restore.
+        """
+        with self.lock:
+            for tx in transactions:
+                if tx.tx_id not in self.transactions:
+                    self.transactions[tx.tx_id] = {
+                        "transaction": tx,
+                        "timestamp": time.time(),
+                        "fee_per_byte": tx.fee / tx.size,
+                        "status": "Pending"
+                    }
+                    self.current_size_bytes += tx.size
+                    logging.info(f"[MEMPOOL] Restored transaction {tx.tx_id} after failed mining attempt.")
 
 
 

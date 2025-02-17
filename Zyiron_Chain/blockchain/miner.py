@@ -239,11 +239,9 @@ class Miner:
 
 
 
-
     def mine_block(self, network="mainnet"):
         """
-        Mines a new block with proof-of-work, continuing from the last stored block in the database.
-        Keeps the terminal output clean while showing progress and previous block details.
+        Mines a new block with Proof-of-Work, dynamically adjusting difficulty based on time.
         """
 
         mining_lock = Lock()
@@ -255,7 +253,7 @@ class Miner:
                 start_time = time.time()
                 last_update = start_time
 
-                # ✅ Step 1: Load last stored block from the database (if available)
+                # ✅ Load last stored block
                 last_stored_block = self.storage_manager.get_latest_block()
 
                 if last_stored_block:
@@ -263,84 +261,89 @@ class Miner:
                     block_height = last_stored_block.index + 1
                     print(f"\n🔄 Resuming from stored block {last_stored_block.index} (Hash: {last_stored_block.hash})")
                 else:
-                    # No stored block found, mine the Genesis Block
                     print("\n⚡ No stored blocks found. Mining Genesis Block...")
-                    self.miner.mine_genesis_block()  # ✅ Correct function call
+                    self.block_manager.blockchain._ensure_genesis_block()  # ✅ Correctly access Blockchain
                     time.sleep(1)
                     last_stored_block = self.storage_manager.get_latest_block()
                     prev_block = last_stored_block
                     block_height = 1  # After Genesis Block
 
-                # ✅ Step 2: Fetch difficulty from constants (Genesis block has special handling)
-                if block_height == 0:
-                    current_target = Constants.GENESIS_TARGET
-                elif block_height % Constants.DIFFICULTY_ADJUSTMENT_INTERVAL == 0:
-                    current_target = self.block_manager.calculate_target()  # Recalculate difficulty every interval
-                else:
-                    current_target = prev_block.difficulty  # Maintain previous difficulty
+                # ✅ Fetch dynamically adjusted difficulty before mining
+                current_target = self.block_manager.calculate_target(self.storage_manager)
 
-                current_target = max(current_target, Constants.MIN_DIFFICULTY)
+                # ✅ Ensure difficulty is within range
+                current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-                # ✅ Step 3: Adjust block size dynamically
+                # ✅ Adjust block size dynamically
                 self._calculate_block_size()
                 current_block_size_mb = self.current_block_size
 
-                # ✅ Step 4: Create coinbase transaction (Ensure block mines even if no fees exist)
+                # ✅ Create coinbase transaction
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
-                pending_txs = self.transaction_manager.mempool.get_pending_transactions(
-                    block_size_mb=current_block_size_mb
-                )
+                pending_txs = self.transaction_manager.mempool.get_pending_transactions(block_size_mb=current_block_size_mb)
                 total_fees = sum(tx.fee for tx in pending_txs if hasattr(tx, "fee")) if pending_txs else Decimal("0")
 
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
 
-                # ✅ Step 5: Collect valid transactions (always includes coinbase transaction)
-                valid_txs = [coinbase_tx]
-                if pending_txs:
-                    valid_txs += [tx for tx in pending_txs if self.transaction_manager.validate_transaction(tx)][:500]
+                # ✅ Collect valid transactions
+                valid_txs = [coinbase_tx] + ([tx for tx in pending_txs if self.transaction_manager.validate_transaction(tx)][:500] if pending_txs else [])
 
-                # ✅ Step 6: Create new block
+                # ✅ Create new block
                 new_block = Block(
                     index=block_height,
                     previous_hash=prev_block.hash,
                     transactions=valid_txs,
                     timestamp=int(time.time()),
                     nonce=0,
-                    difficulty=current_target
+                    difficulty=current_target  # ✅ Apply the latest difficulty
                 )
                 new_block.hash = new_block.calculate_hash()
 
-                # ✅ Step 7: Start Proof-of-Work Mining Loop
+                # ✅ Start Proof-of-Work Mining Loop
                 attempts = 0
-                while int(new_block.hash, 16) >= new_block.difficulty:  # ✅ Corrected reference
+                print(f"\n⛏️ Mining Block {block_height} | Target Difficulty: {hex(current_target)}\n")
+
+                # **Precompute static header data for efficiency**
+                static_header_data = (
+                    f"{new_block.index}{new_block.previous_hash}"
+                    f"{new_block.transactions[0].outputs[0]['address']}{new_block.timestamp}"
+                ).encode()
+
+                while True:
+                    # **Combine static header data with nonce**
+                    header_data = static_header_data + str(new_block.nonce).encode()
+                    new_block.hash = hashlib.sha3_384(header_data).hexdigest()
+                    attempts += 1
+
+                    # ✅ Check if hash meets the target difficulty
+                    if int(new_block.hash, 16) < new_block.difficulty:
+                        break
 
                     new_block.nonce += 1
-                    new_block.hash = new_block.calculate_hash()
-                    attempts += 1
                     current_time = time.time()
 
-                    if current_time - last_update >= 1:  # ✅ Update display every second
+                    # **Log progress every 5 seconds**
+                    if current_time - last_update >= 5:
                         elapsed = int(current_time - start_time)
-                        sys.stdout.write(
-                            f"\r⏳ Mining Block {block_height} | Nonce: {new_block.nonce} | Time: {elapsed}s | Prev Hash: {prev_block.hash[:12]}..."
-                        )
-                        sys.stdout.flush()
+                        print(f"[LIVE] ⏳ Block {block_height} | Nonce: {new_block.nonce} | Attempts: {attempts} | Time: {elapsed}s")
                         last_update = current_time
 
-                # ✅ Step 8: Block Mined - Print Full Details
+                # ✅ Block Mined - Print Details
                 print(f"\n✅ Block {block_height} mined successfully with Nonce {new_block.nonce}")
                 print(f"🆔 Block Hash: {new_block.hash}")
                 print(f"🔗 Previous Block Hash: {prev_block.hash}")
                 print(f"⛏️ Miner Address: {new_block.transactions[0].outputs[0]['address']}")
                 print(f"💰 Block Reward: {new_block.transactions[0].outputs[0]['amount']} ZYC")
+                print(f"🔧 Difficulty at time of mining: {hex(new_block.difficulty)}")
 
-                # ✅ Step 9: Store the new block
+                # ✅ Store block
                 self.storage_manager.store_block(new_block, new_block.difficulty)
                 self.block_manager.chain.append(new_block)
 
             except Exception as e:
                 logging.error(f"Mining failed: {str(e)}")
                 if valid_txs:
-                    for tx in valid_txs:
-                        self.transaction_manager.mempool.add_transaction(tx)  # ✅ Use `add_transaction()` instead
+                    self.transaction_manager.mempool.restore_transactions(valid_txs)
                 raise Exception(f"Block mining aborted: {str(e)}")
+
+        return new_block
