@@ -1,7 +1,11 @@
 import heapq
 from collections import defaultdict
+import heapq
+from collections import defaultdict
 
 class NetworkGraph:
+    """Manages the network graph and provides advanced pathfinding algorithms."""
+
     def __init__(self):
         """
         Initialize the network graph.
@@ -16,6 +20,8 @@ class NetworkGraph:
         :param node_b: Second node.
         :param distance: Distance or cost between the nodes.
         """
+        if distance < 0:
+            raise ValueError("[ERROR] Distance must be non-negative.")
         self.nodes.add(node_a)
         self.nodes.add(node_b)
         self.edges[(node_a, node_b)] = {"distance": distance}
@@ -37,6 +43,9 @@ class NetworkGraph:
         :param algorithm: Algorithm to use (default: "dijkstra").
         :return: List of nodes representing the path.
         """
+        if start not in self.nodes or end not in self.nodes:
+            raise ValueError(f"[ERROR] Either start node '{start}' or end node '{end}' does not exist in the network.")
+        
         if algorithm == "dijkstra":
             return self._dijkstra_path(start, end)
         elif algorithm == "astar":
@@ -75,7 +84,7 @@ class NetworkGraph:
             current = previous_nodes[current]
         path.reverse()
         if not path or path[0] != start:
-            raise ValueError(f"No path found from {start} to {end}.")
+            raise ValueError(f"[ERROR] No path found from {start} to {end}.")
         return path
 
     def _astar_path(self, start, end):
@@ -115,9 +124,11 @@ class NetworkGraph:
                     if neighbor not in open_set:
                         open_set.add(neighbor)
 
-        raise ValueError(f"No path found from {start} to {end}.")
+        raise ValueError(f"[ERROR] No path found from {start} to {end}.")
 
 class MultiHop:
+    """Manages multi-hop transactions over a network graph."""
+
     def __init__(self):
         """
         Initialize the MultiHop instance.

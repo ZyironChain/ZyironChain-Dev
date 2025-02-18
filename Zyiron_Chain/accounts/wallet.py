@@ -20,18 +20,22 @@ def serialize_complex(obj):
         return {"real": obj.real, "imag": obj.imag}
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
-
 class Wallet:
     """
     Represents a wallet with public and private keys for signing and verifying transactions.
     """
 
-    def __init__(self, wallet_file="wallet_keys.json"):
+    def __init__(self, wallet_file="Keys/Wallet_API_Keys.json"):
         """
         Generate keys for both testnet and mainnet and save them to a file.
         """
         self.wallet_file = wallet_file
         print("Generating new keys for both testnet and mainnet...")
+
+        # ✅ Ensure the directory exists
+        wallet_dir = os.path.dirname(self.wallet_file)
+        if wallet_dir and not os.path.exists(wallet_dir):
+            os.makedirs(wallet_dir, exist_ok=True)
 
         # Generate keys for testnet
         self.testnet_secret_key = SecretKey(512)
@@ -49,7 +53,6 @@ class Wallet:
         self.save_keys()
         print("Keys for both networks generated and saved successfully.")
 
-
     def public_key(self, network: str) -> str:
         """
         Retrieve the public key for a specified network and return it in a serialized and hashed format.
@@ -65,7 +68,7 @@ class Wallet:
             prefix = "KCT"
         elif network == "mainnet":
             public_key = self.mainnet_public_key
-            prefix = "KYZ"
+            prefix = "KYC"
         else:
             raise ValueError("Invalid network. Choose 'testnet' or 'mainnet'.")
 

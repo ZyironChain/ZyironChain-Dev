@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-
+from decimal import Decimal
 
 
 
@@ -25,7 +25,7 @@ class Constants:
         raise ValueError(f"[ERROR] Invalid network: {NETWORK}. Must be 'mainnet' or 'testnet'.")
 
     # 🔹 **Address Prefixes (Mainnet & Testnet)**
-    MAINNET_ADDRESS_PREFIX = "KYZ"
+    MAINNET_ADDRESS_PREFIX = "KYC"
     TESTNET_ADDRESS_PREFIX = "KYT"
 
     # ✅ Dynamically selects the correct address prefix
@@ -54,6 +54,8 @@ class Constants:
     MAX_SUPPLY = 84_096_000  # 🪙 **Max coin supply**
     INITIAL_COINBASE_REWARD = 100.00  # 🎁 **Initial mining reward**
     BLOCKCHAIN_HALVING_BLOCK_HEIGHT = 420_480  # 📉 **Halves every ~4 years (~5 min block time) until max supply**
+    # 🔹 **Smallest Unit Definition**
+    COIN = Decimal("0.00000001")  # ✅ Smallest unit of the currency 
 
 
 # 🔹 **Transaction Confirmation Requirements**
@@ -82,7 +84,7 @@ class Constants:
 
     # ✅ **Mempool Transaction Expiry Policy**
     MEMPOOL_TRANSACTION_EXPIRY = 86400  # ⏳ **Transactions expire after 24 hours in the mempool**
-
+    MAX_LMDB_DATABASES= 1
 
     # 🔹 **Instant Payment & HTLC Settings**a
     HTLC_LOCK_TIME = 120  # ⏳ **HTLC lock expires in 2 minutes**

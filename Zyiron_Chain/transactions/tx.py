@@ -52,8 +52,8 @@ class Transaction:
         # ✅ Assign timestamp
         self.timestamp = time.time()
 
-        # ✅ Ensure transaction type is set properly
-        self.type = PaymentTypeManager().get_transaction_type(tx_id)
+        # ✅ Validate transaction type using Constants
+        self.type = self._determine_transaction_type(tx_id)
 
         # ✅ Auto-generate `tx_id` if missing
         self.tx_id = tx_id if tx_id else self._generate_tx_id()
@@ -67,34 +67,53 @@ class Transaction:
         # ✅ Compute transaction size
         self.size = self._calculate_size()
 
-        # ✅ Compute transaction fee
-        self.fee = self._calculate_fee()
+        # ✅ Compute transaction fee and enforce minimum
+        self.fee = max(self._calculate_fee(), Constants.MIN_TRANSACTION_FEE)
 
         logging.info(f"[TRANSACTION] Created new transaction: {self.tx_id}, Type: {self.type}, Fee: {self.fee}, Size: {self.size} bytes")
 
+    def _determine_transaction_type(self, tx_id: str) -> str:
+        """Determine transaction type based on ID prefix using Constants."""
+        if not tx_id:
+            return "STANDARD"  # ✅ Default to STANDARD
+
+        for tx_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+            if any(tx_id.startswith(prefix) for prefix in config["prefixes"]):
+                return tx_type
+
+        return "STANDARD"  # ✅ Default to STANDARD if no match
+
+
 
     def _generate_tx_id(self) -> str:
-        """Generate a unique transaction ID using SHA3-384 hashing"""
-        tx_data = f"{self.timestamp}{self.hash}"
+        """Generate a unique transaction ID using SHA3-384 hashing and proper prefixing."""
+        prefix = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [""])[0]  # ✅ Fetch correct prefix
+        tx_data = f"{prefix}{self.timestamp}{self.hash}"
         return hashlib.sha3_384(tx_data.encode()).hexdigest()[:24]  # ✅ Shortened for efficiency
 
+
     def _get_default_utxo_manager(self):
-        """Retrieve the default UTXO manager instance if not provided."""
+        """Retrieve the default UTXO manager instance dynamically using Constants."""
         from Zyiron_Chain.transactions.utxo_manager import UTXOManager
         from Zyiron_Chain.database.poc import PoC
 
-        return UTXOManager(PoC(storage_type=Constants.DATABASES["utxo"]))  # ✅ Uses correct database type
+        db_type = Constants.DATABASES.get("utxo", "SQLite")  # ✅ Fetch correct storage from Constants
+        return UTXOManager(PoC(storage_type=db_type))  # ✅ Uses dynamic database selection
 
     @classmethod
     def from_dict(cls, data: Dict) -> "Transaction":
         """
         Create a Transaction instance from a dictionary.
-        
+
         :param data: Dictionary containing transaction data.
         :return: A Transaction instance.
         """
         if not isinstance(data, dict):
             raise TypeError("[ERROR] Input data must be a dictionary.")
+
+        # ✅ Validate required fields exist
+        if "inputs" not in data or "outputs" not in data:
+            raise ValueError("[ERROR] Transaction dictionary must contain 'inputs' and 'outputs'.")
 
         # ✅ Convert inputs from dict format
         inputs = [
@@ -119,24 +138,32 @@ class Transaction:
 
 
 
+
     def _ensure_inputs(self, inputs):
         """Ensure all inputs have required fields and convert to dictionaries."""
-        from Zyiron_Chain.transactions.txin import TransactionIn  # Updated import for modular structure
+        from Zyiron_Chain.transactions.txin import TransactionIn  # ✅ Modular import
 
         if not isinstance(inputs, list):
             raise TypeError("[ERROR] Inputs must be a list.")
 
         validated_inputs = []
         for inp in inputs:
-            if not isinstance(inp, TransactionIn):
+            try:
+                # ✅ Convert dictionary inputs to TransactionIn objects
                 if isinstance(inp, dict):
-                    inp = TransactionIn.from_dict(inp)  # Convert from dict if necessary
-                else:
-                    raise TypeError(f"[ERROR] Expected TransactionIn object or dictionary, got {type(inp)}")
-            
-            validated_inputs.append(inp.to_dict())
+                    inp = TransactionIn.from_dict(inp)
 
-        logging.info(f"[TRANSACTION] Validated {len(validated_inputs)} transaction inputs successfully.")
+                # ✅ Ensure input is a valid TransactionIn instance
+                if not isinstance(inp, TransactionIn):
+                    logging.warning(f"[WARN] Skipping invalid input: {inp}")
+                    continue  # Skip invalid inputs
+                
+                validated_inputs.append(inp.to_dict())
+
+            except Exception as e:
+                logging.error(f"[ERROR] Failed to process input {inp}: {e}")
+
+        logging.info(f"[TRANSACTION] ✅ Validated {len(validated_inputs)} transaction inputs successfully.")
         return validated_inputs
 
 
@@ -144,52 +171,79 @@ class Transaction:
 
 
     def _calculate_size(self) -> int:
-        """Estimate transaction size based on inputs, outputs, and metadata."""
+        """Estimate transaction size based on inputs, outputs, metadata, and enforced limits."""
         if not self.inputs or not self.outputs:
             raise ValueError("[ERROR] Transaction must have at least one input and one output.")
 
-        input_size = sum(len(str(inp.to_dict())) for inp in self.inputs)
-        output_size = sum(len(str(out.to_dict())) for out in self.outputs)
+        try:
+            # ✅ Compute size of inputs and outputs
+            input_size = sum(len(str(inp.to_dict())) for inp in self.inputs)
+            output_size = sum(len(str(out.to_dict())) for out in self.outputs)
 
-        metadata_size = len(self.tx_id) + len(str(self.timestamp)) + len(self.hash)
+            # ✅ Include metadata (tx_id, timestamp, hash)
+            metadata_size = len(self.tx_id) + len(str(self.timestamp)) + len(self.hash)
 
-        total_size = input_size + output_size + metadata_size
+            # ✅ Compute total transaction size
+            total_size = input_size + output_size + metadata_size
 
-        logging.info(f"[TRANSACTION] Calculated transaction size: {total_size} bytes")
-        return total_size
+            # ✅ Ensure size does not exceed Constants.MAX_BLOCK_SIZE_BYTES
+            if total_size > Constants.MAX_BLOCK_SIZE_BYTES:
+                logging.warning(f"[WARN] Transaction size {total_size} exceeds maximum block size {Constants.MAX_BLOCK_SIZE_BYTES}. Adjusting.")
+                total_size = Constants.MAX_BLOCK_SIZE_BYTES
+
+            logging.info(f"[TRANSACTION] ✅ Calculated transaction size: {total_size} bytes")
+            return total_size
+
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to calculate transaction size: {e}")
+            return 0  # ✅ Return 0 if calculation fails to prevent crashes
+
 
 
     def _ensure_outputs(self, outputs):
         """Ensure all outputs have required fields and convert to dictionaries."""
-        from Zyiron_Chain.transactions.txout import TransactionOut  # Updated import
+        from Zyiron_Chain.transactions.txout import TransactionOut  # ✅ Updated modular import
 
         if not isinstance(outputs, list):
             raise TypeError("[ERROR] Outputs must be a list.")
 
         validated_outputs = []
         for out in outputs:
-            if not isinstance(out, TransactionOut):
+            try:
+                # ✅ Convert dictionary outputs to TransactionOut objects
                 if isinstance(out, dict):
-                    out = TransactionOut.from_dict(out)  # Convert from dict if necessary
-                else:
-                    raise TypeError(f"[ERROR] Expected TransactionOut object or dictionary, got {type(out)}")
-            
-            validated_outputs.append(out.to_dict())
+                    out = TransactionOut.from_dict(out)
 
-        logging.info(f"[TRANSACTION] Validated {len(validated_outputs)} transaction outputs successfully.")
+                # ✅ Ensure output is a valid TransactionOut instance
+                if not isinstance(out, TransactionOut):
+                    logging.warning(f"[WARN] Skipping invalid output: {out}")
+                    continue  # ✅ Skip invalid outputs instead of stopping execution
+
+                # ✅ Ensure amount is greater than zero to prevent zero-value outputs
+                if out.amount <= 0:
+                    logging.warning(f"[WARN] Skipping output with non-positive amount: {out.amount}")
+                    continue
+
+                validated_outputs.append(out.to_dict())
+
+            except Exception as e:
+                logging.error(f"[ERROR] Failed to process output {out}: {e}")
+
+        logging.info(f"[TRANSACTION] ✅ Validated {len(validated_outputs)} transaction outputs successfully.")
         return validated_outputs
 
 
 
+
     def _calculate_fee(self) -> Decimal:
-        """Calculate transaction fee and ensure it meets the minimum required fee."""
+        """Calculate transaction fee using FeeModel, ensuring it meets the required minimum fee."""
         try:
             # ✅ Ensure Coinbase transactions never calculate fees
             if self.type == "COINBASE":
-                logging.info(f"[INFO] Coinbase Transaction Detected - Fee Set to 0")
+                logging.info("[INFO] Coinbase Transaction Detected - Fee Set to 0")
                 return Decimal("0")
 
-            # ✅ Initialize totals to ensure safe calculations
+            # ✅ Initialize totals for safe calculations
             input_total = Decimal("0")
             output_total = Decimal("0")
 
@@ -220,24 +274,28 @@ class Transaction:
                 logging.warning(f"[WARNING] Negative Fee Detected: Adjusting to 0. Input: {input_total}, Output: {output_total}, Fee: {fee}")
                 fee = Decimal("0")
 
-            # ✅ Fetch the minimum fee from constants
-            min_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
-
-            # ✅ Compute dynamic fee based on network congestion & transaction type
-            dynamic_fee = self.poc.fee_model.calculate_fee(
-                tx_size=self.size,
-                tx_type=self.type,
-                network_congestion=self.poc.mempool.size
+            # ✅ Fetch fees dynamically from FeeModel
+            fee_model = self.poc.fee_model  
+            min_fee = Decimal(Constants.MIN_TRANSACTION_FEE)  # Minimum required fee
+            network_fee = fee_model.calculate_fee(
+                block_size=Constants.MAX_BLOCK_SIZE_BYTES,
+                payment_type=self.type,
+                tx_size=self.size
             )
 
-            # ✅ Ensure the fee is at least the greater of min_fee or dynamic_fee
-            required_fee = max(min_fee, dynamic_fee)
+            # ✅ Ensure the fee meets at least the greater of min_fee or network_fee
+            required_fee = max(min_fee, network_fee)
+
+            # ✅ Apply dynamic fee increment if transaction is rebroadcasted
+            if hasattr(self, "rebroadcast") and self.rebroadcast:
+                required_fee *= Decimal(Constants.FEE_INCREMENT_FACTOR)
+                logging.info(f"[FEE] Transaction is a rebroadcast - Applying fee increase: {required_fee}")
 
             if fee < required_fee:
                 logging.info(f"[FEE] Adjusting fee to the required minimum: {required_fee} (Original Fee: {fee})")
                 fee = required_fee
 
-            logging.info(f"[TRANSACTION] Fee Calculated: {fee} (Input: {input_total}, Output: {output_total}, Required Fee: {required_fee})")
+            logging.info(f"[TRANSACTION] ✅ Fee Calculated: {fee} (Input: {input_total}, Output: {output_total}, Required Fee: {required_fee})")
             return fee
 
         except Exception as e:

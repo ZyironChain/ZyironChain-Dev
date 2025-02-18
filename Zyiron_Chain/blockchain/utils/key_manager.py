@@ -14,9 +14,8 @@ import base64
 import hashlib
 from Zyiron_Chain.accounts.wallet import Wallet  # Import Wallet for Falcon key generation
 from Zyiron_Chain.blockchain.constants import Constants
-
 class KeyManager:
-    def __init__(self, key_file="keys.json"):
+    def __init__(self, key_file="Keys/KeyManager_Public_Private_Keys.json"):
         """
         Initialize the KeyManager with a JSON file for key storage.
         :param key_file: Path to the JSON file where keys are stored.
@@ -24,17 +23,16 @@ class KeyManager:
         self.key_file = key_file
         self.network = Constants.NETWORK  # ✅ Dynamically fetch the active network
 
-        # Ensure the directory exists
+        # ✅ Ensure the directory exists
         key_dir = os.path.dirname(self.key_file)
         if key_dir and not os.path.exists(key_dir):
-            os.makedirs(key_dir)
+            os.makedirs(key_dir, exist_ok=True)
 
         self.keys = {}
         self.load_or_initialize_keys()
 
         # ✅ Auto-set default keys for active network
         self._auto_set_network_defaults()
-
 
     def load_or_initialize_keys(self):
         """

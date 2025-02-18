@@ -1,24 +1,53 @@
+
+
+import os 
 import duckdb
 from datetime import datetime
 import logging
 
+
 logging.basicConfig(level=logging.INFO)
+import os
+import logging
+import duckdb
+
+import os
+import logging
+import duckdb
+
+
+# ✅ Set the correct database directory and file name
+DB_DIR = "ZYCDB/blockmetadata"
+DB_PATH = os.path.join(DB_DIR, "blockmetadata.duckdb")  # ✅ Renamed to `blockmetadata.duckdb`
+
+# ✅ Ensure necessary directories exist
+os.makedirs(DB_DIR, exist_ok=True)  # ✅ Ensure `blockmetadata` directory exists
+
+
+logging.basicConfig(level=logging.INFO)
+
 class AnalyticsNetworkDB:
-    def __init__(self, db_file="analytics_network.duckdb", read_only=False):
+    def __init__(self, db_file=DB_PATH, read_only=False):
         """
         Initialize the DuckDB connection.
         If read_only is True, opens the database in read-only mode to prevent file locking issues.
         """
         try:
-            # Open the database in read-only mode if specified
-            self.conn = duckdb.connect(db_file, read_only=read_only)
-            if not read_only:
-                self.create_tables()  # Create tables only if not in read-only mode
-            print("[INFO] Connected to DuckDB.")
-        except duckdb.duckdb.IOException as e:
-            print(f"[ERROR] Failed to open DuckDB file: {e}")
-            raise
+            # ✅ Ensure the database file exists before opening in read-only mode
+            if not os.path.exists(db_file) and read_only:
+                raise FileNotFoundError(f"[ERROR] ❌ DuckDB file not found: {db_file}")
 
+            # ✅ Open the database in read-only mode if specified
+            self.conn = duckdb.connect(db_file, read_only=read_only)
+
+            if not read_only:
+                self.create_tables()  # ✅ Create tables only if not in read-only mode
+            
+            logging.info("[INFO] ✅ Connected to DuckDB.")
+
+        except duckdb.IOException as e:
+            logging.error(f"[ERROR] ❌ Failed to open DuckDB file: {e}")
+            raise
 
 
     def create_tables(self):
@@ -67,60 +96,68 @@ class AnalyticsNetworkDB:
         )
         """)
 
-    def insert_block_metadata(self, index, miner, timestamp, size, difficulty, transaction_count):
+    def insert_block_metadata(self, block_hash, index, miner, timestamp, size, difficulty, transaction_count):
         """
-        Insert block metadata into DuckDB.
-        :param index: The block index.
-        :param miner: The miner's address.
-        :param timestamp: The block's timestamp.
-        :param size: The block's size in bytes.
-        :param difficulty: The mining difficulty.
-        :param transaction_count: The number of transactions in the block.
+        Insert block metadata into DuckDB with conflict resolution.
         """
         try:
-            self.connection.execute(
+            self.conn.execute(
                 """
-                INSERT INTO block_metadata (index, miner, timestamp, size, difficulty, transaction_count)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO block_metadata (block_hash, index, miner, timestamp, size, difficulty, transaction_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(block_hash) DO UPDATE SET 
+                    miner = excluded.miner,
+                    timestamp = excluded.timestamp,
+                    size = excluded.size,
+                    difficulty = excluded.difficulty,
+                    transaction_count = excluded.transaction_count
                 """,
-                (index, miner, timestamp, size, difficulty, transaction_count)
+                (block_hash, index, miner, timestamp, size, difficulty, transaction_count)
             )
-            logging.info(f"[INFO] Inserted metadata for block {index} into DuckDB.")
+            logging.info(f"[INFO] ✅ Inserted/Updated metadata for block {block_hash} in DuckDB.")
         except Exception as e:
-            logging.error(f"[ERROR] Failed to insert block metadata: {e}")
+            logging.error(f"[ERROR] ❌ Failed to insert block metadata: {e}")
             raise
 
     def insert_transaction_metadata(self, tx_id, block_hash, transaction_amount, fees, num_inputs, num_outputs, status, timestamp):
+        """
+        Insert or update transaction metadata in DuckDB.
+        """
         try:
-            # First check if the transaction already exists
-            existing = self.conn.execute("""
-                SELECT COUNT(*) FROM transaction_metadata WHERE tx_id = ?
-            """, (tx_id,)).fetchone()
-
-            if existing[0] == 0:
-                # Insert if the transaction does not exist
-                self.conn.execute("""
-                    INSERT INTO transaction_metadata (tx_id, block_hash, transaction_amount, fees, num_inputs, num_outputs, status, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (tx_id, block_hash, transaction_amount, fees, num_inputs, num_outputs, status, timestamp))
-            else:
-                # Optionally, you can update the existing record
-                print(f"Transaction {tx_id} already exists. Skipping insertion.")
+            self.conn.execute("""
+                INSERT INTO transaction_metadata (tx_id, block_hash, value, fee, inputs_count, outputs_count, status, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tx_id) DO UPDATE SET
+                    block_hash = excluded.block_hash,
+                    value = excluded.value,
+                    fee = excluded.fee,
+                    inputs_count = excluded.inputs_count,
+                    outputs_count = excluded.outputs_count,
+                    status = excluded.status,
+                    timestamp = excluded.timestamp
+            """, (tx_id, block_hash, transaction_amount, fees, num_inputs, num_outputs, status, timestamp))
+            logging.info(f"[INFO] ✅ Inserted/Updated transaction {tx_id} in DuckDB.")
         except Exception as e:
-            print(f"Error inserting transaction metadata: {e}")
+            logging.error(f"[ERROR] ❌ Failed to insert/update transaction metadata: {e}")
+
 
 
     def insert_wallet_metadata(self, wallet_address, balance, transaction_count, last_updated):
         """
-        Insert or update wallet metadata.
+        Insert or update wallet metadata in DuckDB.
         """
-        self.conn.execute("""
-        INSERT INTO wallet_metadata VALUES (?, ?, ?, ?)
-        ON CONFLICT (wallet_address) DO UPDATE SET
-            balance = excluded.balance,
-            transaction_count = excluded.transaction_count,
-            last_updated = excluded.last_updated
-        """, (wallet_address, balance, transaction_count, last_updated))
+        try:
+            self.conn.execute("""
+                INSERT INTO wallet_metadata (wallet_address, balance, transaction_count, last_updated)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(wallet_address) DO UPDATE SET
+                    balance = excluded.balance,
+                    transaction_count = excluded.transaction_count,
+                    last_updated = excluded.last_updated
+            """, (wallet_address, balance, transaction_count, last_updated))
+            logging.info(f"[INFO] ✅ Wallet {wallet_address} metadata inserted/updated.")
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to insert/update wallet metadata: {e}")
 
 
     def update_network_analytics(self, metric_name, metric_value, timestamp):
@@ -166,26 +203,57 @@ class AnalyticsNetworkDB:
     def fetch_block_metadata(self, block_hash):
         """
         Fetch block metadata for a given block hash.
+        Returns None if block is not found.
         """
-        return self.conn.execute("""
-        SELECT * FROM block_metadata WHERE block_hash = ?
-        """, (block_hash,)).fetchone()
+        try:
+            result = self.conn.execute("""
+                SELECT * FROM block_metadata WHERE block_hash = ?
+            """, (block_hash,)).fetchone()
+            if result:
+                return dict(result)
+            else:
+                logging.warning(f"[WARNING] Block {block_hash} not found in metadata.")
+                return None
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to fetch block metadata: {e}")
+            return None
 
     def fetch_transaction_metadata(self, tx_id):
         """
         Fetch transaction metadata for a given transaction ID.
+        Returns None if transaction is not found.
         """
-        return self.conn.execute("""
-        SELECT * FROM transaction_metadata WHERE tx_id = ?
-        """, (tx_id,)).fetchone()
+        try:
+            result = self.conn.execute("""
+                SELECT * FROM transaction_metadata WHERE tx_id = ?
+            """, (tx_id,)).fetchone()
+            if result:
+                return dict(result)
+            else:
+                logging.warning(f"[WARNING] Transaction {tx_id} not found in metadata.")
+                return None
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to fetch transaction metadata: {e}")
+            return None
 
     def fetch_wallet_metadata(self, wallet_address):
         """
         Fetch wallet metadata for a given wallet address.
+        Returns None if the wallet is not found.
         """
-        return self.conn.execute("""
-        SELECT * FROM wallet_metadata WHERE wallet_address = ?
-        """, (wallet_address,)).fetchone()
+        try:
+            result = self.conn.execute("""
+                SELECT * FROM wallet_metadata WHERE wallet_address = ?
+            """, (wallet_address,)).fetchone()
+            
+            if result:
+                return dict(result)  # ✅ Convert to dictionary for consistency
+            else:
+                logging.warning(f"[WARNING] Wallet {wallet_address} not found in metadata.")
+                return None
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to fetch wallet metadata: {e}")
+            return None
 
     def fetch_network_analytics(self, metric_name):
         """
@@ -207,21 +275,28 @@ class AnalyticsNetworkDB:
 # Example Usage
 if __name__ == "__main__":
     try:
+        # ✅ Ensure the database instance is created before calling any function
         db = AnalyticsNetworkDB()
 
-        # Insert example data
+        # ✅ Insert example data to test
         db.insert_block_metadata("hash1", 1, "miner1", datetime.now(), 1024, 2, 10)
         db.insert_transaction_metadata("tx1", "hash1", 100.5, 0.5, 2, 3, "confirmed", datetime.now())
 
-        # Fetch and print data
+        # ✅ Fetch and print data to verify
         block = db.fetch_block_metadata("hash1")
         if block:
-            print("Block Metadata:", block)
+            print("🟢 Block Metadata:", block)
         else:
             logging.warning("[WARN] No block metadata found for hash1.")
 
     except Exception as e:
-        logging.error(f"[ERROR] An error occurred: {e}")
+        logging.error(f"[ERROR] ❌ An error occurred: {e}")
 
     finally:
-        db.close()
+        # ✅ Only close the database if `db` is properly initialized
+        if "db" in locals():
+            db.close()
+            logging.info("[INFO] ✅ DuckDB connection closed.")
+
+
+

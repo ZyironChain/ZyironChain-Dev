@@ -21,11 +21,11 @@ class CoinbaseTx:
 
         :param block_height: The height of the block.
         :param miner_address: The recipient miner's address.
-        :param reward: The reward amount (defaults to Constants.INITIAL_COINBASE_REWARD).
+        :param reward: The reward amount (defaults to dynamically calculated reward based on halving).
         """
         self.block_height = block_height
         self.miner_address = miner_address
-        self.reward = reward if reward else Decimal(Constants.INITIAL_COINBASE_REWARD)
+        self.reward = reward if reward else self._calculate_reward(block_height)
         self.timestamp = time.time()
         self.tx_id = self._generate_tx_id(block_height, self.timestamp)
         self.inputs = []  # Coinbase transactions have no inputs
@@ -34,14 +34,23 @@ class CoinbaseTx:
         self.fee = Decimal("0")
         self.hash = self.calculate_hash()
 
+    def _calculate_reward(self, block_height: int) -> Decimal:
+        """Dynamically calculate the block reward based on halving intervals."""
+        halvings = block_height // Constants.BLOCKCHAIN_HALVING_BLOCK_HEIGHT
+        reward = Constants.INITIAL_COINBASE_REWARD / (2 ** halvings)
+
+        # ✅ Ensure the reward does not go below the minimum transaction fee
+        return max(reward, Constants.MIN_TRANSACTION_FEE)
+
     def _generate_tx_id(self, block_height: int, timestamp: float) -> str:
         """Generate a unique transaction ID using SHA3-384 hashing"""
-        tx_data = f"COINBASE-{block_height}-{timestamp}-{self.miner_address}-{self.reward}"
+        prefix = Constants.TRANSACTION_MEMPOOL_MAP["COINBASE"]["prefixes"][0]
+        tx_data = f"{prefix}{block_height}-{timestamp}-{self.miner_address}-{self.reward}"
         return hashlib.sha3_384(tx_data.encode()).hexdigest()[:24]
 
     def calculate_hash(self) -> str:
         """Calculate SHA3-384 hash of the transaction"""
-        tx_data = f"{self.tx_id}{self.timestamp}{self.outputs[0]['address']}{self.outputs[0]['amount']}"
+        tx_data = f"{self.tx_id}{self.timestamp}{self.outputs[0]['address']}{Decimal(self.outputs[0]['amount'])}"
         return hashlib.sha3_384(tx_data.encode()).hexdigest()
 
     def to_dict(self) -> Dict:

@@ -28,16 +28,37 @@ def get_transaction():
     from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
     return Transaction
 
+
+
+
+# ✅ Define SQLite Database Path
+DB_PATH = "ZYCDB/UTXOSDB/utxos.sqlite"
+
+# ✅ Ensure the directory exists
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+logging.basicConfig(level=logging.INFO)
 class SQLiteDB:
-    def __init__(self, db_path="sqlite.db"):
-        self.connection = sqlite3.connect(db_path, check_same_thread=False)  # ✅ Ensure connection
-        self.connection.row_factory = sqlite3.Row  # ✅ Enables fetching rows as dictionaries
-        self.cursor = self.connection.cursor()
+    def __init__(self, db_path=DB_PATH):
+        """
+        Initialize the SQLite database, ensuring the directory exists.
+        """
+        try:
+            # ✅ Connect to the SQLite database
+            self.connection = sqlite3.connect(db_path, check_same_thread=False)
+            self.connection.row_factory = sqlite3.Row  # ✅ Enables fetching rows as dictionaries
+            self.cursor = self.connection.cursor()
 
-        # ✅ Ensure UTXO and Transactions tables exist
-        self.create_utxos_table()
-        self.create_transactions_table()
+            # ✅ Ensure UTXO and Transactions tables exist
+            self.create_utxos_table()
+            self.create_transactions_table()
 
+            logging.info(f"[INFO] ✅ Connected to SQLite at {db_path}")
+
+        except sqlite3.OperationalError as e:
+            logging.error(f"[ERROR] ❌ Unable to open SQLite database file: {e}")
+            raise
+        
     def create_utxos_table(self):
         """Create the UTXOs table if it does not exist."""
         self.cursor.execute("""

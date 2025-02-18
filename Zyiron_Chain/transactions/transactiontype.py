@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Dict, Optional
 
 from enum import Enum, auto
-
+from Zyiron_Chain.blockchain.constants import Constants
 class TransactionType(Enum):
     """Defines all supported transaction types"""
     STANDARD = auto()  # Regular peer-to-peer transactions
@@ -15,38 +15,39 @@ class TransactionType(Enum):
     COINBASE = auto()  # Block reward transactions
 
 class PaymentTypeManager:
-    """Manages transaction type configurations"""
+    """Manages transaction type configurations dynamically using Constants"""
     
     TYPE_CONFIG = {
         TransactionType.STANDARD: {
-            "prefixes": [],  # ✅ No prefixes for standard transactions
-            "confirmations": 8,
+            "prefixes": Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"],  # ✅ Uses Constants
+            "confirmations": Constants.TRANSACTION_CONFIRMATIONS["STANDARD"],  # ✅ Uses Constants
             "description": "Standard peer-to-peer transactions"
         },
         TransactionType.SMART: {
-            "prefixes": ["S-"],
-            "confirmations": 5,
+            "prefixes": Constants.TRANSACTION_MEMPOOL_MAP["SMART"]["prefixes"],  # ✅ Uses Constants
+            "confirmations": Constants.TRANSACTION_CONFIRMATIONS["SMART"],  # ✅ Uses Constants
             "description": "Smart contract transactions"
         },
         TransactionType.INSTANT: {
-            "prefixes": ["PID-", "CID-"],
-            "confirmations": 2,
+            "prefixes": Constants.TRANSACTION_MEMPOOL_MAP["INSTANT"]["prefixes"],  # ✅ Uses Constants
+            "confirmations": Constants.TRANSACTION_CONFIRMATIONS["INSTANT"],  # ✅ Uses Constants
             "description": "Instant settlement transactions"
         },
         TransactionType.COINBASE: {
-            "prefixes": ["COINBASE-"],
-            "confirmations": 12,
+            "prefixes": Constants.TRANSACTION_MEMPOOL_MAP["COINBASE"]["prefixes"],  # ✅ Uses Constants
+            "confirmations": Constants.TRANSACTION_CONFIRMATIONS["COINBASE"],  # ✅ Uses Constants
             "description": "Block reward transactions"
         }
     }
 
     def get_transaction_type(self, tx_id: str) -> TransactionType:
-        """Determine transaction type based on ID prefix"""
+        """Determine transaction type based on ID prefix using Constants"""
         if not tx_id:  
             return TransactionType.STANDARD  # ✅ Default to STANDARD
 
+        # ✅ Validate against Constants-defined prefixes
         for tx_type, config in self.TYPE_CONFIG.items():
-            if any(tx_id.startswith(prefix) for prefix in config["prefixes"]):
+            if any(tx_id.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP[tx_type.name]["prefixes"]):
                 return tx_type
         
-        return TransactionType.STANDARD  # ✅ If no match, it's a standard transaction
+        return TransactionType.STANDARD  # ✅ Default to STANDARD if no match

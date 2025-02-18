@@ -1,3 +1,11 @@
+import sys
+import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
+
+
+
+
 """This file contains important algorithms for Falcon.
 
 - the Fast Fourier orthogonalization (in coefficient and FFT representation)

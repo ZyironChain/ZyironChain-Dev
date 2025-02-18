@@ -82,25 +82,46 @@ class TransactionManager:
 
     def store_transaction_in_mempool(self, transaction):
         """
-        Store a transaction in the appropriate mempool.
+        Store a transaction in the appropriate mempool, validating type and routing accordingly.
         """
-        if not transaction.tx_id.startswith(Constants.ADDRESS_PREFIX):
-            logging.error(f"[ERROR] Transaction {transaction.tx_id} has an invalid address prefix for {self.network}. Expected: {Constants.ADDRESS_PREFIX}")
-            return False
+        try:
+            # ✅ Ensure transaction ID has the correct network prefix
+            if not transaction.tx_id.startswith(Constants.ADDRESS_PREFIX):
+                logging.error(
+                    f"[ERROR] Transaction {transaction.tx_id} has an invalid address prefix for {self.network}. "
+                    f"Expected: {Constants.ADDRESS_PREFIX}"
+                )
+                return False
 
-        tx_type = PaymentTypeManager().get_transaction_type(transaction.tx_id)
-        mempool_type = self.transaction_mempool_map.get(tx_type.name, {}).get("mempool", "StandardMempool")
+            # ✅ Identify transaction type dynamically
+            tx_type = PaymentTypeManager().get_transaction_type(transaction.tx_id)
+            if not tx_type:
+                logging.error(f"[ERROR] Unable to determine transaction type for {transaction.tx_id}")
+                return False
 
-        if mempool_type == "SmartMempool":
+            # ✅ Fetch mempool type from constants
+            mempool_type = self.transaction_mempool_map.get(tx_type.name, {}).get("mempool", "StandardMempool")
+
+            # ✅ Route transaction to the appropriate mempool
             current_height = len(self.storage_manager.block_manager.chain)
-            success = self.smart_mempool.add_transaction(transaction, current_height)
-        else:
-            success = self.standard_mempool.add_transaction(transaction)
+            success = (
+                self.smart_mempool.add_transaction(transaction, current_height)
+                if mempool_type == "SmartMempool"
+                else self.standard_mempool.add_transaction(transaction)
+            )
 
-        if success:
-            self.storage_manager.poc.route_transaction_to_mempool(transaction)
-        else:
-            logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the {mempool_type}.")
+            # ✅ Handle successful addition
+            if success:
+                self.storage_manager.poc.route_transaction_to_mempool(transaction)
+                logging.info(f"[INFO] Transaction {transaction.tx_id} stored in {mempool_type}.")
+                return True
+            else:
+                logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the {mempool_type}.")
+                return False
+
+        except Exception as e:
+            logging.error(f"[ERROR] Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
+            return False
 
 
     def select_transactions_for_block(self, max_block_size_mb=10):
@@ -111,57 +132,67 @@ class TransactionManager:
         - Allocates space dynamically based on configured mempool allocations.
         - Prioritizes high-fee transactions within allocated space limits.
         """
-        max_size_bytes = max_block_size_mb * 1024 * 1024  # Convert MB to bytes
-        current_height = len(self.storage_manager.block_manager.chain)
+        try:
+            max_size_bytes = max_block_size_mb * 1024 * 1024  # Convert MB to bytes
+            current_height = len(self.storage_manager.block_manager.chain)
 
-        # ✅ Dynamically allocate block space using constants
-        smart_tx_allocation = int(max_size_bytes * Constants.SMART_MEMPOOL_ALLOCATION)
-        standard_tx_allocation = int(max_size_bytes * Constants.STANDARD_MEMPOOL_ALLOCATION)
-        instant_tx_allocation = int(max_size_bytes * Constants.INSTANT_PAYMENT_ALLOCATION)
-        
-        # ✅ Fetch transactions based on allocation limits
-        smart_txs = self.smart_mempool.get_smart_transactions(Constants.SMART_MEMPOOL_ALLOCATION * max_block_size_mb, current_height)
-        standard_txs = self.standard_mempool.get_pending_transactions(Constants.STANDARD_MEMPOOL_ALLOCATION * max_block_size_mb)
-        instant_txs = self.standard_mempool.get_pending_transactions(Constants.INSTANT_PAYMENT_ALLOCATION * max_block_size_mb, transaction_type="Instant")
+            # ✅ Fetch dynamic allocations from Constants
+            smart_tx_allocation = int(max_size_bytes * Constants.BLOCK_ALLOCATION_SMART)
+            standard_tx_allocation = int(max_size_bytes * Constants.BLOCK_ALLOCATION_STANDARD)
+            instant_tx_allocation = int(max_size_bytes * Constants.INSTANT_PAYMENT_ALLOCATION)
 
-        # ✅ Sort transactions by fee-per-byte (Higher fees get priority)
-        all_txs = sorted(smart_txs + standard_txs + instant_txs, key=lambda tx: tx.fee / self._calculate_transaction_size(tx), reverse=True)
+            # ✅ Fetch transactions based on allocation limits
+            smart_txs = self.smart_mempool.get_pending_transactions(Constants.BLOCK_ALLOCATION_SMART * max_block_size_mb, current_height)
+            standard_txs = self.standard_mempool.get_pending_transactions(Constants.BLOCK_ALLOCATION_STANDARD * max_block_size_mb)
+            instant_txs = self.standard_mempool.get_pending_transactions(Constants.INSTANT_PAYMENT_ALLOCATION * max_block_size_mb, transaction_type="Instant")
 
-        # ✅ Track allocations separately for precise selection
-        selected_txs, current_smart_size, current_standard_size, current_instant_size = [], 0, 0, 0
+            # ✅ Sort transactions by fee-per-byte (Higher fees get priority)
+            all_txs = sorted(
+                smart_txs + standard_txs + instant_txs,
+                key=lambda tx: tx.fee / self._calculate_transaction_size(tx),
+                reverse=True
+            )
 
-        for tx in all_txs:
-            tx_size = self._calculate_transaction_size(tx)
+            # ✅ Track allocations separately for precise selection
+            selected_txs, current_smart_size, current_standard_size, current_instant_size = [], 0, 0, 0
 
-            # ✅ Ensure transactions stay within their allocated space
-            if tx in smart_txs and current_smart_size + tx_size > smart_tx_allocation:
-                continue
-            if tx in standard_txs and current_standard_size + tx_size > standard_tx_allocation:
-                continue
-            if tx in instant_txs and current_instant_size + tx_size > instant_tx_allocation:
-                continue
+            for tx in all_txs:
+                tx_size = self._calculate_transaction_size(tx)
 
-            # ✅ Check overall block size limit and validate transaction
-            if sum([current_smart_size, current_standard_size, current_instant_size]) + tx_size <= max_size_bytes and self.validate_transaction(tx):
-                selected_txs.append(tx)
+                # ✅ Ensure transactions stay within their allocated space
+                if tx in smart_txs and current_smart_size + tx_size > smart_tx_allocation:
+                    continue
+                if tx in standard_txs and current_standard_size + tx_size > standard_tx_allocation:
+                    continue
+                if tx in instant_txs and current_instant_size + tx_size > instant_tx_allocation:
+                    continue
 
-                # ✅ Update size tracking per category
-                if tx in smart_txs:
-                    current_smart_size += tx_size
-                elif tx in instant_txs:
-                    current_instant_size += tx_size
-                else:
-                    current_standard_size += tx_size
+                # ✅ Check overall block size limit and validate transaction
+                if sum([current_smart_size, current_standard_size, current_instant_size]) + tx_size <= max_size_bytes and self.validate_transaction(tx):
+                    selected_txs.append(tx)
 
-        logging.info(
-            f"[BLOCK SELECTION] ✅ Selected {len(selected_txs)} transactions | "
-            f"Smart Tx Size: {current_smart_size} bytes | "
-            f"Standard Tx Size: {current_standard_size} bytes | "
-            f"Instant Tx Size: {current_instant_size} bytes | "
-            f"Total Size: {sum([current_smart_size, current_standard_size, current_instant_size])} bytes"
-        )
+                    # ✅ Update size tracking per category
+                    if tx in smart_txs:
+                        current_smart_size += tx_size
+                    elif tx in instant_txs:
+                        current_instant_size += tx_size
+                    else:
+                        current_standard_size += tx_size
 
-        return selected_txs
+            logging.info(
+                f"[BLOCK SELECTION] ✅ Selected {len(selected_txs)} transactions | "
+                f"Smart Tx Size: {current_smart_size} bytes | "
+                f"Standard Tx Size: {current_standard_size} bytes | "
+                f"Instant Tx Size: {current_instant_size} bytes | "
+                f"Total Size: {sum([current_smart_size, current_standard_size, current_instant_size])} bytes"
+            )
+
+            return selected_txs
+
+        except Exception as e:
+            logging.error(f"[BLOCK SELECTION] ❌ Error selecting transactions: {str(e)}")
+            return []
+
 
 
 

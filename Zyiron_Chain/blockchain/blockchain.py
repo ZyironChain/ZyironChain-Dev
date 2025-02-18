@@ -94,25 +94,40 @@ class Blockchain:
         Validate a new block before adding it to the chain.
         """
         # ✅ Verify Proof-of-Work
-        if int(new_block.hash, 16) >= new_block.header.difficulty:
-            logging.error(f"Invalid Proof-of-Work for block {new_block.index}")
+        if not new_block.hash or int(new_block.hash, 16) >= new_block.header.difficulty:
+            logging.error(f"Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
             return False
 
         # ✅ Validate previous hash linkage
         if prev_block and new_block.previous_hash != prev_block.hash:
-            logging.error(f"Block {new_block.index} has invalid previous hash")
+            logging.error(f"Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
             return False
 
         # ✅ Validate transactions inside the block
         for tx in new_block.transactions:
-            tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
-            required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"])
-            
-            if self.storage_manager.get_transaction_confirmations(tx.tx_id) < required_confirmations:
-                logging.error(f"Transaction {tx.tx_id} does not meet required confirmations ({required_confirmations})")
+            try:
+                tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
+                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                    tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"]
+                )
+
+                confirmations = self.storage_manager.get_transaction_confirmations(tx.tx_id)
+                if confirmations is None:
+                    logging.error(f"Transaction {tx.tx_id} confirmations could not be retrieved.")
+                    return False
+
+                if confirmations < required_confirmations:
+                    logging.error(
+                        f"Transaction {tx.tx_id} does not meet required confirmations "
+                        f"({required_confirmations}, Confirmations: {confirmations})"
+                    )
+                    return False
+            except Exception as e:
+                logging.error(f"Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
                 return False
 
         return True
+
 
 
 
@@ -138,98 +153,134 @@ class Blockchain:
             self.block_manager.chain.clear()
             raise
 
-    # In your Blockchain class
+        # In your Blockchain class
     def _create_genesis_block(self):
         """Create, mine, and validate the Genesis block using network-specific settings."""
         try:
+            # ✅ Ensure miner address retrieval succeeds
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
+            if not miner_address:
+                raise ValueError("[ERROR] Failed to retrieve miner address for Genesis block.")
+
+            # ✅ Ensure reward is a valid Decimal
+            try:
+                reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
+            except Exception as e:
+                raise ValueError(f"[ERROR] Invalid coinbase reward: {str(e)}")
+
+            # ✅ Construct the Coinbase transaction
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
-                reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
+                reward=reward
             )
             coinbase_tx.fee = Decimal("0")
 
+            # ✅ Create Genesis block
             genesis_block = Block(
                 index=0,
                 previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
                 timestamp=int(time.time()),
                 nonce=0,
-                difficulty=Constants.GENESIS_TARGET,  
+                difficulty=Constants.GENESIS_TARGET,
                 miner_address=miner_address
             )
+
+            # ✅ Mine the Genesis block
             self._mine_genesis_block(genesis_block)
+
+            # ✅ Validate the Genesis block
             if not self.validate_new_block(genesis_block):
-                raise ValueError("Generated Genesis block failed validation")
+                raise ValueError("[ERROR] Generated Genesis block failed validation.")
+
+            logging.info(f"[INFO] Genesis block created successfully. Block Hash: {genesis_block.hash}")
             return genesis_block
+
         except Exception as e:
-            logging.error(f"Genesis creation failed: {str(e)}")
+            logging.error(f"[ERROR] Genesis creation failed: {str(e)}")
             raise
 
 
 
 
     def _store_and_validate_genesis(self, genesis_block):
-        """Store and verify genesis block integrity"""
+        """Store and verify genesis block integrity."""
         try:
-            # Store with proper parameters
+            # ✅ Store with proper parameters
             self.storage_manager.store_block(
                 block=genesis_block,
                 difficulty=Constants.GENESIS_TARGET
             )
-            
-            # Verify storage
-            if not self.storage_manager.verify_block_storage(genesis_block):
-                raise RuntimeError("Genesis block storage verification failed")
 
-            # Validate chain properties
+            # ✅ Verify storage
+            if not self.storage_manager.verify_block_storage(genesis_block):
+                raise RuntimeError("[ERROR] Genesis block storage verification failed")
+
+            # ✅ Validate chain properties
             if genesis_block.index != 0:
-                raise ValueError("Genesis block must have index 0")
-            
-            if genesis_block.previous_hash != self.ZERO_HASH:
-                raise ValueError("Genesis block has invalid previous hash")
+                raise ValueError("[ERROR] Genesis block must have index 0")
+
+            if genesis_block.previous_hash != Constants.ZERO_HASH:
+                raise ValueError("[ERROR] Genesis block has invalid previous hash")
+
+            logging.info("[INFO] Genesis block stored and verified successfully.")
 
         except Exception as e:
-            logging.error(f"Genesis validation failed: {str(e)}")
+            logging.error(f"[ERROR] Genesis validation failed: {str(e)}")
             raise
+
 
 
     def _mine_genesis_block(self, block=None):
         """Mines the Genesis block with the correct SHA3-384 target difficulty."""
-        if block is None:
-            miner_address = self.key_manager.get_default_public_key(self.network, "miner")
-            coinbase_tx = CoinbaseTx(
-                block_height=0,
-                miner_address=miner_address,
-                reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
-            )
-            coinbase_tx.fee = Decimal("0")
-            block = Block(
-                index=0,
-                previous_hash=Constants.ZERO_HASH,
-                transactions=[coinbase_tx],
-                timestamp=int(time.time()),
-                nonce=0,
-                difficulty=Constants.GENESIS_TARGET  
-            )
+        try:
+            if block is None:
+                miner_address = self.key_manager.get_default_public_key(self.network, "miner")
+                if not miner_address:
+                    raise ValueError("[ERROR] Failed to retrieve miner address for Genesis block.")
 
-        logging.info("Mining Genesis Block...")
-        start_time = time.time()
-        last_update = start_time
+                coinbase_tx = CoinbaseTx(
+                    block_height=0,
+                    miner_address=miner_address,
+                    reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
+                )
+                coinbase_tx.fee = Decimal("0")
+                block = Block(
+                    index=0,
+                    previous_hash=Constants.ZERO_HASH,
+                    transactions=[coinbase_tx],
+                    timestamp=int(time.time()),
+                    nonce=0,
+                    difficulty=Constants.GENESIS_TARGET
+                )
 
-        while int(block.hash, 16) >= block.difficulty:
-            block.header.nonce += 1
-            block.hash = block.calculate_hash()
-            current_time = time.time()
+            logging.info("[INFO] Starting mining of Genesis block...")
+            start_time = time.time()
+            last_update = start_time
 
-            if current_time - last_update >= 1:
-                elapsed = int(current_time - start_time)
-                print(f"[LIVE] Mining Genesis Block | Nonce: {block.header.nonce}, Time: {elapsed}s")
-                last_update = current_time
+            while int(block.hash, 16) >= block.difficulty:
+                block.header.nonce += 1
+                block.hash = block.calculate_hash()
+                current_time = time.time()
 
-        logging.info(f"✅ Genesis block mined with hash: {block.hash}")
-        self.storage_manager.store_block(block, Constants.GENESIS_TARGET)
+                if current_time - last_update >= 1:
+                    elapsed = int(current_time - start_time)
+                    print(f"[LIVE] Mining Genesis Block | Nonce: {block.header.nonce}, Time: {elapsed}s")
+                    last_update = current_time
+
+            logging.info(f"[INFO] Genesis block mined successfully with hash: {block.hash}")
+
+            try:
+                self.storage_manager.store_block(block, Constants.GENESIS_TARGET)
+                logging.info("[INFO] Genesis block stored successfully.")
+            except Exception as e:
+                logging.error(f"[ERROR] Failed to store Genesis block: {e}")
+                raise
+
+        except Exception as e:
+            logging.error(f"[ERROR] Mining Genesis block failed: {e}")
+            raise
 
 
 
@@ -276,33 +327,38 @@ class Blockchain:
 
     def add_block(self, new_block):
         """Add validated block to both chain and storage."""
-        if int(new_block.hash, 16) >= new_block.header.difficulty:
-            raise ValueError("Invalid Proof-of-Work")
-
         try:
+            # ✅ Verify proof-of-work
+            if not new_block.hash or int(new_block.hash, 16) >= new_block.header.difficulty:
+                raise ValueError("[ERROR] Invalid Proof-of-Work")
+
+            # ✅ Append the block to in-memory chain
             self.chain.append(new_block)
             self.block_manager.chain.append(new_block)
 
-            # ✅ Store the block in storage
+            # ✅ Store the block in the storage
             self.storage_manager.store_block(new_block, new_block.header.difficulty)
 
-            # ✅ Ensure transactions are confirmed according to constants
+            # ✅ Confirm all transactions according to confirmation rules
             for tx in new_block.transactions:
                 tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
-                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"])
-                
+                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                    tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"]
+                )
                 self.storage_manager.confirm_transaction(tx.tx_id, required_confirmations)
 
+            # ✅ Verify that the block was properly stored
             if not self.storage_manager.get_block(new_block.hash):
-                raise RuntimeError("Block storage verification failed")
+                raise RuntimeError("[ERROR] Block storage verification failed")
 
-            logging.info(f"Added block {new_block.index} [Hash: {new_block.hash[:12]}...]")
+            logging.info(f"[INFO] Successfully added block {new_block.index} [Hash: {new_block.hash[:12]}...]")
 
         except Exception as e:
-            logging.error(f"Block addition failed: {str(e)}")
+            logging.error(f"[ERROR] Block addition failed: {str(e)}")
             self.chain.pop()
             self.block_manager.chain.pop()
             raise
+
 
 
 
@@ -318,20 +374,33 @@ class Blockchain:
 
 
     def _create_coinbase(self, block_height: int) -> CoinbaseTx:
-        """Create a properly formatted coinbase transaction"""
+        """Create a properly formatted coinbase transaction."""
         try:
-            # Get miner address from KeyManager
-            miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
-            reward = Decimal("100.00")
-            
+            # ✅ Validate block height
+            if block_height < 0:
+                raise ValueError("[ERROR] Block height must be a non-negative integer.")
+
+            # ✅ Get miner address from KeyManager
+            miner_address = self.key_manager.get_default_public_key(Constants.NETWORK, "miner")
+            if not miner_address:
+                raise ValueError("[ERROR] Failed to retrieve miner address.")
+
+            # ✅ Use reward value from constants
+            reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
+            if reward <= 0:
+                raise ValueError("[ERROR] Coinbase reward must be greater than zero.")
+
+            # ✅ Construct the coinbase transaction
             return CoinbaseTx(
                 block_height=block_height,
                 miner_address=miner_address,
                 reward=reward
             )
+
         except Exception as e:
-            logging.error(f"Coinbase creation failed: {str(e)}")
+            logging.error(f"[ERROR] Coinbase creation failed: {str(e)}")
             raise
+
 
     def _validate_coinbase(self, tx):
         """

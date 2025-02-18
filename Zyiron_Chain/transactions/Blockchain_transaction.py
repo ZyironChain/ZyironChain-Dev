@@ -53,7 +53,6 @@ from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager, Transa
 from Zyiron_Chain.transactions.Blockchain_transaction import Transaction, TransactionIn, TransactionOut
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.blockchain.constants import Constants
-
 class TransactionFactory:
     """Factory for creating transactions dynamically based on type."""
 
@@ -71,19 +70,27 @@ class TransactionFactory:
         if poc is None:
             poc = PoC(storage_type=Constants.DATABASES["blockchain"])  # ✅ Uses correct DB layer dynamically
 
-        # ✅ Validate transaction type
-        payment_manager = PaymentTypeManager()
-        if tx_type not in payment_manager.TYPE_CONFIG:
+        # ✅ Validate transaction type using Constants
+        if tx_type not in Constants.TRANSACTION_MEMPOOL_MAP:
             raise ValueError(f"[ERROR] Invalid transaction type: {tx_type}")
 
         # ✅ Fetch the correct prefix for the transaction type
-        prefix = payment_manager.TYPE_CONFIG[tx_type]["prefixes"][0] if tx_type != TransactionType.STANDARD else ""
+        prefix = Constants.TRANSACTION_MEMPOOL_MAP[tx_type]["prefixes"][0] if tx_type != TransactionType.STANDARD else ""
 
         # ✅ Validate inputs and outputs before creating the transaction
         if not inputs or not all(isinstance(inp, dict) for inp in inputs):
             raise ValueError("[ERROR] Invalid inputs: Must be a list of dictionaries.")
         if not outputs or not all(isinstance(out, dict) for out in outputs):
             raise ValueError("[ERROR] Invalid outputs: Must be a list of dictionaries.")
+
+        # ✅ Ensure fee is at least the minimum required fee
+        total_input = sum(Decimal(inp["amount"]) for inp in inputs)
+        total_output = sum(Decimal(out["amount"]) for out in outputs)
+        fee = total_input - total_output
+
+        if fee < Constants.MIN_TRANSACTION_FEE:
+            logging.warning(f"[WARN] Transaction fee too low ({fee}). Adjusting to minimum: {Constants.MIN_TRANSACTION_FEE}")
+            fee = Constants.MIN_TRANSACTION_FEE
 
         # ✅ Generate a unique transaction ID using SHA3-384 hashing
         base_data = f"{prefix}{','.join(str(i['amount']) for i in inputs)}{str(time.time())}"
@@ -97,6 +104,10 @@ class TransactionFactory:
             poc=poc
         )
 
-        logging.info(f"[TRANSACTION FACTORY] ✅ Created new {tx_type.name} transaction: {tx_id} with {len(inputs)} inputs and {len(outputs)} outputs.")
+        # ✅ Ensure transaction type follows the correct confirmation rules
+        required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type, 8)
+        transaction.confirmations_required = required_confirmations
+
+        logging.info(f"[TRANSACTION FACTORY] ✅ Created new {tx_type.name} transaction: {tx_id} with {len(inputs)} inputs and {len(outputs)} outputs. Required Confirmations: {required_confirmations}")
 
         return transaction
