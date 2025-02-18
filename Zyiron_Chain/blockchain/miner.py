@@ -34,6 +34,13 @@ from decimal import Decimal
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
+
 
 # Remove all previous handlers to stop cross-logging
 

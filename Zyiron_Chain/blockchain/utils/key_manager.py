@@ -14,25 +14,47 @@ import base64
 import hashlib
 from Zyiron_Chain.accounts.wallet import Wallet  # Import Wallet for Falcon key generation
 from Zyiron_Chain.blockchain.constants import Constants
+
 class KeyManager:
     def __init__(self, key_file="Keys/KeyManager_Public_Private_Keys.json"):
-        """
-        Initialize the KeyManager with a JSON file for key storage.
-        :param key_file: Path to the JSON file where keys are stored.
-        """
         self.key_file = key_file
-        self.network = Constants.NETWORK  # ✅ Dynamically fetch the active network
-
-        # ✅ Ensure the directory exists
-        key_dir = os.path.dirname(self.key_file)
-        if key_dir and not os.path.exists(key_dir):
-            os.makedirs(key_dir, exist_ok=True)
-
+        self.network = Constants.NETWORK
         self.keys = {}
         self.load_or_initialize_keys()
-
-        # ✅ Auto-set default keys for active network
         self._auto_set_network_defaults()
+
+    def validate_miner_key(self, network):
+        """Validate miner keys for specific network"""
+        if network not in self.keys:
+            return False
+            
+        # Check if default miner key exists and is valid
+        if "miner" not in self.keys[network]["defaults"]:
+            return False
+            
+        identifier = self.keys[network]["defaults"]["miner"]
+        miner_key = self.keys[network]["keys"].get(identifier, {})
+        
+        required_keys = ["public_key", "private_key"]
+        return all(k in miner_key for k in required_keys)
+
+    def _auto_set_network_defaults(self):
+        """Auto-configure keys for current network"""
+        network = self.network
+        
+        # Ensure network exists in keys structure
+        if network not in self.keys:
+            self.keys[network] = {"keys": {}, "defaults": {}}
+        
+        # Check for missing default miner key
+        if "miner" not in self.keys[network]["defaults"]:
+            logging.info(f"[AUTO-SET] Generating new miner key for {network}")
+            self.add_key(network, "miner", f"miner_{len(self.keys[network]['keys']) + 1}")
+        
+        # Verify other essential roles
+        for role in ["validator", "channel"]:
+            if role not in self.keys[network]["defaults"]:
+                self.add_key(network, role, f"{role}_{len(self.keys[network]['keys']) + 1}")
 
     def load_or_initialize_keys(self):
         """
@@ -53,10 +75,17 @@ class KeyManager:
 
 
     def initialize_keys_structure(self):
-        """
-        Initialize the key structure for testnet and mainnet.
-        """
-        self.keys = {"testnet": {"keys": {}, "defaults": {}}, "mainnet": {"keys": {}, "defaults": {}}}
+        """Initialize the key structure with essential roles"""
+        self.keys = {
+            "testnet": {
+                "keys": {},
+                "defaults": {"miner": "", "validator": "", "channel": ""}
+            },
+            "mainnet": {
+                "keys": {},
+                "defaults": {"miner": "", "validator": "", "channel": ""}
+            }
+        }
         self.save_keys()
 
     def save_keys(self):
@@ -133,51 +162,81 @@ class KeyManager:
     def add_key(self, network, role, identifier):
         """
         Add a new key for the specified network, role, and identifier.
-        :param network: Either 'testnet' or 'mainnet'.
-        :param role: The role of the key (e.g., 'miner', 'validator').
-        :param identifier: Unique identifier for the key (e.g., 'miner_1').
+        Automatically sets as default for its role if no default exists.
+        
+        :param network: Network name ('testnet' or 'mainnet')
+        :param role: Key role ('miner', 'validator', etc)
+        :param identifier: Unique identifier for key management
         """
-        if network not in self.keys:
-            raise ValueError("Invalid network. Choose 'testnet' or 'mainnet'.")
+        # Validate network input
+        network = network.lower()
+        if network not in ("testnet", "mainnet"):
+            raise ValueError(f"Invalid network '{network}'. Must be 'testnet' or 'mainnet'.")
 
+        # Check for existing identifier
         if identifier in self.keys[network]["keys"]:
-            logging.warning(f"Key identifier '{identifier}' already exists in {network}. Skipping.")
+            existing_role = next(
+                (r for r, id in self.keys[network]["defaults"].items() if id == identifier),
+                None
+            )
+            msg = (f"Key identifier '{identifier}' already exists in {network} "
+                   f"(used for {existing_role or 'unknown role'}).")
+            logging.warning(msg)
             return
 
-        logging.info(f"Generating {role} key for {identifier} in {network}...")
+        logging.info(f"🔑 Generating {role} key pair for {network.upper()} [{identifier}]...")
 
-        # Generate keys using Wallet
-        wallet = Wallet()
-        private_key = wallet.testnet_secret_key if network == "testnet" else wallet.mainnet_secret_key
-        public_key = wallet.testnet_public_key if network == "testnet" else wallet.mainnet_public_key
+        try:
+            # Generate network-specific keys
+            wallet = Wallet()
+            if network == "testnet":
+                private_key = wallet.testnet_secret_key
+                public_key = wallet.testnet_public_key
+            else:
+                private_key = wallet.mainnet_secret_key
+                public_key = wallet.mainnet_public_key
 
-        private_key_serialized = base64.b64encode(
-            json.dumps(private_key.__dict__, default=self._serialize_complex).encode("utf-8")
-        ).decode("utf-8")
-        public_key_serialized = base64.b64encode(
-            json.dumps({"h": public_key.h}, default=self._serialize_complex).encode("utf-8")
-        ).decode("utf-8")
+            # Serialize keys
+            private_serialized = base64.b64encode(
+                json.dumps(private_key.__dict__, default=self._serialize_complex).encode("utf-8")
+            ).decode("utf-8")
+            
+            public_serialized = base64.b64encode(
+                json.dumps({"h": public_key.h}, default=self._serialize_complex).encode("utf-8")
+            ).decode("utf-8")
 
+            # Generate scriptPubKey hash
+            hashed_pubkey = wallet.public_key(network)
+            if not hashed_pubkey:
+                raise ValueError("Failed to generate public key hash")
 
-        # Hash public key (used as scriptPubKey)
-        hashed_public_key = wallet.public_key(network)
+        except Exception as e:
+            logging.error(f"Key generation failed: {str(e)}")
+            raise RuntimeError("Key pair generation aborted due to errors")
 
-        # Add the new key
+        # Store key data
         self.keys[network]["keys"][identifier] = {
-            "private_key": private_key_serialized,
-            "public_key": public_key_serialized,
-            "hashed_public_key": hashed_public_key,  # This serves as scriptPubKey
+            "private_key": private_serialized,
+            "public_key": public_serialized,
+            "hashed_public_key": hashed_pubkey,
+            "role": role,
+            "network": network
         }
 
-        # ✅ Auto-set default key for the role if none exists
-        if role not in self.keys[network]["defaults"]:
+        # Set as default if no default exists for this role
+        current_default = self.keys[network]["defaults"].get(role)
+        if not current_default or current_default not in self.keys[network]["keys"]:
             self.keys[network]["defaults"][role] = identifier
+            logging.info(f"⚡ Set default {role} key for {network.upper()}: {identifier}")
 
         self.save_keys()
+        
+        logging.info(f"✅ Successfully generated {network.upper()} {role} key")
+        logging.debug(f"Public Hash: {hashed_pubkey}")
+        logging.debug(f"Stored Identifier: {identifier}")
 
-        logging.info(f"{network.upper()} {role.capitalize()} Key Generated: {identifier}")
-        logging.info(f"Public Hash (scriptPubKey): {hashed_public_key}")
-
+        return hashed_pubkey
+    
     @staticmethod
     def _serialize_complex(obj):
         """
@@ -217,16 +276,7 @@ class KeyManager:
             else:
                 print(colored("Invalid choice. Please try again.", "red"))
 
-    def validate_miner_key(self) -> bool:
-        """
-        Verify existence of default miner key without auto-generation.
-        :return: True if valid miner key exists, False otherwise.
-        """
-        try:
-            self.get_default_public_key("miner")
-            return True
-        except ValueError:
-            return False
+
 
     def get_raw_public_key(self, script_pub_key, network):
         """

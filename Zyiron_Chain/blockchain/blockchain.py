@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
-from Zyiron_Chain.blockchain.block_manager import BlockManager
+
 from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
 from Zyiron_Chain.blockchain.storage_manager import StorageManager
 from Zyiron_Chain.blockchain.miner import Miner
@@ -24,7 +24,21 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.transactions.fees import FeeModel
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
+
+def _ensure_genesis_block(self):
+    from Zyiron_Chain.blockchain.block_manager import BlockManager
+    # rest of the code
+
+
+
+
+
+
+
+
+
+
 class Blockchain:
     GENESIS_TARGET = Constants.GENESIS_TARGET
     ZERO_HASH = Constants.ZERO_HASH
@@ -32,24 +46,37 @@ class Blockchain:
     def __init__(self, storage_manager, transaction_manager, key_manager):
         logging.info("[DEBUG] Initializing Blockchain...")
 
-        # ✅ Determine the active network dynamically
-        self.network = Constants.NETWORK  
-        self.address_prefix = Constants.ADDRESS_PREFIX  # ✅ Fetches from constants dynamically
-        self.version = Constants.VERSION  # ✅ Fetches blockchain version
+        # Network configuration with validation
+        self.network = Constants.NETWORK.lower()
+        if self.network not in ('mainnet', 'testnet'):
+            raise ValueError(f"Invalid network configured: {self.network}. Must be 'mainnet' or 'testnet'")
 
-        logging.info(f"🔹 Blockchain v{self.version} initialized on {self.network.upper()} ({self.address_prefix})")
+        logging.info(f"🔹 Initializing on {self.network.upper()} network")
 
-        # ✅ Initialize core components
+        # Validate network-specific miner keys
+        if not key_manager.validate_miner_key(self.network):
+            help_option = 4 if self.network == 'mainnet' else 3
+            raise RuntimeError(
+                f"Miner key missing for {self.network.upper()}\n"
+                "Generate keys using:\n"
+                "python -m Zyiron_Chain.accounts.key_manager\n"
+                f"Then choose '{help_option}. Add new batch of keys to {self.network}'"
+            )
+
+        # Rest of initialization remains the same
+        self.address_prefix = Constants.ADDRESS_PREFIX
+        self.version = Constants.VERSION
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.chain = []
 
-        if not all([self.storage_manager, self.transaction_manager, self.key_manager]):
-            raise ValueError("Missing required dependencies for Blockchain")
+        # Validate miner keys before proceeding
+        if not self.key_manager.validate_miner_key(self.network):  # Now passing network parameter
+            raise RuntimeError("Invalid miner keys for network")
 
         try:
-            from Zyiron_Chain.blockchain.block_manager import BlockManager  
+            from Zyiron_Chain.blockchain.block_manager import BlockManager
             self.block_manager = BlockManager(
                 blockchain=self,
                 storage_manager=self.storage_manager,
@@ -58,7 +85,6 @@ class Blockchain:
         except Exception as e:
             logging.error(f"BlockManager init failed: {str(e)}")
             raise
-
         # ✅ Initialize Fee Model using Constants
         self.fee_model = FeeModel(
             max_supply=Decimal(Constants.MAX_SUPPLY),

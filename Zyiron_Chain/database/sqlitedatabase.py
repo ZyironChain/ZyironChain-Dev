@@ -18,13 +18,22 @@ from typing import Optional, TYPE_CHECKING
 from decimal import Decimal
 import logging
 
-
+import importlib
 # Import for type checking only (does not execute at runtime)
-from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
+
+def get_transaction():
+    """Lazy import Transaction using importlib to avoid circular imports."""
+    module = importlib.import_module("Zyiron_Chain.transactions.tx")
+    return getattr(module, "Transaction")
 
 # ✅ Define SQLite Database Path
 DB_PATH = "ZYCDB/UTXOSDB/utxos.sqlite"

@@ -5,13 +5,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from decimal import Decimal
 from decimal import Decimal, getcontext
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager, TransactionType
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+from Zyiron_Chain.transactions.transactiontype import TransactionType
+
 # Set high precision for financial calculations
 getcontext().prec = 18
 from Zyiron_Chain.blockchain.constants import Constants
 from decimal import Decimal, getcontext
 import logging
+from typing import TYPE_CHECKING
+
+
+
 class FundsAllocator:
     """Funds allocation model with 7% cap on circulating supply"""
     def __init__(self, max_supply: Decimal):
@@ -62,28 +66,61 @@ class FundsAllocator:
         }
 
 
-
 class FeeModel:
     """Fee model with 7% allocation cap, congestion-based fees, and dynamic fee adjustments."""
 
     def __init__(self, max_supply: Decimal, base_fee_rate=Decimal("0.00015")):
-        self.max_supply = max_supply  # ✅ Store max supply
-        self.base_fee_rate = base_fee_rate  # ✅ Introduce base_fee_rate
-        self.allocator = FundsAllocator(max_supply)  # ✅ Fund allocator for smart contract funds
+        self.max_supply = max_supply
+        self.base_fee_rate = base_fee_rate
+
+        # Allocate funds and set up transaction type manager
+        from Zyiron_Chain.transactions.fees import FundsAllocator  # Lazy import
+        from Zyiron_Chain.transactions.payment_type import PaymentTypeManager  # Lazy import
+
+        self.allocator = FundsAllocator(max_supply)
         self.type_manager = PaymentTypeManager()
 
-        # ✅ Fee structure (Standardized congestion levels)
+        # Fee structure (Standardized congestion levels)
         self.fee_percentages = {
             "LOW": {"STANDARD": Decimal("0.0012"), "SMART": Decimal("0.0036"), "INSTANT": Decimal("0.006")},
             "MODERATE": {"STANDARD": Decimal("0.0024"), "SMART": Decimal("0.006"), "INSTANT": Decimal("0.012")},
             "HIGH": {"STANDARD": Decimal("0.006"), "SMART": Decimal("0.012"), "INSTANT": Decimal("0.024")},
         }
 
-        # ✅ Generate congestion thresholds dynamically with interpolation for 2-4, 6-9
+        # Generate congestion thresholds dynamically
         self.congestion_thresholds = self._generate_interpolated_thresholds()
 
-        # ✅ Tax rates (Standardized congestion levels)
+        # Tax rates
         self.tax_rates = {"LOW": Decimal("0.07"), "MODERATE": Decimal("0.05"), "HIGH": Decimal("0.03")}
+
+    def _generate_interpolated_thresholds(self):
+        """Generate congestion thresholds dynamically for block sizes 1-10 using linear interpolation."""
+        # Use any necessary imports here
+        base_thresholds = {
+            1: {"STANDARD": [12000, 60000], "SMART": [6000, 30000], "INSTANT": [3000, 15000]},
+            5: {"STANDARD": [60000, 300000], "SMART": [30000, 150000], "INSTANT": [15000, 75000]},
+            10: {"STANDARD": [120000, 600000], "SMART": [60000, 300000], "INSTANT": [30000, 150000]},
+        }
+
+        interpolated_thresholds = {}
+        for block_size in range(1, 11):
+            if block_size in base_thresholds:
+                interpolated_thresholds[block_size] = base_thresholds[block_size]
+            else:
+                x1, x2 = (1, 5) if block_size < 5 else (5, 10)
+                interpolated_thresholds[block_size] = {
+                    tx_type: [
+                        round(self._interpolate(block_size, x1, base_thresholds[x1][tx_type][0], x2, base_thresholds[x2][tx_type][0])),
+                        round(self._interpolate(block_size, x1, base_thresholds[x1][tx_type][1], x2, base_thresholds[x2][tx_type][1])),
+                    ]
+                    for tx_type in ["STANDARD", "SMART", "INSTANT"]
+                }
+
+        return interpolated_thresholds
+
+    def _interpolate(self, x, x1, y1, x2, y2):
+        """Perform linear interpolation to estimate congestion thresholds."""
+        return y1 + (y2 - y1) * ((x - x1) / (x2 - x1))
 
     def _generate_interpolated_thresholds(self):
         """Generate congestion thresholds dynamically for block sizes 1-10 using linear interpolation."""

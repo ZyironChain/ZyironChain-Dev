@@ -7,151 +7,163 @@ import logging
 import json
 import time 
 import random
+import importlib
+import pickle
+import sqlite3
+from decimal import Decimal
+from datetime import datetime
+from typing import Optional, TYPE_CHECKING
+
+# Database imports (safe, no circular deps)
 from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
 from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
 from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
-from Zyiron_Chain.blockchain.helper  import get_block
-from typing import Optional
-from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 
-from Zyiron_Chain.blockchain.blockheader import BlockHeader
+# Constants and base components
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-import importlib
-from Zyiron_Chain.blockchain.block_manager import BlockManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.offchain.dispute import DisputeResolutionContract
-import pickle
-import sqlite3
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
-from datetime import datetime
-from Zyiron_Chain.transactions.transactiontype import TransactionType
-from decimal import Decimal
-import logging
-from typing import TYPE_CHECKING
-from Zyiron_Chain.blockchain.block import Block
-# For type checking only; do not perform a runtime import.
-if TYPE_CHECKING:
-    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
-def get_transaction():
-    """Lazy import Transaction to break circular dependencies."""
-    module = importlib.import_module("Zyiron_Chain.transactions.Blockchain_transaction")
-    return getattr(module, "Transaction")
+# Lazy import helpers
+def get_block():
+    """Lazy import Block to break circular dependency"""
+    from Zyiron_Chain.blockchain.block import Block
+    return Block
+
+def get_blockchain():
+    """Lazy import Blockchain to prevent circular imports"""
+    from Zyiron_Chain.blockchain.blockchain import Blockchain
+    return Blockchain
+
+def get_transaction_manager():
+    """Lazy import TransactionManager"""
+    from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
+    return TransactionManager
+
+def get_storage_manager():
+    """Lazy import StorageManager"""
+    from Zyiron_Chain.blockchain.storage_manager import StorageManager
+    return StorageManager
 
 def get_standard_mempool():
-    """Lazy import StandardMempool to prevent circular imports."""
+    """Lazy import StandardMempool"""
     module = importlib.import_module("Zyiron_Chain.blockchain.utils.standardmempool")
     return getattr(module, "StandardMempool")
 
-def get_block_instance():
-    """Dynamically import Block only when needed to prevent circular imports."""
-    return get_block()
+def get_smart_mempool():
+    """Lazy import SmartMempool"""
+    module = importlib.import_module("Zyiron_Chain.smartpay.smartmempool")
+    return getattr(module, "SmartMempool")
+
 def get_fee_model():
-    """Lazy import FeeModel to break circular dependencies."""
+    """Lazy import FeeModel"""
     module = importlib.import_module("Zyiron_Chain.transactions.fees")
     return getattr(module, "FeeModel")
 
-def get_smart_mempool():
-    """Lazy load SmartMempool to fix circular import"""
-    module = importlib.import_module("Zyiron_Chain.smartpay.smartmempool")
-    return getattr(module, "SmartMempool")
-logging.basicConfig(level=logging.INFO)
-from Zyiron_Chain.blockchain.constants import Constants
+def get_transaction():
+    """Lazy import Transaction"""
+    module = importlib.import_module("Zyiron_Chain.transactions.tx")
+    return getattr(module, "Transaction")
 
+# Type checking imports only
+if TYPE_CHECKING:
+    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+    from Zyiron_Chain.blockchain.block import Block
+    from Zyiron_Chain.blockchain.blockchain import Blockchain
+
+logging.basicConfig(level=logging.INFO)
 
 class PoC:
     def __init__(self):
         """Initialize PoC and databases dynamically based on Constants"""
-        
-        # ✅ Dynamically initialize databases based on Constants
-        self.databases = Constants.DATABASES  
-
-        # ✅ Select correct database implementations from Constants
+        # Initialize databases first (no dependencies)
+        self.databases = Constants.DATABASES
         self.unqlite_db = self._initialize_database("blockchain")
         self.sqlite_db = self._initialize_database("utxo")
         self.duckdb_analytics = self._initialize_database("analytics")
         self.lmdb_manager = self._initialize_database("mempool")
-        self.tinydb_manager = self._initialize_database("tinydb")  
+        self.tinydb_manager = self._initialize_database("tinydb")
 
-        # ✅ Initialize KeyManager
-        from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+        # Lazy initialize components with dependencies
+        self._init_key_manager()
+        self._init_storage_manager()
+        self._init_transaction_manager()
+        self._init_blockchain()
+        self._init_fee_model()
+        self._init_mempools()
+        self._init_utxo_cache()
+        self._init_dispute_contract()
+
+    def _init_key_manager(self):
+        """Initialize KeyManager"""
         self.key_manager = KeyManager()
 
-        # ✅ Initialize StorageManager with databases
-        from Zyiron_Chain.blockchain.storage_manager import StorageManager
+    def _init_storage_manager(self):
+        """Initialize StorageManager with lazy imports"""
+        StorageManager = get_storage_manager()
         self.storage_manager = StorageManager(self)
 
-        # ✅ Initialize TransactionManager
-        from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
+    def _init_transaction_manager(self):
+        """Initialize TransactionManager with lazy imports"""
+        TransactionManager = get_transaction_manager()
         self.transaction_manager = TransactionManager(
             self.storage_manager,
             self.key_manager,
             self
         )
 
-        # ✅ Initialize Blockchain LAST (creates BlockManager internally)
-        from Zyiron_Chain.blockchain.blockchain import Blockchain
+    def _init_blockchain(self):
+        """Initialize Blockchain component last"""
+        Blockchain = get_blockchain()
         self.blockchain = Blockchain(
             storage_manager=self.storage_manager,
             transaction_manager=self.transaction_manager,
             key_manager=self.key_manager
         )
-
-        # ✅ Get references AFTER blockchain init
         self.block_manager = self.blockchain.block_manager
         self.miner = self.blockchain.miner
 
-        # ✅ Lazy Load FeeModel to Prevent Circular Import
+    def _init_fee_model(self):
+        """Initialize FeeModel with lazy loading"""
         FeeModel = get_fee_model()
         self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
-        # ✅ Initialize Payment Type Manager
-        self.payment_type_manager = PaymentTypeManager()
+    def _init_mempools(self):
+        """Initialize mempools with lazy imports"""
+        self.standard_mempool = get_standard_mempool()(self)
+        self.smart_mempool = get_smart_mempool()(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB))
+        self.mempool = self.standard_mempool
 
-        # ✅ Initialize Dispute Resolution Contract
+    def _init_utxo_cache(self):
+        """Initialize UTXO cache"""
+        self._cache = {}
+
+    def _init_dispute_contract(self):
+        """Initialize Dispute Resolution Contract"""
         self.dispute_contract = DisputeResolutionContract(self)
 
-        # ✅ Initialize Mempools using Constants
-        StandardMempool = get_standard_mempool()
-        SmartMempool = get_smart_mempool()
-
-        self.standard_mempool = StandardMempool(self)
-        self.smart_mempool = SmartMempool(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB))
-
-        # ✅ Set default mempool to StandardMempool (can switch dynamically)
-        self.mempool = self.standard_mempool  
-
-        # ✅ Initialize UTXO Cache
-        self._cache = {}  
-
-
-    ### -------------------- BLOCKCHAIN STORAGE & VALIDATION -------------------- ###
-
+    # Keep all original database methods unchanged
     def _initialize_database(self, db_key):
         """Helper function to initialize databases dynamically based on Constants"""
         db_type = self.databases.get(db_key, "Unknown")
 
         if db_type == "UnQLite":
-            from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
             return BlockchainUnqliteDB()
         elif db_type == "SQLite":
-            from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
             return SQLiteDB()
         elif db_type == "DuckDB":
-            from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
             return AnalyticsNetworkDB()
         elif db_type == "LMDB":
-            from Zyiron_Chain.database.lmdatabase import LMDBManager
             return LMDBManager()
         elif db_type == "TinyDB":
-            from Zyiron_Chain.database.tinydatabase import TinyDBManager
             return TinyDBManager()
         else:
             raise ValueError(f"[ERROR] Unsupported database type: {db_type}")
-
-
 
 
 
@@ -164,43 +176,49 @@ class PoC:
         Ensures block storage routes correctly based on Constants.DATABASES.
         """
         try:
-            from Zyiron_Chain.blockchain.block import Block  # ✅ Ensure Block is properly imported
+            Block = get_block()  # Use lazy import helper
 
             if isinstance(block, dict):
-                block = Block.from_dict(block)  # ✅ Convert dictionary block to Block object
+                block = Block.from_dict(block)
 
             block_data = block.to_dict()
             block_header = block.header.to_dict()
             transactions = [tx.to_dict() for tx in block.transactions]
-            size = sum(len(json.dumps(tx)) for tx in transactions)  # ✅ Calculate block size dynamically
+            size = sum(len(json.dumps(tx)) for tx in transactions)
 
-            # ✅ Use correct databases from Constants
             blockchain_db = self._get_database("blockchain")
             mempool_db = self._get_database("mempool")
 
-            # ✅ Use atomic transactions across databases
-            blockchain_db.begin_transaction()
-            mempool_db.begin_transaction()
+            try:
+                blockchain_db.begin_transaction()
+                if mempool_db:
+                    mempool_db.begin_transaction()
 
-            # ✅ Store block in the correct blockchain database
-            blockchain_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+                blockchain_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+                
+                if mempool_db:
+                    mempool_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
 
-            # ✅ Store block metadata in mempool database (if applicable)
-            if mempool_db:
-                mempool_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+                blockchain_db.commit()
+                if mempool_db:
+                    mempool_db.commit()
 
-            # ✅ Commit changes to all databases
-            blockchain_db.commit()
-            mempool_db.commit()
+                logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
+                
+                # Clear cache after successful storage
+                if block_data['hash'] in self._cache:
+                    del self._cache[block_data['hash']]
 
-            logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
+            except Exception as inner_e:
+                blockchain_db.rollback()
+                if mempool_db:
+                    mempool_db.rollback()
+                raise
 
         except Exception as e:
-            # ✅ Rollback changes in case of failure
-            blockchain_db.rollback()
-            mempool_db.rollback()
             logging.error(f"[ERROR] Block storage failed: {e}")
             raise
+
 
     def _get_database(self, db_key):
         """Helper function to retrieve the correct database instance from Constants."""
@@ -355,26 +373,32 @@ class PoC:
 
     def get_last_block(self):
         """Fetch the latest block from the correct blockchain database. Ensure Genesis Block is created if missing."""
-        from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
+        try:
+            Block = get_block()  # Use predefined lazy import helper
+            blockchain_db = self._get_database("blockchain")
+            retry_count = 0
+            
+            while retry_count < 3:  # Allow retries for concurrent access
+                last_block_data = blockchain_db.get_last_block()
+                
+                if not last_block_data:
+                    logging.warning("[POC] No blocks found. Creating Genesis Block...")
+                    self.block_manager.create_genesis_block()
+                    retry_count += 1
+                    continue
+                    
+                try:
+                    return Block.from_dict(last_block_data)
+                except KeyError as e:
+                    logging.error(f"[ERROR] Corrupted block data: {str(e)}")
+                    blockchain_db.rollback()
+                    raise ValueError("Invalid block data structure") from e
+                    
+            raise RuntimeError("[ERROR] Failed to initialize Genesis Block after 3 attempts")
 
-        logging.info("[POC] Fetching latest block...")
-
-        # ✅ Dynamically select the correct database
-        blockchain_db = self._get_database("blockchain")
-
-        # ✅ Try fetching the latest stored block dynamically
-        last_block_data = blockchain_db.get_last_block()
-
-        if not last_block_data:
-            logging.warning("[POC] No blocks found. Creating and storing Genesis Block...")
-            self.block_manager.create_genesis_block()  # ✅ Force-create Genesis Block
-            last_block_data = blockchain_db.get_last_block()  # ✅ Retry fetching
-
-        if not last_block_data:
-            raise RuntimeError("[ERROR] Failed to retrieve or create Genesis Block!")
-
-        # ✅ Convert block data to a Block object
-        return Block.from_dict(last_block_data)
+        except Exception as e:
+            logging.error(f"[CRITICAL] Failed to fetch last block: {str(e)}")
+            raise
 
 
 

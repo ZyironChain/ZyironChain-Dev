@@ -49,15 +49,22 @@ import time
 import logging
 from typing import List, Dict
 from hashlib import sha3_384
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager, TransactionType
+from Zyiron_Chain.transactions.transactiontype import  TransactionType
 from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.blockchain.constants import Constants
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
+
 
 class TransactionFactory:
     """Factory for creating transactions dynamically based on type."""

@@ -21,7 +21,7 @@ from typing import List, Dict, Union
 from decimal import Decimal
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.blockheader import BlockHeader
-from Zyiron_Chain. transactions.transactiontype import PaymentTypeManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain. transactions.fees import FeeModel
 from Zyiron_Chain.blockchain.helper import get_poc, get_transaction, get_coinbase_tx, get_block_header
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager

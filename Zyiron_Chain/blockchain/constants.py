@@ -84,7 +84,8 @@ class Constants:
 
     # ✅ **Mempool Transaction Expiry Policy**
     MEMPOOL_TRANSACTION_EXPIRY = 86400  # ⏳ **Transactions expire after 24 hours in the mempool**
-    MAX_LMDB_DATABASES= 1
+    MAX_LMDB_DATABASES= 10
+
 
     # 🔹 **Instant Payment & HTLC Settings**a
     HTLC_LOCK_TIME = 120  # ⏳ **HTLC lock expires in 2 minutes**

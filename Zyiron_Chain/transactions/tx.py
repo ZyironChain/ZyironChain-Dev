@@ -2,12 +2,21 @@ import sys
 import os
 
 
+
+
+
 # Add the project root directory to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 sys.path.append(project_root)
 
 
 
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from Zyiron_Chain.database.poc import PoC
 
 
 import time
@@ -19,9 +28,24 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
-from Zyiron_Chain.database.poc import PoC  # Ensure PoC is passed to UTXOManager
-from Zyiron_Chain.blockchain.transaction_manager import PaymentTypeManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
+# helper.py
+import importlib
+
+
 from Zyiron_Chain.blockchain.utils.hashing import sha3_384_hash
+
+
+def get_poc():
+    """Lazy import PoC using importlib to avoid circular imports."""
+    module = importlib.import_module("Zyiron_Chain.database.poc")
+    return getattr(module, "PoC")
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
 
 class Transaction:
     """Represents a standard blockchain transaction"""
@@ -62,7 +86,7 @@ class Transaction:
         self.hash = self.calculate_hash()
 
         # ✅ Store PoC reference for blockchain interactions
-        self.poc = poc if poc else PoC()
+        self.poc = poc if poc else get_poc()
 
         # ✅ Compute transaction size
         self.size = self._calculate_size()
@@ -71,6 +95,10 @@ class Transaction:
         self.fee = max(self._calculate_fee(), Constants.MIN_TRANSACTION_FEE)
 
         logging.info(f"[TRANSACTION] Created new transaction: {self.tx_id}, Type: {self.type}, Fee: {self.fee}, Size: {self.size} bytes")
+
+
+
+
 
     def _determine_transaction_type(self, tx_id: str) -> str:
         """Determine transaction type based on ID prefix using Constants."""

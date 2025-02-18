@@ -7,6 +7,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
+# Add this at the top with other imports
+import shutil  # Required for file operations
 
 
 
@@ -19,27 +21,86 @@ logging.basicConfig(level=logging.INFO)
 from Zyiron_Chain.blockchain.constants import Constants
 DB_PATH = "ZYCDB/MEMPOOLDB"
 os.makedirs(DB_PATH, exist_ok=True)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("LMDBManager")
 
 class LMDBManager:
-    def __init__(self, db_path=DB_PATH):
+    def __init__(self, db_path="ZYCDB/MEMPOOLDB"):
+        """Initialize LMDB with network-aware configuration"""
+        # Validate Constants configuration
+        if not hasattr(Constants, "MAX_LMDB_DATABASES"):
+            raise AttributeError("Constants missing MAX_LMDB_DATABASES")
+        if not hasattr(Constants, "MEMPOOL_MAX_SIZE_MB"):
+            raise AttributeError("Constants missing MEMPOOL_MAX_SIZE_MB")
 
-        """
-        Initialize the LMDB database.
-        :param db_path: Path to the LMDB database directory.
-        """
-        # ✅ Fetch storage settings from Constants
-        map_size = Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024  # Convert MB to bytes
-        max_dbs = Constants.MAX_LMDB_DATABASES  # ✅ Use Constants for max databases
+        # ✅ Convert to absolute path and validate
+        db_path = os.path.abspath(db_path)
+        parent_dir = os.path.dirname(db_path)
+        
+        # ✅ Create parent directory only if path contains subdirectories
+        if parent_dir and parent_dir != db_path:
+            try:
+                os.makedirs(parent_dir, exist_ok=True)
+                logger.info(f"Created database directory: {parent_dir}")
+            except OSError as e:
+                logger.error(f"Failed to create directory {parent_dir}: {str(e)}")
+                raise
 
-        # ✅ Open LMDB environment with the correct settings
-        self.env = lmdb.open(db_path, map_size=map_size, max_dbs=max_dbs, create=True)
+        # Configure environment with error handling
+        try:
+            self.env = lmdb.open(
+                path=db_path,
+                map_size=Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024,
+                max_dbs=Constants.MAX_LMDB_DATABASES,
+                mode=0o755,
+                create=True,
+                readahead=False,
+                writemap=True,
+                meminit=False
+            )
+        except lmdb.Error as e:
+            logger.error(f"LMDB environment creation failed: {str(e)}")
+            raise
 
-        # ✅ Open separate databases inside LMDB
-        self.mempool_db = self.env.open_db(b"mempool")  # Store pending transactions
-        self.blocks_db = self.env.open_db(b"blocks")  # Store blocks separately
-        self.transactions_db = self.env.open_db(b"transactions")  # Store transactions separately
+        # Initialize databases with explicit transaction
+        try:
+            with self.env.begin(write=True) as txn:
+                self.mempool_db = self.env.open_db(b"mempool", txn=txn)
+                self.blocks_db = self.env.open_db(b"blocks", txn=txn)
+                self.transactions_db = self.env.open_db(b"transactions", txn=txn)
+                self.metadata_db = self.env.open_db(b"metadata", txn=txn)
+            logger.info("Database handles initialized successfully")
+        except lmdb.Error as e:
+            logger.error(f"Database initialization failed: {str(e)}")
+            self.env.close()
+            raise
 
-        self.transaction_active = False  # ✅ Added transaction tracking
+        # State tracking
+        self.transaction_active = False
+        self._verify_capacity()
+
+    def _verify_capacity(self):
+        """Check database limits"""
+        with self.env.begin() as txn:
+            stats = txn.stat()
+            capacity = stats["entries"] / Constants.MAX_LMDB_DATABASES
+            if capacity > 0.8:
+                logger.warning(f"LMDB at {capacity:.0%} capacity")
+
+    def get_database_status(self):
+        """Return current database usage statistics"""
+        with self.env.begin() as txn:
+            return {
+                "max_databases": self.env.info()["max_dbs"],
+                "used_databases": txn.stat()["entries"],
+                "map_size": self.env.info()["map_size"],
+                "free_space": self.env.info()["map_size"] - self.env.info()["last_pgno"] * self.env.info()["psize"]
+            }
+
+
+
+
     def fetch_all_pending_transactions(self):
         """
         Retrieve all pending transactions stored in LMDB.
@@ -251,16 +312,62 @@ class LMDBManager:
             logging.error(f"[LMDB ERROR] ❌ Failed to remove pending transaction {tx_id}: {e}")
 
 
+    def cleanup_dbs():
+        """Delete existing database files to apply new settings"""
+        import shutil
+        db_paths = [
+            "ZYCDB/MEMPOOLDB",
+            "ZYCDB",
+            "UTXOSDB"
+        ]
+        
+        for path in db_paths:
+            if os.path.exists(path):
+                shutil.rmtree(path)
+                print(f"Deleted: {path}")
+        
+        print("✅ Database cleanup complete. Restart your node.")
+
+def verify_database_capacity(self):
+    """Check database limits and current usage"""
+    with self.env.begin() as txn:
+        stats = txn.stat()
+        print(f"Database Status:\n"
+              f"- Max DBs Allowed: {self.env.info()['max_dbs']}\n"
+              f"- DBs Used: {stats['entries']}\n"
+              f"- Free Space: {self.env.info()['map_size'] - stats['psize'] * stats['entries']} bytes")
 
     # --------------------- ✅ General Utilities ---------------------
-    def clear_database(self):
-        """Clear all data (for testing purposes)."""
-        with self.env.begin(write=True) as txn:
-            cursor = txn.cursor()
-            for key, _ in cursor:
-                txn.delete(key)
-        logging.info("[INFO] LMDB database cleared.")
+    @staticmethod
+    def cleanup_dbs():
+        """Remove existing database files"""
+        paths = ["ZYCDB", "UTXOSDB"]
+        for path in paths:
+            if os.path.exists(path):
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    else:
+                        shutil.rmtree(path)
+                    logger.info(f"Cleaned: {path}")
+                except Exception as e:
+                    logger.error(f"Cleanup failed for {path}: {str(e)}")
+        logger.info("Database cleanup complete")
+
+
+    def cleanup():
+        paths = ["ZYCDB", "UTXOSDB"]
+        for path in paths:
+            if os.path.exists(path):
+                shutil.rmtree(path)
+        print("✅ Deleted corrupted databases")
+
+    cleanup()
 
     def close(self):
         """Close the LMDB environment."""
         self.env.close()
+class Constants:
+    MAX_LMDB_DATABASES = 10  # Must be ≥4
+    MEMPOOL_MAX_SIZE_MB = 2048  # 2GB
+    NETWORK = "mainnet"  # ✅ Critical for path resolution

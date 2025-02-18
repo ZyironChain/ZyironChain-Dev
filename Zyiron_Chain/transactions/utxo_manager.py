@@ -15,6 +15,12 @@ import logging
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.database.lmdatabase import LMDBManager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
 
 class UTXOManager:
     """Manages Unspent Transaction Outputs (UTXOs) with peer-specific LMDB storage."""

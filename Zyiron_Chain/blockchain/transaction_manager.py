@@ -9,7 +9,7 @@ from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from threading import Lock
 from Zyiron_Chain.smartpay.smartmempool import SmartMempool  # Add this import
 from decimal import Decimal
@@ -35,7 +35,14 @@ import json
 # Ensure this is at the very top of your script, before any other code
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.fees import FundsAllocator
+
+
 
 class TransactionManager:
     def __init__(self, storage_manager, key_manager, poc):

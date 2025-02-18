@@ -50,31 +50,28 @@ import json
 import hashlib
 
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.blockchain.blockchain import Blockchain
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
+
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
+
 
 class BlockManager:
-    def __init__(self, blockchain: "Blockchain", storage_manager, transaction_manager):
+    def __init__(self, blockchain, storage_manager, transaction_manager):
         """Initialize BlockManager with blockchain dependencies and difficulty settings."""
-        if not isinstance(blockchain, Blockchain):
-            raise ValueError("BlockManager requires a valid Blockchain reference")
-        if not hasattr(transaction_manager, 'validate_transaction'):
-            raise ValueError("Invalid TransactionManager")
-
-        # ✅ Store core blockchain references
         self.blockchain = blockchain
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
         self.chain = blockchain.chain  # ✅ Direct reference to the blockchain chain
 
-        # ✅ Store version and network settings dynamically
         self.network = Constants.NETWORK
         self.version = Constants.VERSION
-
-        # ✅ Initialize difficulty using constants
         self.difficulty_target = Constants.GENESIS_TARGET
+
         logging.info(f"[BLOCKMANAGER] Initialized on {self.network.upper()} | Version {self.version} | Difficulty {hex(self.difficulty_target)}")
 
+    def validate_block(self, block):
+        from Zyiron_Chain.blockchain.blockchain import Blockchain
+        # Use Blockchain here without circular import issues.
+        # Perform your block validation logic that depends on Blockchain.
 
     def validate_chain(self):
         """

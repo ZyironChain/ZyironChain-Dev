@@ -2,11 +2,11 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from decimal import Decimal
-from Zyiron_Chain.transactions.transactiontype import TransactionType, PaymentTypeManager
+from Zyiron_Chain.transactions.transactiontype import TransactionType
+
 from typing import Dict, List
-from Zyiron_Chain.transactions. fees import FeeModel, FundsAllocator
 from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionFactory, sha3_384_hash
 from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
@@ -14,9 +14,16 @@ from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 
+
+
+
 class TransactionService:
     def _calculate_fees(self, tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict]) -> Decimal:
-        """Proper SHA3-384-based size calculation"""
+        """Proper SHA3-384-based size calculation and fee computation"""
+        from Zyiron_Chain.transactions.fees import FeeModel  # Lazy import
+        from Zyiron_Chain.blockchain.constants import Constants
+        from Zyiron_Chain.blockchain.utils.hashing import sha3_384_hash
+
         # Serialize transaction components
         input_data = "".join(f"{i['tx_id']}{i['amount']}" for i in inputs)
         output_data = "".join(f"{o['address']}{o['amount']}" for o in outputs)
@@ -24,14 +31,22 @@ class TransactionService:
         # Calculate actual byte size
         tx_size = len(input_data.encode()) + len(output_data.encode())
         
-        # Hash verification data
+        # Create verification hash
         verification_hash = sha3_384_hash(input_data + output_data)
         
-        return self.fee_model.calculate_fee(
-            tx_id=verification_hash[:16],  # Use partial hash as ID
+        # Initialize FeeModel with current network parameters
+        fee_model = FeeModel(max_supply=Constants.MAX_SUPPLY)
+        
+        return fee_model.calculate_fee(
+            block_size=Constants.MAX_BLOCK_SIZE_BYTES,  # Or get dynamic block size
+            payment_type=tx_type.name,
             amount=sum(Decimal(i["amount"]) for i in inputs),
             tx_size=tx_size
         )
+
+
+
+
     def prepare_transaction(self,
                           tx_type: TransactionType,
                           inputs: List[Dict],
