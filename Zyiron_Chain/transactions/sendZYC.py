@@ -9,10 +9,14 @@ sys.path.append(project_root)
 import hashlib
 import time
 from decimal import Decimal
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction,  TransactionOut, TransactionIn
 from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.fees import FeeModel
+
+from Zyiron_Chain.transactions.tx import Transaction
+from Zyiron_Chain.transactions.txin import TransactionIn
+from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 
 

@@ -15,7 +15,6 @@ from decimal import Decimal
 import json
 import logging
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-from BTrees.OOBTree import OOBTree # type: ignore
 from decimal import Decimal
 import hashlib
 logging.basicConfig(level=logging.INFO)

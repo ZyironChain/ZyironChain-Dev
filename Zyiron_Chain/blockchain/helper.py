@@ -19,12 +19,12 @@ def get_block():
 
 def get_transaction():
     """Lazy import Transaction using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.transactions.Blockchain_transaction")
+    module = importlib.import_module("Zyiron_Chain.transactions.tx")
     return getattr(module, "Transaction")
 
 def get_coinbase_tx():
     """Lazy import CoinbaseTx using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.transactions.Blockchain_transaction")
+    module = importlib.import_module("Zyiron_Chain.transactions.coinbase")
     return getattr(module, "CoinbaseTx")
 
 def get_block_header():

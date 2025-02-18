@@ -11,7 +11,7 @@ from Zyiron_Chain.database.poc import PoC
 import hashlib
 from decimal import Decimal
 import time
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx, TransactionFactory, sha3_384_hash
+from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionFactory
 from Zyiron_Chain.transactions.transaction_services import TransactionService
 from Zyiron_Chain.transactions.fees import FeeModel, FundsAllocator
 from Zyiron_Chain.blockchain.block import Block
@@ -20,10 +20,8 @@ import time
 import logging
 from Zyiron_Chain.blockchain.constants import Constants
 
-import logging
-import time
-from decimal import Decimal
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager

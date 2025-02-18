@@ -20,15 +20,10 @@ import logging
 
 
 # Import for type checking only (does not execute at runtime)
-if TYPE_CHECKING:
-    from Zyiron_Chain.transactions.Blockchain_transaction import TransactionIn, TransactionOut, CoinbaseTx
-
-def get_transaction():
-    """Lazy import Transaction to break circular dependencies."""
-    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
-    return Transaction
-
-
+from Zyiron_Chain.transactions.tx import Transaction
+from Zyiron_Chain.transactions.txin import TransactionIn
+from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 
 # ✅ Define SQLite Database Path

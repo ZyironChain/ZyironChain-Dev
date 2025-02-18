@@ -3,14 +3,12 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
-import time
 
 from decimal import Decimal
 import time
 import hashlib
 import math
 import numpy as np  # Used for memory-hard operations
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
 from Zyiron_Chain. transactions.fees import FeeModel
 from Zyiron_Chain. transactions. transactiontype import TransactionType
 import numpy as np  # Used for memory-hard operations
@@ -34,7 +32,7 @@ import sys
 import hashlib
 from decimal import Decimal
 from Zyiron_Chain.blockchain.block import Block
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 import logging
 
 # Remove all previous handlers to stop cross-logging

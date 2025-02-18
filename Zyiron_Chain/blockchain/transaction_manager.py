@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager

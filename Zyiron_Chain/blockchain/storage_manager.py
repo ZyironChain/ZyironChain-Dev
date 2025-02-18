@@ -7,7 +7,7 @@ import pickle
 import json
 from Zyiron_Chain.database.poc import PoC
 from Zyiron_Chain.transactions. utxo_manager import UTXOManager
-from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+from Zyiron_Chain.transactions.tx import Transaction
 import logging
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.blockchain.blockheader import BlockHeader

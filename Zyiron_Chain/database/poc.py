@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 from Zyiron_Chain.blockchain.block import Block
 # For type checking only; do not perform a runtime import.
 if TYPE_CHECKING:
-    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 def get_transaction():
     """Lazy import Transaction to break circular dependencies."""

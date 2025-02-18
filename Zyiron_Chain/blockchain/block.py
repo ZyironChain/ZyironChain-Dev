@@ -28,7 +28,7 @@ from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
 PoC = get_poc()
 Transaction = get_transaction()
 CoinbaseTx = get_coinbase_tx()
-BlockHeader = get_block_header()
+
 
 # Ensure this is at the very top of your script, before any other code
 import hashlib

@@ -7,7 +7,12 @@ from decimal import Decimal
 from Zyiron_Chain.transactions.transactiontype import TransactionType, PaymentTypeManager
 from typing import Dict, List
 from Zyiron_Chain.transactions. fees import FeeModel, FundsAllocator
-from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx, TransactionFactory, sha3_384_hash
+from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionFactory, sha3_384_hash
+from Zyiron_Chain.transactions.tx import Transaction
+from Zyiron_Chain.transactions.txin import TransactionIn
+from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+
 
 class TransactionService:
     def _calculate_fees(self, tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict]) -> Decimal:
