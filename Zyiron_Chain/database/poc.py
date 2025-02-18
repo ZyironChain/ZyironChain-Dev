@@ -30,7 +30,7 @@ from Zyiron_Chain.transactions.transactiontype import TransactionType
 from decimal import Decimal
 import logging
 from typing import TYPE_CHECKING
-
+from Zyiron_Chain.blockchain.block import Block
 # For type checking only; do not perform a runtime import.
 if TYPE_CHECKING:
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
@@ -58,44 +58,54 @@ def get_smart_mempool():
     module = importlib.import_module("Zyiron_Chain.smartpay.smartmempool")
     return getattr(module, "SmartMempool")
 logging.basicConfig(level=logging.INFO)
-
+from Zyiron_Chain.blockchain.constants import Constants
 
 
 class PoC:
     def __init__(self):
-        """Initialize the Point-of-Contact (PoC) layer"""
-        self.unqlite_db = BlockchainUnqliteDB()  # Stores the entire blockchain
-        self.sqlite_db = SQLiteDB()  # UTXO storage
-        self.duckdb_analytics = AnalyticsNetworkDB()  # Analytics database
-        self.lmdb_manager = LMDBManager()  # Stores block metadata
-        self.tinydb_manager = TinyDBManager()  # Handles node settings
+        """Initialize PoC and databases dynamically based on Constants"""
+        
+        # ✅ Dynamically initialize databases based on Constants
+        self.databases = Constants.DATABASES  
 
-        # ✅ Assign storage_manager to UnQLite since it handles full blockchain storage
-        self.storage_manager = self.unqlite_db  
+        # ✅ Select correct database implementations from Constants
+        self.unqlite_db = self._initialize_database("blockchain")
+        self.sqlite_db = self._initialize_database("utxo")
+        self.duckdb_analytics = self._initialize_database("analytics")
+        self.lmdb_manager = self._initialize_database("mempool")
+        self.tinydb_manager = self._initialize_database("tinydb")  
 
-        # ✅ Initialize Key Manager
+        # ✅ Initialize KeyManager
         from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
-        self.key_manager = KeyManager()  # ✅ Ensure KeyManager is initialized
+        self.key_manager = KeyManager()
 
-        # ✅ Initialize Block Manager first (Prevent NoneType error)
-        from Zyiron_Chain.blockchain.block_manager import BlockManager
-        self.block_manager = BlockManager(storage_manager=self.storage_manager, transaction_manager=None)
-
-        # ✅ Initialize Storage Manager with Block Manager
+        # ✅ Initialize StorageManager with databases
         from Zyiron_Chain.blockchain.storage_manager import StorageManager
-        self.storage_manager = StorageManager(self, block_manager=self.block_manager)
+        self.storage_manager = StorageManager(self)
 
-        # ✅ Initialize Transaction Manager
+        # ✅ Initialize TransactionManager
         from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
-        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
+        self.transaction_manager = TransactionManager(
+            self.storage_manager,
+            self.key_manager,
+            self
+        )
 
-        # ✅ Update Block Manager to have the correct Storage Manager and Transaction Manager
-        self.block_manager.transaction_manager = self.transaction_manager
-        self.block_manager.storage_manager = self.storage_manager
+        # ✅ Initialize Blockchain LAST (creates BlockManager internally)
+        from Zyiron_Chain.blockchain.blockchain import Blockchain
+        self.blockchain = Blockchain(
+            storage_manager=self.storage_manager,
+            transaction_manager=self.transaction_manager,
+            key_manager=self.key_manager
+        )
+
+        # ✅ Get references AFTER blockchain init
+        self.block_manager = self.blockchain.block_manager
+        self.miner = self.blockchain.miner
 
         # ✅ Lazy Load FeeModel to Prevent Circular Import
         FeeModel = get_fee_model()
-        self.fee_model = FeeModel(max_supply=Decimal("84096000"))
+        self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
         # ✅ Initialize Payment Type Manager
         self.payment_type_manager = PaymentTypeManager()
@@ -103,71 +113,111 @@ class PoC:
         # ✅ Initialize Dispute Resolution Contract
         self.dispute_contract = DisputeResolutionContract(self)
 
-        # ✅ Lazy Load StandardMempool with PoC Instance
+        # ✅ Initialize Mempools using Constants
         StandardMempool = get_standard_mempool()
-        self.standard_mempool = StandardMempool(self)  # ✅ Fix: Pass `self` (PoC instance)
-        self.mempool = self.standard_mempool  # Default to standard mempool
+        SmartMempool = get_smart_mempool()
 
-        # ✅ Initialize UTXO Cache to Store Retrieved UTXOs
-        self._cache = {}  # 🚀 This prevents `AttributeError`
-
-        # Initialize the mempools
-        from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
-        from Zyiron_Chain.smartpay.smartmempool import SmartMempool
-
-        # Fix: Pass a valid integer for `max_size_mb` (e.g., 500 MB)
         self.standard_mempool = StandardMempool(self)
-        self.smart_mempool = SmartMempool(max_size_mb=500)  # Pass valid integer, e.g., 500MB
+        self.smart_mempool = SmartMempool(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB))
 
-        # Initialize Transaction Manager with the mempools
-        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
+        # ✅ Set default mempool to StandardMempool (can switch dynamically)
+        self.mempool = self.standard_mempool  
 
-        # Set the default mempool to StandardMempool
-        self.mempool = self.standard_mempool  # You can switch to self.smart_mempool if needed
+        # ✅ Initialize UTXO Cache
+        self._cache = {}  
 
 
     ### -------------------- BLOCKCHAIN STORAGE & VALIDATION -------------------- ###
 
+    def _initialize_database(self, db_key):
+        """Helper function to initialize databases dynamically based on Constants"""
+        db_type = self.databases.get(db_key, "Unknown")
+
+        if db_type == "UnQLite":
+            from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
+            return BlockchainUnqliteDB()
+        elif db_type == "SQLite":
+            from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
+            return SQLiteDB()
+        elif db_type == "DuckDB":
+            from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
+            return AnalyticsNetworkDB()
+        elif db_type == "LMDB":
+            from Zyiron_Chain.database.lmdatabase import LMDBManager
+            return LMDBManager()
+        elif db_type == "TinyDB":
+            from Zyiron_Chain.database.tinydatabase import TinyDBManager
+            return TinyDBManager()
+        else:
+            raise ValueError(f"[ERROR] Unsupported database type: {db_type}")
+
+
+
+
+
+
+
+
     def store_block(self, block, difficulty):
         """
         Store a block in the PoC layer with atomic transactions to prevent inconsistencies.
+        Ensures block storage routes correctly based on Constants.DATABASES.
         """
         try:
             from Zyiron_Chain.blockchain.block import Block  # ✅ Ensure Block is properly imported
 
             if isinstance(block, dict):
-                block = Block.from_dict(block)  # ✅ Correct reference to Block class
+                block = Block.from_dict(block)  # ✅ Convert dictionary block to Block object
 
             block_data = block.to_dict()
             block_header = block.header.to_dict()
             transactions = [tx.to_dict() for tx in block.transactions]
-            size = sum(len(json.dumps(tx)) for tx in transactions)  # Calculate block size
+            size = sum(len(json.dumps(tx)) for tx in transactions)  # ✅ Calculate block size dynamically
 
-            # Use atomic transactions across databases
-            self.sqlite_db.begin_transaction()
-            self.unqlite_db.begin_transaction()
-            self.lmdb_manager.begin_transaction()
+            # ✅ Use correct databases from Constants
+            blockchain_db = self._get_database("blockchain")
+            mempool_db = self._get_database("mempool")
 
-            # Store block in multiple databases
-            self.unqlite_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+            # ✅ Use atomic transactions across databases
+            blockchain_db.begin_transaction()
+            mempool_db.begin_transaction()
 
-            self.unqlite_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
-            self.lmdb_manager.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+            # ✅ Store block in the correct blockchain database
+            blockchain_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
 
-            # Commit changes to all databases
-            self.sqlite_db.commit()
-            self.unqlite_db.commit()
-            self.lmdb_manager.commit()
+            # ✅ Store block metadata in mempool database (if applicable)
+            if mempool_db:
+                mempool_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
+
+            # ✅ Commit changes to all databases
+            blockchain_db.commit()
+            mempool_db.commit()
 
             logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
 
         except Exception as e:
-            # Rollback changes in case of failure
-            self.sqlite_db.rollback()
-            self.unqlite_db.rollback()
-            self.lmdb_manager.rollback()
+            # ✅ Rollback changes in case of failure
+            blockchain_db.rollback()
+            mempool_db.rollback()
             logging.error(f"[ERROR] Block storage failed: {e}")
             raise
+
+    def _get_database(self, db_key):
+        """Helper function to retrieve the correct database instance from Constants."""
+        db_type = Constants.DATABASES.get(db_key, "Unknown")
+
+        if db_type == "UnQLite":
+            return self.unqlite_db
+        elif db_type == "SQLite":
+            return self.sqlite_db
+        elif db_type == "DuckDB":
+            return self.duckdb_analytics
+        elif db_type == "LMDB":
+            return self.lmdb_manager
+        elif db_type == "TinyDB":
+            return self.tinydb_manager
+        else:
+            raise ValueError(f"[ERROR] Unsupported database type: {db_type}")
 
 
 
@@ -177,10 +227,12 @@ class PoC:
 
     def get_all_blocks(self):
         """
-        Retrieve all stored blocks from UnQLite and ensure they contain a 'hash' key.
+        Retrieve all stored blocks from the configured blockchain storage.
+        Ensures proper block retrieval and validation based on Constants.DATABASES.
         """
         try:
-            raw_blocks = self.unqlite_db.get_all_blocks()
+            blockchain_db = self._get_database("blockchain")  # ✅ Dynamically select storage
+            raw_blocks = blockchain_db.get_all_blocks()  # ✅ Retrieve blocks from correct storage
 
             decoded_blocks = []
             for block in raw_blocks:
@@ -191,25 +243,28 @@ class PoC:
                         logging.error(f"[ERROR] Failed to decode block: {str(e)}")
                         continue
 
-                # ✅ Ensure the block has a 'hash' key
-                if "hash" not in block:
-                    logging.error(f"[ERROR] Retrieved block is missing 'hash' key: {block}")
-                    block["hash"] = block["header"]["merkle_root"]  # Fallback: Use merkle root as hash
+                # ✅ Ensure block integrity
+                if "hash" not in block or not isinstance(block["hash"], str):
+                    logging.warning(f"[WARNING] Retrieved block missing 'hash' key: {block}")
+                    block["hash"] = block["header"].get("merkle_root", Constants.ZERO_HASH)  # Fallback to merkle root
 
                 decoded_blocks.append(block)
 
-            logging.info(f"[DEBUG] Successfully retrieved {len(decoded_blocks)} blocks from UnQLite.")
+            logging.info(f"[DEBUG] Successfully retrieved {len(decoded_blocks)} blocks from {blockchain_db.__class__.__name__}.")
             return decoded_blocks
 
-        except Exception as e:
-            logging.error(f"[ERROR] Failed to retrieve blocks from UnQLite: {str(e)}")
+        except KeyError as ke:
+            logging.error(f"[ERROR] Missing key in block data: {str(ke)}")
             return []
-
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to retrieve blocks: {str(e)}")
+            return []
 
 
     def store_utxo(self, utxo_id, utxo_data):
         """
-        Store a UTXO in SQLite via PoC, ensuring type safety and preventing duplicates.
+        Store a UTXO in the correct database as defined in Constants.
+        Ensures type safety, prevents duplicates, and dynamically selects the correct storage.
         """
         try:
             if not isinstance(utxo_data, dict):
@@ -220,21 +275,24 @@ class PoC:
                 if key not in utxo_data:
                     raise KeyError(f"[ERROR] Missing required UTXO field: {key}")
 
-            # ✅ Convert types for SQLite storage
+            # ✅ Convert types for storage
             tx_out_id = str(utxo_data["tx_out_id"])
             amount = float(utxo_data["amount"])  # ✅ Convert Decimal to float
             script_pub_key = str(utxo_data["script_pub_key"])
             locked = int(bool(utxo_data.get("locked", False)))  # ✅ Convert boolean to int (0 or 1)
             block_index = int(utxo_data.get("block_index", 0))  # ✅ Ensure block index is an integer
 
-            # ✅ Remove existing UTXO if it exists
-            existing_utxo = self.sqlite_db.get_utxo(tx_out_id)
+            # ✅ Get correct UTXO storage from Constants
+            utxo_db = self._get_database("utxo")
+
+            # ✅ Check if UTXO already exists
+            existing_utxo = utxo_db.get_utxo(tx_out_id)
             if existing_utxo:
                 logging.warning(f"[WARNING] UTXO {tx_out_id} already exists. Replacing with new data.")
-                self.sqlite_db.delete_utxo(tx_out_id)  # ✅ Remove old UTXO before inserting a new one
+                utxo_db.delete_utxo(tx_out_id)  # ✅ Remove old UTXO before inserting a new one
 
-            # ✅ Store UTXO in SQLite
-            self.sqlite_db.insert_utxo(
+            # ✅ Store UTXO in the correct database
+            utxo_db.insert_utxo(
                 utxo_id=utxo_id,
                 tx_out_id=tx_out_id,
                 amount=amount,
@@ -243,7 +301,7 @@ class PoC:
                 block_index=block_index
             )
 
-            logging.info(f"[INFO] UTXO {utxo_id} successfully stored in SQLite.")
+            logging.info(f"[INFO] UTXO {utxo_id} successfully stored in {utxo_db.__class__.__name__}.")
             return True  # ✅ Indicate success
 
         except (KeyError, TypeError, ValueError) as e:
@@ -258,6 +316,7 @@ class PoC:
     def ensure_consistency(self, block):
         """
         Ensure blockchain consistency before adding a new block.
+        Dynamically retrieves the latest block from the correct blockchain storage.
         :param block: The block to check.
         :raises ValueError: If the block does not meet consistency requirements.
         """
@@ -267,47 +326,55 @@ class PoC:
         if not block.hash or not block.merkle_root:
             raise ValueError("[ERROR] Block hash or Merkle root is missing.")
 
-        if self.chain:
-            last_block = self.chain[-1]
+        # ✅ Fetch the last block dynamically from the correct storage backend
+        blockchain_db = self._get_database("blockchain")
+        last_block_data = blockchain_db.get_last_block()
 
-            # Check for proper block linking
+        if last_block_data:
+            last_block = Block.from_dict(last_block_data)
+
+            # ✅ Check for proper block linking
             if block.previous_hash != last_block.hash:
                 raise ValueError(
                     f"[ERROR] Previous hash mismatch: Expected {last_block.hash}, Got {block.previous_hash}"
                 )
 
-            # Ensure sequential block indexing
+            # ✅ Ensure sequential block indexing
             if block.index != last_block.index + 1:
                 raise ValueError(
                     f"[ERROR] Block index mismatch: Expected {last_block.index + 1}, Got {block.index}"
                 )
 
         else:
-            # Ensure genesis block has the correct index
+            # ✅ Ensure genesis block has the correct index
             if block.index != 0:
                 raise ValueError("[ERROR] First block must have index 0.")
 
         logging.info(f"[INFO] Block {block.index} passed consistency checks.")
 
+
     def get_last_block(self):
-        """Fetch the latest block from the database. Ensure Genesis Block is created and stored if missing."""
+        """Fetch the latest block from the correct blockchain database. Ensure Genesis Block is created if missing."""
         from Zyiron_Chain.blockchain.block import Block  # ✅ Lazy import fixes circular import issue
 
         logging.info("[POC] Fetching latest block...")
 
-        # ✅ Try fetching the latest stored block
-        block_data = self.unqlite_db.get_block("block:0")
+        # ✅ Dynamically select the correct database
+        blockchain_db = self._get_database("blockchain")
 
-        if not block_data:
+        # ✅ Try fetching the latest stored block dynamically
+        last_block_data = blockchain_db.get_last_block()
+
+        if not last_block_data:
             logging.warning("[POC] No blocks found. Creating and storing Genesis Block...")
             self.block_manager.create_genesis_block()  # ✅ Force-create Genesis Block
-            block_data = self.unqlite_db.get_block("block:0")  # ✅ Retry fetching it
+            last_block_data = blockchain_db.get_last_block()  # ✅ Retry fetching
 
-        if not block_data:
+        if not last_block_data:
             raise RuntimeError("[ERROR] Failed to retrieve or create Genesis Block!")
 
         # ✅ Convert block data to a Block object
-        return get_block.from_dict(block_data)
+        return Block.from_dict(last_block_data)
 
 
 
@@ -315,49 +382,114 @@ class PoC:
 
 
     def get_block(self, block_hash: str):
-        """Get block from UnQLite with proper error handling"""
+        """Retrieve a block from the correct blockchain database with dynamic routing and error handling."""
         try:
-            return self.unqlite_db.get_block(block_hash)
-        except KeyError:
-            return None
-        except Exception as e:
-            logging.error(f"Block retrieval failed: {str(e)}")
-            return None
+            # ✅ Select the correct blockchain database dynamically
+            blockchain_db = self._get_database("blockchain")
 
-            
-    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
-        """Retrieve UTXO from SQLite, ensuring correct row conversion and caching."""
-        
-        if tx_out_id in self._cache:
-            return TransactionOut.from_dict(dict(self._cache[tx_out_id]))  # ✅ Convert cached UTXO to dict
-
-        utxo_data = self.sqlite_db.get_utxo(tx_out_id)  # ✅ Corrected method call
-
-        if utxo_data:
-            try:
-                # ✅ Convert sqlite3.Row to a dictionary if necessary
-                utxo_dict = dict(utxo_data) if isinstance(utxo_data, sqlite3.Row) else utxo_data
-                self._cache[tx_out_id] = utxo_dict  # ✅ Cache the converted UTXO
-                return TransactionOut.from_dict(utxo_dict)  # ✅ Ensure proper format
-            except Exception as e:
-                logging.error(f"[ERROR] Failed to convert UTXO {tx_out_id}: {e}")
+            block_data = blockchain_db.get_block(block_hash)
+            if not block_data:
+                logging.warning(f"[WARNING] Block {block_hash} not found in {Constants.DATABASES['blockchain']}.")
                 return None
 
-        logging.warning(f"[WARNING] UTXO {tx_out_id} not found in SQLite.")
-        return None  # ✅ Explicitly return None if not found
+            return block_data
+
+        except KeyError:
+            logging.error(f"[ERROR] Block {block_hash} not found in database.")
+            return None
+        except Exception as e:
+            logging.error(f"[ERROR] Block retrieval failed: {str(e)}")
+            return None
+
+
+                
+    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
+        """Retrieve UTXO from the correct database dynamically, ensuring proper format and caching."""
+        try:
+            # ✅ Use correct UTXO database dynamically
+            utxo_db = self._get_database("utxo")
+
+            # ✅ Check cache first for faster retrieval
+            if tx_out_id in self._cache:
+                return TransactionOut.from_dict(dict(self._cache[tx_out_id]))
+
+            # ✅ Retrieve UTXO from the database
+            utxo_data = utxo_db.get_utxo(tx_out_id)
+
+            if utxo_data:
+                try:
+                    # ✅ Handle different database return types (e.g., JSON, dictionary, sqlite3.Row)
+                    if isinstance(utxo_data, sqlite3.Row):
+                        utxo_dict = dict(utxo_data)  # ✅ Convert sqlite3.Row to dictionary
+                    elif isinstance(utxo_data, str):  
+                        utxo_dict = json.loads(utxo_data)  # ✅ Handle JSON-encoded LevelDB data
+                    elif isinstance(utxo_data, dict):
+                        utxo_dict = utxo_data  # ✅ Already in correct format
+                    else:
+                        raise TypeError(f"[ERROR] Unexpected UTXO data format: {type(utxo_data)}")
+
+                    # ✅ Cache UTXO for faster lookups
+                    self._cache[tx_out_id] = utxo_dict
+
+                    # ✅ Return as a `TransactionOut` object
+                    return TransactionOut.from_dict(utxo_dict)
+
+                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    logging.error(f"[ERROR] Failed to process UTXO {tx_out_id}: {e}")
+                    return None
+
+            logging.warning(f"[WARNING] UTXO {tx_out_id} not found in {Constants.DATABASES['utxo']}.")
+            return None  # ✅ Explicitly return None if UTXO is missing
+
+        except Exception as e:
+            logging.error(f"[ERROR] UTXO retrieval failed for {tx_out_id}: {str(e)}")
+            return None
+
 
 
     def validate_block(self, block):
         """
         Validate a block before adding it to the blockchain.
-        :param block: The block to validate.
+        - Ensures consistency with previous blocks.
+        - Checks Proof-of-Work meets difficulty target.
+        - Validates all transactions within the block.
+        - Ensures block size does not exceed the maximum limit.
+        - Prevents future-dated blocks.
         """
         try:
+            # ✅ Ensure the block follows correct blockchain structure
             self.ensure_consistency(block)
+
+            # ✅ Ensure correct block storage database is used
+            block_db = self._get_database("blockchain")
+
+            # ✅ Validate block size against max limit
+            block_size = sys.getsizeof(json.dumps(block.to_dict()).encode())
+            if block_size > Constants.MAX_BLOCK_SIZE_BYTES:
+                raise ValueError(f"[ERROR] Block {block.index} exceeds max block size: {block_size} bytes.")
+
+            # ✅ Validate Proof-of-Work against stored difficulty
+            if int(block.hash, 16) >= block.header.difficulty:
+                raise ValueError(f"[ERROR] Block {block.index} does not meet the difficulty target.")
+
+            # ✅ Validate timestamp to prevent future-dated blocks
+            max_time_drift = 7200  # 2 hours
+            current_time = time.time()
+            if not (current_time - max_time_drift <= block.timestamp <= current_time + max_time_drift):
+                raise ValueError(f"[ERROR] Block {block.index} timestamp invalid. (Possible future block)")
+
+            # ✅ Validate all transactions in the block
+            for tx in block.transactions:
+                if not self.transaction_manager.validate_transaction(tx):
+                    raise ValueError(f"[ERROR] Invalid transaction {tx.tx_id} in block {block.index}")
+
+            logging.info(f"[INFO] Block {block.index} successfully validated.")
             return True
+
         except Exception as e:
             logging.error(f"[ERROR] Block validation failed: {e}")
             return False
+
 
     def load_blockchain_data(self):
         """
@@ -422,12 +554,18 @@ class PoC:
         - LMDB handles mempool transaction storage and prioritization.
         """
         try:
-            self.lmdb_manager.store_pending_transaction(transaction.tx_id, transaction.to_dict())
-            logging.info(f"[POC] Routed transaction {transaction.tx_id} to LMDB (Mempool).")
+            # ✅ Route to the correct database based on transaction type
+            tx_type = self.payment_type_manager.get_transaction_type(transaction.tx_id)
+            database_type = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("database", "LMDB")
+
+            if database_type == "LMDB":
+                self.lmdb_manager.store_pending_transaction(transaction.tx_id, transaction.to_dict())
+            else:
+                self.unqlite_db.store_transaction(transaction.tx_id, transaction.to_dict())  # ✅ Fallback to UnQLite
+
+            logging.info(f"[POC] Routed transaction {transaction.tx_id} to {database_type}.")
         except Exception as e:
             logging.error(f"[POC ERROR] Failed to route transaction {transaction.tx_id}: {e}")
-
-
 
     def handle_transaction(self, transaction):
         """
@@ -438,26 +576,60 @@ class PoC:
             if not hasattr(transaction, 'tx_id'):
                 raise ValueError("Transaction is missing required field: tx_id")
 
-            self.unqlite_db.store_transaction(transaction)
-            logging.info(f"[INFO] Transaction {transaction.tx_id} handled successfully.")
+            # ✅ Determine correct storage database
+            tx_type = self.payment_type_manager.get_transaction_type(transaction.tx_id)
+            database_type = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("database", "UnQLite")
 
+            if database_type == "UnQLite":
+                self.unqlite_db.store_transaction(transaction.tx_id, transaction.to_dict())
+            elif database_type == "LMDB":
+                self.lmdb_manager.store_pending_transaction(transaction.tx_id, transaction.to_dict())
+            else:
+                self.sqlite_db.insert_transaction(transaction.tx_id, transaction.to_dict())  # ✅ Store in SQLite if specified
+
+            logging.info(f"[INFO] Transaction {transaction.tx_id} handled and stored in {database_type}.")
         except Exception as e:
             logging.error(f"[ERROR] Failed to handle transaction: {e}")
             raise
-
     def get_pending_transactions(self, transaction_id=None):
         """
-        Retrieve pending transactions.
+        Retrieve pending transactions from both Standard and Smart Mempools.
         """
-        return self.mempool if transaction_id is None else [tx for tx in self.mempool if tx.tx_id == transaction_id]
+        all_transactions = self.standard_mempool.get_pending_transactions() + self.smart_mempool.get_pending_transactions()
+
+        if transaction_id is None:
+            return all_transactions  # ✅ Return all pending transactions
+        return [tx for tx in all_transactions if tx.tx_id == transaction_id]  # ✅ Filter by transaction ID
 
     def add_pending_transaction(self, transaction):
         """
-        Add a transaction to the mempool.
+        Add a transaction to the correct mempool based on its type.
         """
-        self.mempool.append(transaction)
+        try:
+            tx_type = self.payment_type_manager.get_transaction_type(transaction.tx_id)
+            mempool_type = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("mempool", "StandardMempool")
 
-    ### -------------------- BLOCK PROPAGATION & NETWORK -------------------- ###
+            if mempool_type == "SmartMempool":
+                success = self.smart_mempool.add_transaction(transaction, len(self.blockchain.chain))
+            else:
+                success = self.standard_mempool.add_transaction(transaction)
+
+            if success:
+                logging.info(f"[MEMPOOL] ✅ Transaction {transaction.tx_id} added to {mempool_type}.")
+                return True
+            else:
+                logging.error(f"[MEMPOOL] ❌ Failed to add transaction {transaction.tx_id} to {mempool_type}.")
+                return False
+        except Exception as e:
+            logging.error(f"[ERROR] Failed to add pending transaction {transaction.tx_id}: {e}")
+            return False
+
+
+
+
+
+
+    ### -------------------- BLOCK PROPAGATION & NETWORK -------------------- ### NO CONSTANT UPDATE HERE YET 2-17-25 9.43PM 
 
     def propagate_block(self, block, nodes):
         """

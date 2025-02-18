@@ -38,23 +38,9 @@ from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
 import logging
 
 # Remove all previous handlers to stop cross-logging
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
+
 
 # Setup logging for this specific module only
-def setup_logger(name):
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
-    if logger.hasHandlers():
-        logger.handlers.clear()  # Prevent duplicate logs
-    logger.addHandler(handler)
-    logger.propagate = False  # Prevent log propagation across modules
-    return logger
-
-log = setup_logger(__name__)  # Assign this logger to your module
-log.info(f"{__name__} logger initialized.")
 from Zyiron_Chain.blockchain.constants import Constants
 
 # Ensure this is at the very top of your script, before any other code
@@ -263,6 +249,7 @@ class Miner:
                 else:
                     print("\n⚡ No stored blocks found. Mining Genesis Block...")
                     self.block_manager.blockchain._ensure_genesis_block()  # ✅ Correctly access Blockchain
+
                     time.sleep(1)
                     last_stored_block = self.storage_manager.get_latest_block()
                     prev_block = last_stored_block

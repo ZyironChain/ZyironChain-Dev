@@ -14,128 +14,269 @@ from datetime import datetime
 
 import logging
 from datetime import datetime
+import json 
 
 
-logging.basicConfig(level=logging.INFO)
 
 class DatabaseSyncManager:
+    """
+    Manages cross-database synchronization for blockchain consistency.
+    - UnQLite → SQLite
+    - SQLite → DuckDB
+    - LMDB (Mempool) → SQLite (Transaction Validation)
+    - TinyDB (Peer Management) → LMDB (Network Peers)
+    - Aggregates blockchain analytics via DuckDB.
+    """
+
     def __init__(self):
+        """Initialize all blockchain databases."""
         self.unqlite_db = BlockchainUnqliteDB()
         self.sqlite_db = SQLiteDB()
         self.duckdb_analytics = AnalyticsNetworkDB()
         self.lmdb_manager = LMDBManager()
         self.tinydb_manager = TinyDBManager()
 
+
+
+
+
+
+
+    def prioritize_database_query(self, query_type, **kwargs):
+        """
+        Dynamically prioritize databases based on the query type.
+
+        :param query_type: The type of query (e.g., 'block_metadata', 'utxo', 'pending_tx')
+        :param kwargs: Additional parameters for filtering.
+        :return: Query result or None if not found.
+        """
+
+        # ✅ **Route Queries Dynamically Based on Priority**
+        if query_type == "block_metadata":
+            # 🔹 **Prioritize DuckDB first for metadata, then UnQLite**
+            result = self.duckdb_analytics.get_block_metadata(kwargs.get("block_hash"))
+            if result:
+                logging.info(f"[PRIORITY] ✅ Block metadata retrieved from DuckDB.")
+                return result
+            return self.unqlite_db.get_block(kwargs.get("block_hash"))  # Fallback to UnQLite
+
+        elif query_type == "utxo":
+            # 🔹 **SQLite should check DuckDB for UTXO changes first before UnQLite**
+            result = self.sqlite_db.get_utxo(kwargs.get("tx_out_id"))
+            if result:
+                logging.info(f"[PRIORITY] ✅ UTXO found in SQLite.")
+                return result
+            
+            return self.unqlite_db.get_utxo(kwargs.get("tx_out_id"))  # Fallback to UnQLite
+        
+        elif query_type == "pending_tx":
+            # 🔹 **LMDB should check SQLite first before using LMDB mempool**
+            result = self.sqlite_db.get_transaction(kwargs.get("tx_id"))
+            if result:
+                logging.info(f"[PRIORITY] ✅ Pending transaction found in SQLite.")
+                return result
+
+            return self.lmdb_manager.get_transaction(kwargs.get("tx_id"))  # Fallback to LMDB
+
+        elif query_type == "peer_config":
+            # 🔹 **TinyDB is the fastest for peer connections before LMDB**
+            result = self.tinydb_manager.get_peer(kwargs.get("peer_id"))
+            if result:
+                logging.info(f"[PRIORITY] ✅ Peer data retrieved from TinyDB.")
+                return result
+            
+            return self.lmdb_manager.get_peer(kwargs.get("peer_id"))  # Fallback to LMDB
+
+        elif query_type == "network_analytics":
+            # 🔹 **Network analytics should prioritize DuckDB for real-time updates**
+            return self.duckdb_analytics.get_network_metrics(kwargs.get("metric_name"))
+
+        else:
+            logging.warning(f"[WARNING] No priority routing set for query type: {query_type}")
+            return None
+
+
+
+
+
+
+
+    ### -------------------- SYNC UNQLITE → SQLITE (BLOCKCHAIN + UTXOs) -------------------- ###
+
     def sync_unqlite_to_sqlite(self):
         """
-        Synchronize UTXO and block data from UnQLite to SQLite.
+        Synchronize UTXO and block data from UnQLite (Immutable Storage) to SQLite (UTXO Management).
+        Ensures UTXOs in SQLite remain consistent with UnQLite blocks.
         """
-        logging.info("[SYNC] Synchronizing UnQLite to SQLite...")
-        blocks = self.unqlite_db.get_all_blocks()
-        for block in blocks:
-            # Update UTXO states in SQLite
-            for tx in block["transactions"]:
-                for output in tx["outputs"]:
-                    self.sqlite_db.add_utxo(
-                        utxo_id=f"{tx['tx_id']}-{output['amount']}",
-                        tx_out_id=tx["tx_id"],
-                        amount=output["amount"],
-                        script_pub_key=output["script_pub_key"],
-                        locked=False,
-                        block_index=block["block_header"]["index"],
-                    )
-        logging.info("[SYNC] UnQLite to SQLite synchronization complete.")
+        logging.info("[SYNC] 🔄 Synchronizing UnQLite to SQLite...")
+
+        try:
+            blocks = self.unqlite_db.get_all_blocks()
+            for block in blocks:
+                block_index = block.get("block_header", {}).get("index", -1)
+
+                if block_index == -1:
+                    logging.warning(f"[SYNC] ⚠️ Block missing index. Skipping block: {block['hash']}")
+                    continue
+
+                # ✅ Process transactions within the block
+                for tx in block.get("transactions", []):
+                    for output in tx.get("outputs", []):
+                        utxo_id = f"{tx['tx_id']}-{output['amount']}"
+                        
+                        # ✅ Prevent duplicate UTXOs
+                        if self.sqlite_db.get_utxo(utxo_id):
+                            continue
+                        
+                        # ✅ Insert UTXO into SQLite
+                        self.sqlite_db.add_utxo(
+                            utxo_id=utxo_id,
+                            tx_out_id=tx["tx_id"],
+                            amount=output["amount"],
+                            script_pub_key=output["script_pub_key"],
+                            locked=False,
+                            block_index=block_index,
+                        )
+
+            logging.info("[SYNC] ✅ UnQLite to SQLite synchronization complete.")
+
+        except Exception as e:
+            logging.error(f"[SYNC ERROR] ❌ UnQLite to SQLite sync failed: {e}")
+
+    ### -------------------- SYNC SQLITE → DUCKDB (ANALYTICS) -------------------- ###
 
     def sync_sqlite_to_duckdb(self):
         """
         Update DuckDB with metadata from SQLite.
+        - Tracks UTXO balances, wallet activity, and transaction metrics.
         """
-        logging.info("[SYNC] Synchronizing SQLite to DuckDB...")
-        self.sqlite_db.create_utxos_table()  # Ensure the table exists
-        utxos = self.sqlite_db.fetch_all_utxos()  # Fetch UTXOs as dictionaries
-        for utxo in utxos:
-            self.duckdb_analytics.insert_wallet_metadata(
-                wallet_address=utxo["script_pub_key"],
-                balance=utxo["amount"],
-                transaction_count=1,
-                last_updated=datetime.now(),
-            )
-        logging.info("[SYNC] SQLite to DuckDB synchronization complete.")
+        logging.info("[SYNC] 🔄 Synchronizing SQLite to DuckDB...")
 
+        try:
+            self.sqlite_db.create_utxos_table()  # Ensure UTXO table exists
+            utxos = self.sqlite_db.fetch_all_utxos()  # Fetch UTXOs
+            
+            for utxo in utxos:
+                self.duckdb_analytics.insert_wallet_metadata(
+                    wallet_address=utxo["script_pub_key"],
+                    balance=utxo["amount"],
+                    transaction_count=1,
+                    last_updated=datetime.now(),
+                )
+
+            logging.info("[SYNC] ✅ SQLite to DuckDB synchronization complete.")
+
+        except Exception as e:
+            logging.error(f"[SYNC ERROR] ❌ SQLite to DuckDB sync failed: {e}")
+
+    ### -------------------- SYNC LMDB (MEMPOOL) → SQLITE (TRANSACTION VALIDATION) -------------------- ###
 
     def sync_lmdb_to_sqlite(self):
         """
-        Validate mempool transactions from LMDB with SQLite.
+        Validate transactions in LMDB mempool against SQLite's UTXO set.
+        - Removes invalid transactions with spent/missing inputs.
         """
-        logging.info("[SYNC] Validating transactions in LMDB with SQLite...")
-        pending_txs = self.lmdb_manager.fetch_all_pending_transactions()
+        logging.info("[SYNC] 🔄 Validating LMDB transactions with SQLite UTXO set...")
 
-        for tx in pending_txs:
-            inputs_valid = self.sqlite_db.validate_transaction_inputs(tx["inputs"])
-            if inputs_valid:
-                logging.info(f"[SYNC] Transaction {tx['tx_id']} is valid.")
-            else:
-                logging.warning(f"[SYNC] Transaction {tx['tx_id']} is invalid and will be removed.")
-                self.lmdb_manager.delete_transaction(tx["tx_id"])
-        logging.info("[SYNC] LMDB to SQLite synchronization complete.")
+        try:
+            pending_txs = self.lmdb_manager.fetch_all_pending_transactions()  # ✅ Fixed method call
+
+            for tx in pending_txs:
+                inputs_valid = self.sqlite_db.validate_transaction_inputs(tx["inputs"])
+
+                if inputs_valid:
+                    logging.info(f"[SYNC] ✅ Transaction {tx['tx_id']} is valid.")
+                else:
+                    logging.warning(f"[SYNC] ❌ Transaction {tx['tx_id']} is invalid. Removing from LMDB...")
+                    self.lmdb_manager.delete_transaction(tx["tx_id"])  # ✅ Remove invalid transactions
+
+            logging.info("[SYNC] ✅ LMDB to SQLite transaction validation complete.")
+
+        except Exception as e:
+            logging.error(f"[SYNC ERROR] ❌ LMDB to SQLite sync failed: {e}")
+
+
+    ### -------------------- SYNC TINYDB (PEERS) → LMDB (NETWORK) -------------------- ###
 
     def sync_tinydb_to_lmdb(self):
         """
-        Provide peer configurations from TinyDB to LMDB.
+        Synchronize peer node configurations from TinyDB to LMDB.
+        - Ensures LMDB stores up-to-date network peers.
         """
-        logging.info("[SYNC] Synchronizing TinyDB to LMDB...")
-        peers = self.tinydb_manager.get_all_peers()
-        for peer in peers:
-            self.lmdb_manager.add_peer(peer["peer_address"], peer["port"])
-        logging.info("[SYNC] TinyDB to LMDB synchronization complete.")
+        logging.info("[SYNC] 🔄 Synchronizing TinyDB to LMDB...")
+
+        try:
+            peers = self.tinydb_manager.get_all_peers()
+            for peer in peers:
+                self.lmdb_manager.add_peer(peer["peer_address"], peer["port"])
+
+            logging.info("[SYNC] ✅ TinyDB to LMDB synchronization complete.")
+
+        except Exception as e:
+            logging.error(f"[SYNC ERROR] ❌ TinyDB to LMDB sync failed: {e}")
+
+    ### -------------------- AGGREGATE ANALYTICS (DUCKDB) -------------------- ###
 
     def aggregate_analytics(self):
         """
-        Pull aggregated data from multiple databases for analytics.
+        Aggregate blockchain statistics across databases.
+        - Tracks total blocks, UTXOs, and pending transactions.
         """
-        logging.info("[ANALYTICS] Aggregating data for analytics...")
-        total_blocks = len(self.unqlite_db.get_all_blocks())
-        total_utxos = len(self.sqlite_db.fetch_all_utxos())
-        total_pending_txs = len(self.lmdb_manager.fetch_all_pending_transactions())
+        logging.info("[ANALYTICS] 🔄 Aggregating blockchain statistics...")
 
-        self.duckdb_analytics.update_network_analytics(
-            metric_name="total_blocks",
-            metric_value=total_blocks,
-            timestamp=datetime.now(),
-        )
-        self.duckdb_analytics.update_network_analytics(
-            metric_name="total_utxos",
-            metric_value=total_utxos,
-            timestamp=datetime.now(),
-        )
-        self.duckdb_analytics.update_network_analytics(
-            metric_name="pending_transactions",
-            metric_value=total_pending_txs,
-            timestamp=datetime.now(),
-        )
-        logging.info("[ANALYTICS] Data aggregation complete.")
+        try:
+            total_blocks = len(self.unqlite_db.get_all_blocks())
+            total_utxos = len(self.sqlite_db.fetch_all_utxos())
+            total_pending_txs = len(self.lmdb_manager.fetch_all_pending_transactions())  # ✅ Fixed call
+
+            self.duckdb_analytics.update_network_analytics("total_blocks", total_blocks, datetime.now())
+            self.duckdb_analytics.update_network_analytics("total_utxos", total_utxos, datetime.now())
+            self.duckdb_analytics.update_network_analytics("pending_transactions", total_pending_txs, datetime.now())
+
+            logging.info("[ANALYTICS] ✅ Blockchain analytics aggregation complete.")
+
+        except Exception as e:
+            logging.error(f"[ANALYTICS ERROR] ❌ Failed to aggregate analytics: {e}")
 
 
+
+    ### -------------------- CLEAR ALL DATABASES (RESET) -------------------- ###
 
     def clear_all_databases(self):
         """
-        Clear all data from the databases (for testing or reinitialization).
+        Clear all blockchain databases for testing or reinitialization.
         """
-        logging.warning("[CLEAR] Clearing all databases...")
-        self.unqlite_db.clear()
-        self.sqlite_db.clear()
-        self.duckdb_analytics.clear_all_metadata()
-        self.lmdb_manager.clear_all_data()
-        self.tinydb_manager.clear_all_data()
-        logging.warning("[CLEAR] All databases cleared.")
+        logging.warning("[CLEAR] ⚠️ Clearing all databases...")
+
+        try:
+            self.unqlite_db.clear()
+            self.sqlite_db.clear()
+            self.duckdb_analytics.clear_all_metadata()
+            self.lmdb_manager.clear_all_data()
+            self.tinydb_manager.clear_all_data()
+
+            logging.warning("[CLEAR] ✅ All databases cleared successfully.")
+
+        except Exception as e:
+            logging.error(f"[CLEAR ERROR] ❌ Failed to clear databases: {e}")
+
+
+
+
+
+
+
+
+### -------------------- EXECUTE DATABASE SYNC -------------------- ###
 
 if __name__ == "__main__":
     sync_manager = DatabaseSyncManager()
 
-    # Example workflow
+    # ✅ Perform Full Synchronization Workflow
     sync_manager.sync_unqlite_to_sqlite()
     sync_manager.sync_sqlite_to_duckdb()
     sync_manager.sync_lmdb_to_sqlite()
     sync_manager.sync_tinydb_to_lmdb()
     sync_manager.aggregate_analytics()
-    logging.info("[SYNC] Database synchronization workflow complete.")
+
+    logging.info("[SYNC] ✅ Database synchronization workflow completed successfully.")

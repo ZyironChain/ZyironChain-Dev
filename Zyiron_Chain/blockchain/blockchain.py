@@ -26,38 +26,93 @@ from decimal import Decimal
 from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.transactions.fees import FeeModel
-
+from Zyiron_Chain.transactions.transactiontype import PaymentTypeManager
 class Blockchain:
     GENESIS_TARGET = Constants.GENESIS_TARGET
     ZERO_HASH = Constants.ZERO_HASH
 
-    def __init__(self, storage_manager, transaction_manager, block_manager, key_manager):
+    def __init__(self, storage_manager, transaction_manager, key_manager):
+        logging.info("[DEBUG] Initializing Blockchain...")
+
+        # ✅ Determine the active network dynamically
+        self.network = Constants.NETWORK  
+        self.address_prefix = Constants.ADDRESS_PREFIX  # ✅ Fetches from constants dynamically
+        self.version = Constants.VERSION  # ✅ Fetches blockchain version
+
+        logging.info(f"🔹 Blockchain v{self.version} initialized on {self.network.upper()} ({self.address_prefix})")
+
+        # ✅ Initialize core components
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
-        self.block_manager = BlockManager(self, self.storage_manager, self.transaction_manager)      
         self.key_manager = key_manager
-
         self.chain = []
-        self.fee_model = FeeModel(
-            max_supply=Decimal('84096000'),
-            base_fee_rate=Decimal('0.00015')
-        )
-        self.miner = Miner(self.block_manager, self.transaction_manager, 
-                        self.storage_manager, self.key_manager)
+
+        if not all([self.storage_manager, self.transaction_manager, self.key_manager]):
+            raise ValueError("Missing required dependencies for Blockchain")
 
         try:
-            stored_blocks = self.storage_manager.get_all_blocks()
-            if stored_blocks:
+            from Zyiron_Chain.blockchain.block_manager import BlockManager  
+            self.block_manager = BlockManager(
+                blockchain=self,
+                storage_manager=self.storage_manager,
+                transaction_manager=self.transaction_manager
+            )
+        except Exception as e:
+            logging.error(f"BlockManager init failed: {str(e)}")
+            raise
+
+        # ✅ Initialize Fee Model using Constants
+        self.fee_model = FeeModel(
+            max_supply=Decimal(Constants.MAX_SUPPLY),
+            base_fee_rate=Decimal(Constants.MIN_TRANSACTION_FEE)  
+        )
+
+        # ✅ Initialize Miner with Network Awareness
+        self.miner = Miner(
+            self.block_manager,
+            self.transaction_manager,
+            self.storage_manager,
+            self.key_manager
+        )
+
+        # ✅ Load Blockchain Data or Create a New Chain
+        try:
+            if stored_blocks := self.storage_manager.get_all_blocks():
                 self._load_chain_from_storage()
         except Exception as e:
-            logging.error(f"Chain reset required: {str(e)}")
+            logging.error(f"Chain reset: {str(e)}")
             self.storage_manager.purge_chain()
-        # Ensure genesis block exists and is loaded
+
+        # ✅ Ensure Genesis Block Exists
         self._ensure_genesis_block()
 
+        logging.info(f"✅ Blockchain v{self.version} successfully initialized on {self.network.upper()}")
 
 
+    def validate_new_block(self, new_block: Block, prev_block: Block = None) -> bool:
+        """
+        Validate a new block before adding it to the chain.
+        """
+        # ✅ Verify Proof-of-Work
+        if int(new_block.hash, 16) >= new_block.header.difficulty:
+            logging.error(f"Invalid Proof-of-Work for block {new_block.index}")
+            return False
 
+        # ✅ Validate previous hash linkage
+        if prev_block and new_block.previous_hash != prev_block.hash:
+            logging.error(f"Block {new_block.index} has invalid previous hash")
+            return False
+
+        # ✅ Validate transactions inside the block
+        for tx in new_block.transactions:
+            tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
+            required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"])
+            
+            if self.storage_manager.get_transaction_confirmations(tx.tx_id) < required_confirmations:
+                logging.error(f"Transaction {tx.tx_id} does not meet required confirmations ({required_confirmations})")
+                return False
+
+        return True
 
 
 
@@ -85,18 +140,15 @@ class Blockchain:
 
     # In your Blockchain class
     def _create_genesis_block(self):
-        """
-        Create, mine, and validate the Genesis block with proper attributes,
-        using SHA3-384 and a difficulty target that requires 4 leading zeros.
-        """
+        """Create, mine, and validate the Genesis block using network-specific settings."""
         try:
-            miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
+            miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
-                reward=Decimal("100.00")
+                reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
             )
-            coinbase_tx.fee = Decimal("0")  # Ensure coinbase fee is zero
+            coinbase_tx.fee = Decimal("0")
 
             genesis_block = Block(
                 index=0,
@@ -104,7 +156,7 @@ class Blockchain:
                 transactions=[coinbase_tx],
                 timestamp=int(time.time()),
                 nonce=0,
-                difficulty=Constants.GENESIS_TARGET,  # Target requiring 4 leading zeros
+                difficulty=Constants.GENESIS_TARGET,  
                 miner_address=miner_address
             )
             self._mine_genesis_block(genesis_block)
@@ -144,15 +196,13 @@ class Blockchain:
 
 
     def _mine_genesis_block(self, block=None):
-        """
-        Mines the Genesis block with the correct SHA3-384 target difficulty.
-        """
+        """Mines the Genesis block with the correct SHA3-384 target difficulty."""
         if block is None:
-            miner_address = self.key_manager.get_default_public_key("mainnet", "miner")
+            miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
-                reward=Decimal("100.00")
+                reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
             )
             coinbase_tx.fee = Decimal("0")
             block = Block(
@@ -161,7 +211,7 @@ class Blockchain:
                 transactions=[coinbase_tx],
                 timestamp=int(time.time()),
                 nonce=0,
-                difficulty=Constants.GENESIS_TARGET  # ✅ Ensure the difficulty is correct
+                difficulty=Constants.GENESIS_TARGET  
             )
 
         logging.info("Mining Genesis Block...")
@@ -187,7 +237,6 @@ class Blockchain:
 
 
 
-
     def _ensure_genesis_block(self):
         """Ensure a valid genesis block exists with proper structure and add it to the chain."""
         try:
@@ -197,7 +246,6 @@ class Blockchain:
                 if genesis_data['header']['index'] != 0 or genesis_data['header']['previous_hash'] != self.ZERO_HASH:
                     raise ValueError("Corrupted genesis block in storage")
                 genesis_block = Block.from_dict(genesis_data)
-                # Add the genesis block to the chain if not already present.
                 if not self.chain:
                     self.chain.append(genesis_block)
                     self.block_manager.chain.append(genesis_block)
@@ -212,7 +260,7 @@ class Blockchain:
 
             self._store_and_validate_genesis(genesis_block)
 
-            # Now add the newly created Genesis Block to the chain.
+            # Add the Genesis Block to the chain.
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)
 
@@ -226,76 +274,36 @@ class Blockchain:
 
 
 
-
     def add_block(self, new_block):
-        """Add validated block to both chain and storage"""
+        """Add validated block to both chain and storage."""
         if int(new_block.hash, 16) >= new_block.header.difficulty:
             raise ValueError("Invalid Proof-of-Work")
 
         try:
-            # Add to memory chain
             self.chain.append(new_block)
             self.block_manager.chain.append(new_block)
 
-            # Persist to storage
+            # ✅ Store the block in storage
             self.storage_manager.store_block(new_block, new_block.header.difficulty)
 
-            # Validate storage
+            # ✅ Ensure transactions are confirmed according to constants
+            for tx in new_block.transactions:
+                tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
+                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"])
+                
+                self.storage_manager.confirm_transaction(tx.tx_id, required_confirmations)
+
             if not self.storage_manager.get_block(new_block.hash):
                 raise RuntimeError("Block storage verification failed")
 
             logging.info(f"Added block {new_block.index} [Hash: {new_block.hash[:12]}...]")
-            
+
         except Exception as e:
             logging.error(f"Block addition failed: {str(e)}")
             self.chain.pop()
             self.block_manager.chain.pop()
             raise
-        
 
-    def validate_new_block(self, new_block: Block, prev_block: Block = None) -> bool:
-        """
-        Validate a new block before adding to the chain
-        """
-        # 1. Verify Proof-of-Work
-        if int(new_block.hash, 16) >= new_block.header.difficulty:
-            logging.error(f"Invalid Proof-of-Work for block {new_block.index}")
-            return False
-
-        # 2. Validate previous hash linkage
-        if prev_block and new_block.previous_hash != prev_block.hash:
-            logging.error(f"Block {new_block.index} has invalid previous hash")
-            return False
-
-        # 3. Validate coinbase transaction structure
-        if len(new_block.transactions) == 0:
-            logging.error("Block contains no transactions")
-            return False
-            
-        coinbase_tx = new_block.transactions[0]
-        if not isinstance(coinbase_tx, CoinbaseTx):
-            logging.error("First transaction must be CoinbaseTx instance")
-            return False
-            
-        if not (len(coinbase_tx.inputs) == 0 and 
-                len(coinbase_tx.outputs) == 1 and 
-                coinbase_tx.reward > 0):
-            logging.error("Invalid coinbase transaction structure")
-            return False
-
-        # 4. Validate transaction signatures (skip coinbase)
-        for tx in new_block.transactions[1:]:
-            if not self.transaction_manager.validate_transaction(tx):
-                logging.error(f"Invalid transaction in block {new_block.index}: {tx.tx_id}")
-                return False
-
-        # 5. Validate timestamp sequence
-        if prev_block and new_block.header.timestamp <= prev_block.header.timestamp:
-            logging.error(f"Block {new_block.index} has invalid timestamp")
-            return False
-
-        return True
-            
 
 
     def _validate_block_structure(self, block: Block) -> bool:
@@ -345,17 +353,12 @@ class Blockchain:
 
 
 
-
-
-
 if __name__ == "__main__":
     logging.info("=== Starting Blockchain ===")
     
     try:
-        # Initialize KeyManager with existing keys
         key_manager = KeyManager()
         
-        # Verify existing miner keys without generation
         if not key_manager.validate_miner_key("mainnet"):
             raise RuntimeError(
                 "Miner key missing in KeyManager.\n"
@@ -364,20 +367,28 @@ if __name__ == "__main__":
                 "Then choose '4. Add new batch of keys to mainnet'"
             )
 
-        # Rest of initialization remains the same
+        # ✅ Debug: Print Storage & Transaction Manager Before Blockchain Initialization
         poc_instance = PoC()
         storage_manager = StorageManager(poc_instance)
         transaction_manager = TransactionManager(storage_manager, key_manager, poc_instance)
-        block_manager = BlockManager(storage_manager, transaction_manager)
-        blockchain = Blockchain(storage_manager, transaction_manager, block_manager, key_manager)
 
+        logging.info(f"[DEBUG] Creating Blockchain instance with {storage_manager}, {transaction_manager}")
+
+        # ✅ FIX: Ensure `blockchain` instance is created properly
+        blockchain = Blockchain(
+            storage_manager=storage_manager,
+            transaction_manager=transaction_manager,
+            key_manager=key_manager
+        )
+
+        logging.info("[DEBUG] Blockchain instance created successfully.")
+
+        # ✅ Start Mining
         miner = blockchain.miner
         miner.mining_loop(network="mainnet")
+
         logging.info("=== Blockchain Operational ===")
         
     except Exception as e:
         logging.error(f"[FATAL ERROR] Initialization Failed: {str(e)}")
-        logging.info("Recovery Steps:")
-        logging.info("1. Launch Key Manager: python -m Zyiron_Chain.accounts.key_manager")
-        logging.info("2. Select option 4 to generate mainnet miner keys")
-        logging.info("3. Restart the blockchain")
+

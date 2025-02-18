@@ -2,6 +2,13 @@ import lmdb
 import json
 import time
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+
+
+
 
 import lmdb
 import json
@@ -9,17 +16,82 @@ import time
 import logging
 
 logging.basicConfig(level=logging.INFO)
-
+from Zyiron_Chain.blockchain.constants import Constants
 
 class LMDBManager:
-    def __init__(self, db_path="blockchain_lmdb", map_size=10 * 1024 * 1024):  # 10MB
+    def __init__(self, db_path="blockchain_lmdb"):
         """
         Initialize the LMDB database.
         :param db_path: Path to the LMDB database directory.
-        :param map_size: Maximum size of the database in bytes.
         """
-        self.env = lmdb.open(db_path, map_size=map_size, create=True)
+        # ✅ Fetch storage settings from Constants
+        map_size = Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024  # Convert MB to bytes
+        max_dbs = 10  # ✅ Increased DB limit for multiple storage layers
+
+        # ✅ Open LMDB environment with the correct settings
+        self.env = lmdb.open(db_path, map_size=map_size, max_dbs=max_dbs, create=True)
+
+        # ✅ Open separate databases inside LMDB
+        self.mempool_db = self.env.open_db(b"mempool")  # Mempool for pending transactions
+        self.blocks_db = self.env.open_db(b"blocks")  # Store blocks separately
+        self.transactions_db = self.env.open_db(b"transactions")  # Store transactions separately
+
         self.transaction_active = False  # ✅ Added transaction tracking
+
+    def fetch_all_pending_transactions(self):
+        """
+        Retrieve all pending transactions stored in LMDB.
+        - Converts stored binary data into JSON format.
+        - Returns a list of transaction dictionaries.
+        
+        :return: List of pending transaction dictionaries.
+        """
+        pending_transactions = []
+
+        try:
+            with self.env.begin(db=self.mempool_db) as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    key_str = key.decode()
+                    if key_str.startswith("pending_tx:"):  # ✅ Ensure only pending transactions are retrieved
+                        try:
+                            tx_data = json.loads(value.decode("utf-8"))  # ✅ Convert binary data to JSON
+                            pending_transactions.append(tx_data)
+                        except json.JSONDecodeError as e:
+                            logging.error(f"[LMDB ERROR] ❌ Failed to decode transaction {key_str}: {e}")
+
+            logging.info(f"[LMDB] ✅ Retrieved {len(pending_transactions)} pending transactions.")
+            return pending_transactions
+
+        except lmdb.Error as e:
+            logging.error(f"[LMDB ERROR] ❌ LMDB retrieval failed: {e}")
+            return []
+
+
+
+    def add_pending_transaction(self, transaction):
+        """
+        Add a pending transaction to LMDB.
+        """
+        try:
+            with self.env.begin(write=True, db=self.mempool_db) as txn:
+                txn.put(transaction["tx_id"].encode(), json.dumps(transaction).encode("utf-8"))
+            logging.info(f"[LMDB] ✅ Pending transaction {transaction['tx_id']} stored successfully.")
+        except Exception as e:
+            logging.error(f"[LMDB ERROR] ❌ Failed to store pending transaction {transaction['tx_id']}: {e}")
+
+    def delete_pending_transaction(self, tx_id):
+        """
+        Remove a pending transaction from LMDB.
+        """
+        try:
+            with self.env.begin(write=True, db=self.mempool_db) as txn:
+                txn.delete(tx_id.encode())
+            logging.info(f"[LMDB] ✅ Pending transaction {tx_id} removed from mempool.")
+        except Exception as e:
+            logging.error(f"[LMDB ERROR] ❌ Failed to remove pending transaction {tx_id}: {e}")
+
+
 
     def _serialize(self, data):
         """Serialize Python dictionary into JSON string."""
@@ -136,10 +208,19 @@ class LMDBManager:
         logging.info(f"[INFO] Retrieved {len(transactions)} transactions.")
         return transactions
 
-    def delete_transaction(self, tx_id):
-        """Delete a transaction by its ID."""
-        with self.env.begin(write=True) as txn:
-            txn.delete(f"transaction:{tx_id}".encode())
+    def delete_pending_transaction(self, tx_id):
+        """
+        Remove a pending transaction from LMDB mempool.
+        """
+        try:
+            with self.env.begin(write=True, db=self.mempool_db) as txn:  # ✅ Ensure deletion from mempool_db
+                txn.delete(f"pending_tx:{tx_id}".encode())
+
+            logging.info(f"[LMDB] ✅ Pending transaction {tx_id} removed from mempool.")
+
+        except Exception as e:
+            logging.error(f"[LMDB ERROR] ❌ Failed to remove pending transaction {tx_id}: {e}")
+
 
     # --------------------- ✅ General Utilities ---------------------
     def clear_database(self):

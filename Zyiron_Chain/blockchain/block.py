@@ -61,19 +61,27 @@ class Block:
         self.nonce = nonce  # ✅ Store nonce explicitly
         self._merkle_root = None  # Private cache for Merkle root
 
+        # ✅ Ensure block timestamp is within an acceptable range
+        self.timestamp = int(timestamp or time.time())
+
+        # ✅ Ensure difficulty is dynamically adjusted based on Constants
+        self.difficulty = self._adjust_difficulty()
+
         # Initialize header with computed values
         self.header = BlockHeader(
-            version=1,
+            version=Constants.VERSION,
             index=self.index,
             previous_hash=self.previous_hash,
             merkle_root=self.merkle_root,
-            timestamp=int(timestamp or time.time()),
+            timestamp=self.timestamp,
             nonce=self.nonce,  # ✅ Store nonce in header
             difficulty=self.difficulty
         )
         self.hash = self.calculate_hash()
 
-
+    def _adjust_difficulty(self):
+        """Ensure difficulty respects minimum and maximum limits from Constants"""
+        return max(min(self.difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
     @property
     def merkle_root(self):
@@ -85,18 +93,18 @@ class Block:
     def _compute_merkle_root(self):
         """Internal method to calculate Merkle root"""
         if not self.transactions:
-            return hashlib.sha3_384(b'').hexdigest()
-            
+            return hashlib.sha3_384(Constants.ZERO_HASH.encode()).hexdigest()
+
         tx_hashes = [tx.tx_id for tx in self.transactions]
-        
+
         while len(tx_hashes) > 1:
             if len(tx_hashes) % 2 != 0:
-                tx_hashes.append(tx_hashes[-1])
+                tx_hashes.append(tx_hashes[-1])  # ✅ Ensure even pairing
             tx_hashes = [
                 hashlib.sha3_384(f"{a}{b}".encode()).hexdigest()
                 for a, b in zip(tx_hashes[::2], tx_hashes[1::2])
             ]
-        
+
         return tx_hashes[0]
 
     def calculate_hash(self):
@@ -114,11 +122,6 @@ class Block:
         ).encode()
         return hashlib.sha3_384(header_data).hexdigest()
 
-    @property
-    def timestamp(self):
-        """Read-only timestamp from header"""
-        return self.header.timestamp
-
     def store_block(self):
         """
         Use PoC to store the block and ensure proper routing.
@@ -127,19 +130,6 @@ class Block:
         poc = PoC()
         difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
         poc.store_block(self, difficulty)
-
-    def calculate_hash(self):
-        """Calculate hash using header data"""
-        header_data = (
-            f"{self.header.version}"
-            f"{self.header.index}"
-            f"{self.header.previous_hash}"
-            f"{self.header.merkle_root}"
-            f"{self.header.timestamp}"
-            f"{self.header.difficulty}"
-            f"{self.header.nonce}"
-        ).encode()
-        return hashlib.sha3_384(header_data).hexdigest()
 
     def to_dict(self):
         """Convert Block into a serializable dictionary."""
@@ -156,8 +146,6 @@ class Block:
             "header": self.header.to_dict()
         }
 
-
-
     @classmethod
     def from_dict(cls, data: dict):
         """Create a Block from stored dictionary data"""
@@ -166,7 +154,7 @@ class Block:
                 CoinbaseTx.from_dict(tx_data) if tx_data.get('type') == 'COINBASE' else Transaction.from_dict(tx_data)
                 for tx_data in data.get('transactions', [])
             ]
-            
+
             header_data = data['header']
             return cls(
                 index=header_data['index'],
@@ -180,21 +168,17 @@ class Block:
         except KeyError as e:
             raise ValueError(f"Missing required field in block data: {str(e)}")
 
-
-
     @property
     def is_coinbase(self, tx_index=0) -> bool:
         """Check if transaction is coinbase"""
         return isinstance(self.transactions[tx_index], CoinbaseTx)
-
-
 
     def validate_transactions(self, fee_model, mempool, block_size):
         """
         Validate all transactions in the block, ensuring:
         - Inputs exist and are unspent.
         - Fee calculations match expectations.
-        - Transactions are not tampered.
+        - Transactions are not tampered with.
         """
         payment_type_manager = PaymentTypeManager()
 
@@ -207,7 +191,12 @@ class Block:
 
             input_total = sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount"))
             output_total = sum(out.amount for out in tx.outputs if hasattr(out, "amount"))
+
+            # ✅ Ensure fee meets the minimum required fee or calculated fee, whichever is greater
             required_fee = fee_model.calculate_fee(block_size, tx_type.name, mempool.get_total_size(), tx.size)
+            min_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
+            required_fee = max(required_fee, min_fee)  # ✅ Enforce minimum transaction fee
+
             actual_fee = input_total - output_total
 
             if actual_fee < required_fee:
