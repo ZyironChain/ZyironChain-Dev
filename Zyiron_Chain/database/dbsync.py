@@ -8,10 +8,10 @@ from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
 from Zyiron_Chain.database.duckdatabase import AnalyticsNetworkDB
 from Zyiron_Chain.database.lmdatabase import LMDBManager
 from Zyiron_Chain.database.tinydatabase import TinyDBManager
-
+from Zyiron_Chain.blockchain.constants import Constants
 import logging
 from datetime import datetime
-
+import time
 import logging
 from datetime import datetime
 import json 
@@ -272,7 +272,80 @@ class DatabaseSyncManager:
 if __name__ == "__main__":
     sync_manager = DatabaseSyncManager()
 
+    logging.info("[TEST] 🚀 Preloading Dummy Data into Databases...")
+
+    # ✅ Insert Dummy Block Data into UnQLite
+    dummy_block = {
+        "hash": "dummyblock123456",
+        "block_header": {
+            "index": 1,
+            "previous_hash": Constants.ZERO_HASH,
+            "merkle_root": "dummymerkleroot789",
+            "timestamp": int(time.time()),
+            "nonce": 12345,
+            "difficulty": Constants.GENESIS_TARGET,
+        },
+        "transactions": [
+            {
+                "tx_id": "dummy_tx_001",
+                "inputs": [{"tx_out_id": "prev_tx_001", "script_sig": "dummy_signature"}],
+                "outputs": [{"amount": 50.0, "script_pub_key": "dummy_pubkey_123"}],
+                "timestamp": int(time.time()),
+                "type": "STANDARD",
+                "fee": 0.1,
+                "hash": "dummy_tx_hash_001"
+            }
+        ]
+    }
+    sync_manager.unqlite_db.add_block(
+        dummy_block["hash"],
+        dummy_block["block_header"],
+        dummy_block["transactions"],
+        len(dummy_block["transactions"]),
+        dummy_block["block_header"]["difficulty"]
+    )
+    logging.info("[TEST] ✅ Dummy Block Data Loaded into UnQLite.")
+
+    # ✅ Insert Dummy UTXO Data into SQLite
+    dummy_utxo = {
+        "utxo_id": "utxo_001",
+        "tx_out_id": "dummy_tx_001",
+        "amount": 50.0,
+        "script_pub_key": "dummy_pubkey_123",
+        "locked": False,
+        "block_index": 1
+    }
+    sync_manager.sqlite_db.insert_utxo(
+        dummy_utxo["utxo_id"],
+        dummy_utxo["tx_out_id"],
+        dummy_utxo["amount"],
+        dummy_utxo["script_pub_key"],
+        int(dummy_utxo["locked"]),
+        dummy_utxo["block_index"]
+    )
+    logging.info("[TEST] ✅ Dummy UTXO Data Loaded into SQLite.")
+
+    # ✅ Insert Dummy Pending Transaction into LMDB
+    dummy_tx = {
+        "tx_id": "pending_tx_001",
+        "inputs": [{"tx_out_id": "dummy_tx_001", "script_sig": "dummy_signature"}],
+        "outputs": [{"amount": 25.0, "script_pub_key": "dummy_pubkey_789"}],
+        "timestamp": int(time.time()),
+        "type": "STANDARD",
+        "fee": 0.05,
+        "hash": "dummy_pending_tx_hash"
+    }
+    sync_manager.lmdb_manager.add_pending_transaction(dummy_tx)
+    logging.info("[TEST] ✅ Dummy Pending Transaction Loaded into LMDB.")
+
+    # ✅ Insert Dummy Peer Data into TinyDB
+    dummy_peer = {"peer_id": "peer_001", "peer_address": "192.168.1.100", "port": 8333}
+    sync_manager.tinydb_manager.add_peer(dummy_peer["peer_address"], dummy_peer["port"])
+    logging.info("[TEST] ✅ Dummy Peer Data Loaded into TinyDB.")
+
     # ✅ Perform Full Synchronization Workflow
+    logging.info("[SYNC] 🔄 Running Database Synchronization Workflow...")
+    
     sync_manager.sync_unqlite_to_sqlite()
     sync_manager.sync_sqlite_to_duckdb()
     sync_manager.sync_lmdb_to_sqlite()
