@@ -84,7 +84,7 @@ class Constants:
     MEMPOOL_TRANSACTION_EXPIRY = 86400  # ⏳ **Transactions expire after 24 hours in the mempool**
 
 
-    # 🔹 **Instant Payment & HTLC Settings**
+    # 🔹 **Instant Payment & HTLC Settings**a
     HTLC_LOCK_TIME = 120  # ⏳ **HTLC lock expires in 2 minutes**
     HTLC_EXPIRY_TIME = 7200  # ⏳ **HTLC expires after 2 hours (ZKP-based)**
     INSTANT_PAYMENT_TTL = 600  # ⚡ **Instant payments must be confirmed within 10 minutes**
