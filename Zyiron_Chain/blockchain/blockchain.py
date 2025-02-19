@@ -70,7 +70,7 @@ class Blockchain:
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.chain = []
-
+        self.constants = Constants  # Add this line
         # Validate miner keys before proceeding
         if not self.key_manager.validate_miner_key(self.network):  # Now passing network parameter
             raise RuntimeError("Invalid miner keys for network")
@@ -118,40 +118,44 @@ class Blockchain:
         """
         Validate a new block before adding it to the chain.
         """
-        # ✅ Verify Proof-of-Work
+        # Verify Proof-of-Work
         if not new_block.hash or int(new_block.hash, 16) >= new_block.header.difficulty:
             logging.error(f"Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
             return False
 
-        # ✅ Validate previous hash linkage
+        # Validate previous hash linkage if a previous block is provided
         if prev_block and new_block.previous_hash != prev_block.hash:
             logging.error(f"Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
             return False
 
-        # ✅ Validate transactions inside the block
-        for tx in new_block.transactions:
-            try:
-                tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
-                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
-                    tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"]
-                )
-
-                confirmations = self.storage_manager.get_transaction_confirmations(tx.tx_id)
-                if confirmations is None:
-                    logging.error(f"Transaction {tx.tx_id} confirmations could not be retrieved.")
-                    return False
-
-                if confirmations < required_confirmations:
-                    logging.error(
-                        f"Transaction {tx.tx_id} does not meet required confirmations "
-                        f"({required_confirmations}, Confirmations: {confirmations})"
+        # For blocks beyond the genesis block, check transaction confirmations
+        if new_block.index > 0:
+            for tx in new_block.transactions:
+                try:
+                    # Determine transaction type and required confirmations
+                    tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
+                    required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                        tx_type.name, Constants.CONFIRMATION_RULES["minimum_required"]
                     )
+                    confirmations = self.storage_manager.get_transaction_confirmations(tx.tx_id)
+                    if confirmations is None:
+                        logging.error(f"Transaction {tx.tx_id} confirmations could not be retrieved.")
+                        return False
+                    if confirmations < required_confirmations:
+                        logging.error(
+                            f"Transaction {tx.tx_id} does not meet required confirmations "
+                            f"({required_confirmations}, Confirmations: {confirmations})"
+                        )
+                        return False
+                except Exception as e:
+                    logging.error(f"Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
                     return False
-            except Exception as e:
-                logging.error(f"Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
-                return False
+        else:
+            # For the genesis block, you can log a message and skip the confirmations check
+            logging.info("Skipping transaction confirmations check for the genesis block.")
 
         return True
+
 
 
 

@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
+from decimal import Decimal
 
 import pickle
 import json
@@ -50,41 +50,36 @@ class StorageManager:
     def get_latest_block(self):
         """
         Retrieve the most recent block from storage.
-        Returns None if no blocks are found.
+        
+        Returns:
+            A Block object representing the latest block, or None if no valid block is found.
         """
         try:
             all_blocks = self.get_all_blocks()
             if not all_blocks:
                 logging.warning("[STORAGE] ⚠️ No blocks found in storage. Chain may be empty.")
-                return None  # No blocks exist in storage
-
-            # ✅ Sort blocks by index to retrieve the latest one
+                return None
+            # Sort blocks by header index and select the one with the highest index
             latest_block_data = max(all_blocks, key=lambda b: b["header"]["index"])
-
-            # ✅ Ensure hash and difficulty are set with constants
             block_hash = latest_block_data.get("hash", Constants.ZERO_HASH)
             block_difficulty = latest_block_data.get("difficulty", Constants.MIN_DIFFICULTY)
-
-            # ✅ Validate block hash presence
             if block_hash == Constants.ZERO_HASH:
-                logging.error(f"[ERROR] ❌ Retrieved block is missing 'hash' key: {latest_block_data}")
-                return None  # Skip invalid block
-
-            # ✅ Construct and return the latest block
+                logging.error(f"[ERROR] Retrieved block is missing a valid 'hash': {latest_block_data}")
+                return None
+            from Zyiron_Chain.blockchain.block import Block
+            from Zyiron_Chain.transactions.tx import Transaction
             return Block(
                 index=latest_block_data["header"]["index"],
                 previous_hash=latest_block_data["header"]["previous_hash"],
                 transactions=[Transaction.from_dict(tx) for tx in latest_block_data["transactions"]],
                 timestamp=latest_block_data["header"]["timestamp"],
                 nonce=latest_block_data["header"]["nonce"],
-                difficulty=block_difficulty,  # ✅ Ensure difficulty is properly set
-                miner_address=latest_block_data.get("miner_address", "Unknown")  # ✅ Default fallback
+                difficulty=block_difficulty,
+                miner_address=latest_block_data.get("miner_address", "Unknown")
             )
-
         except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Failed to retrieve latest block: {str(e)}")
+            logging.error(f"[STORAGE ERROR] Failed to retrieve latest block: {str(e)}")
             return None
-
 
 
 
@@ -99,53 +94,112 @@ class StorageManager:
             raise
 
 
+    def get_total_mined_supply(self) -> Decimal:
+        """
+        Calculate the total coin supply mined by summing the coinbase rewards from all stored blocks.
+        
+        Assumes the coinbase transaction is the first transaction in each block and that its
+        dictionary representation includes an 'outputs' list whose first element has an 'amount'.
+        
+        Returns:
+            A Decimal representing the total mined coin supply.
+        """
+        total = Decimal("0")
+        try:
+            blocks = self.get_all_blocks()
+            for block in blocks:
+                transactions = block.get("transactions", [])
+                if not transactions:
+                    continue  # Skip blocks with no transactions
+                coinbase_tx = transactions[0]
+                # Convert coinbase_tx to a dict if needed
+                if not isinstance(coinbase_tx, dict) and hasattr(coinbase_tx, "to_dict"):
+                    coinbase_tx = coinbase_tx.to_dict()
+                outputs = coinbase_tx.get("outputs", [])
+                if outputs and isinstance(outputs, list) and "amount" in outputs[0]:
+                    amount = outputs[0].get("amount")
+                    if amount is not None:
+                        try:
+                            total += Decimal(str(amount))
+                        except Exception as conv_e:
+                            logging.error(f"[STORAGE ERROR] Failed to convert coinbase amount '{amount}' to Decimal: {conv_e}")
+            return total
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] Failed to calculate total mined supply: {e}")
+            return Decimal("0")
+
+
+
+
+
+
     def get_all_blocks(self):
-        """Retrieve and convert stored blocks, ensuring all critical fields are included."""
+        """
+        Retrieve and convert stored blocks from UnQLite, ensuring all critical fields are included.
+        
+        This method:
+        - Decodes raw blocks (if stored as bytes) using pickle.
+        - Verifies required fields (like 'timestamp') are present.
+        - Safely converts the difficulty value (using base-16 conversion if needed).
+        
+        Returns:
+            A list of dictionaries, each representing a stored block.
+        """
         try:
             raw_blocks = self.unqlite_db.get_all_blocks()
             processed_blocks = []
-
             for b in raw_blocks:
-                # ✅ Enforce presence of essential block fields
+                # If stored as bytes, decode using pickle
+                if isinstance(b, bytes):
+                    try:
+                        b = pickle.loads(b)
+                    except (pickle.UnpicklingError, TypeError) as e:
+                        logging.error(f"[ERROR] Failed to decode block: {str(e)}")
+                        continue
+                # Ensure essential fields exist
                 block_hash = b.get("hash", Constants.ZERO_HASH)
                 header = b.get("header", {})
                 transactions = b.get("transactions", [])
                 size = b.get("size", 0)
                 miner_address = b.get("miner_address", "Unknown")
-
-                # ✅ Ensure timestamp is present
-                block_timestamp = header.get("timestamp", None)
+                # Ensure timestamp is present
+                block_timestamp = header.get("timestamp")
                 if not block_timestamp:
-                    logging.error(f"[ERROR] ❌ Block missing 'timestamp' field: {b}")
+                    logging.error(f"[ERROR] Block missing 'timestamp' field: {b}")
                     continue  # Skip invalid blocks
-
-                # ✅ Ensure difficulty is always set using Constants
-                block_difficulty = int(header.get("difficulty", Constants.MIN_DIFFICULTY), 16)
-
-                # ✅ Process block safely
+                # Safely convert difficulty
+                difficulty_val = header.get("difficulty", Constants.MIN_DIFFICULTY)
+                if isinstance(difficulty_val, int):
+                    block_difficulty = difficulty_val
+                else:
+                    try:
+                        block_difficulty = int(str(difficulty_val), 16)
+                    except Exception as conv_e:
+                        logging.error(f"[ERROR] Failed to convert difficulty value '{difficulty_val}': {conv_e}")
+                        continue
                 processed_blocks.append({
-                    "hash": block_hash,  # ✅ Enforce presence of block hash
+                    "hash": block_hash,
                     "header": {
                         "index": header.get("index", -1),
-                        "previous_hash": header.get("previous_hash", Constants.ZERO_HASH),  # ✅ Default to zero-hash
+                        "previous_hash": header.get("previous_hash", Constants.ZERO_HASH),
                         "merkle_root": header.get("merkle_root", Constants.ZERO_HASH),
-                        "timestamp": block_timestamp,  # ✅ Ensured presence
+                        "timestamp": block_timestamp,
                         "nonce": header.get("nonce", 0),
-                        "difficulty": block_difficulty,  # ✅ Enforced difficulty integrity
+                        "difficulty": block_difficulty,
                         "version": header.get("version", 1),
                     },
                     "transactions": transactions,
                     "size": size,
-                    "difficulty": block_difficulty,  # ✅ Ensure consistency
+                    "difficulty": block_difficulty,
                     "miner_address": miner_address
                 })
-
             logging.info(f"[STORAGE] ✅ Successfully retrieved {len(processed_blocks)} blocks from UnQLite.")
             return processed_blocks
-
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Exception while retrieving blocks: {str(e)}")
             return []
+
+
 
     def store_block(self, block, difficulty):
         """
@@ -388,14 +442,37 @@ class StorageManager:
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to export UTXOs: {str(e)}")
 
-    def get_transaction(self, tx_id: str) -> Optional[Transaction]:
-        """Retrieve a transaction from LMDB."""
+    def get_transaction_confirmations(self, tx_id: str) -> Optional[int]:
+        """
+        Retrieve the number of confirmations for the given transaction ID.
+        Confirmations are calculated as:
+            confirmations = (current chain length) - (block index where tx is found)
+        If the transaction is not found, return None.
+        """
         try:
-            tx_data = self.poc.lmdb_manager.get(f"transaction:{tx_id}")
-            return Transaction.from_dict(json.loads(tx_data)) if tx_data else None
-        except Exception as e:
-            logging.error(f"[ERROR] ❌ Failed to retrieve transaction {tx_id}: {str(e)}")
+            blocks = self.get_all_blocks()  # Returns list of block dictionaries
+            if not blocks:
+                logging.warning("[STORAGE] ⚠️ No blocks available to calculate confirmations.")
+                return None
+
+            # Sort blocks by their index to ensure correct ordering
+            blocks = sorted(blocks, key=lambda b: b["header"]["index"])
+            current_chain_length = len(blocks)
+            
+            # Loop through blocks and their transactions
+            for b in blocks:
+                for tx in b.get("transactions", []):
+                    # Assuming each transaction dict has a "tx_id" key
+                    if tx.get("tx_id") == tx_id:
+                        block_index = b["header"].get("index", 0)
+                        confirmations = current_chain_length - block_index
+                        return confirmations
+            # Transaction not found in any block
             return None
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] Failed to get confirmations for transaction {tx_id}: {e}")
+            return None
+
 
 
 

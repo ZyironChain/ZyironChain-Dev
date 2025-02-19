@@ -96,7 +96,13 @@ class BlockchainUnqliteDB:
         self.db[f"block:{block_hash}"] = json.dumps(block_data)  # ✅ Store properly
         logging.info(f"✅ Block {block_hash} stored successfully in UnQLite.")
 
-
+    def get_last_block(self):
+        """Retrieve the block with the highest index."""
+        blocks = self.get_all_blocks()
+        if not blocks:
+            return None
+        # Find block with highest index
+        return max(blocks, key=lambda x: x['header']['index'])
 
     def get_all_blocks(self):
         """

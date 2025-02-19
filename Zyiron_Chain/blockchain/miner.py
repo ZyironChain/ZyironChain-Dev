@@ -253,25 +253,28 @@ class Miner:
 
 
 
-    def mining_loop(self):
+
+    def mining_loop(self, network=None):
         """
         Continuous mining: keep adding blocks until user stops.
         - Mines the Genesis Block if the chain is empty.
         - Dynamically adjusts difficulty.
         - Logs mining progress in real-time.
         - Recovers from mining failures.
+        
+        :param network: (Optional) Network name (e.g., "mainnet" or "testnet").
+                        If not provided, uses the active network from the blockchain.
         """
-
-        # ✅ Fetch the active network dynamically
-        network = self.block_manager.blockchain.constants.NETWORK
+        from Zyiron_Chain.blockchain.constants import Constants
+        network = network or self.block_manager.blockchain.constants.NETWORK
         print(f"\n[INFO] ⛏️ Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
 
-        # ✅ Ensure blockchain is not empty; mine Genesis Block if needed
+        # Ensure blockchain is not empty; mine Genesis Block if needed
         if not self.block_manager.chain:
             logging.warning(f"[WARNING] ⚠️ Blockchain is empty! Mining Genesis Block on {network.upper()}...")
-            self.block_manager.blockchain._ensure_genesis_block()  # ✅ Ensures Genesis Block is mined
+            self.block_manager.blockchain._ensure_genesis_block()  # Ensures Genesis Block is mined
 
-            # ✅ Load the newly mined Genesis Block
+            # Load the newly mined Genesis Block
             genesis_block = self.storage_manager.get_latest_block()
             if not genesis_block:
                 raise RuntimeError(f"[ERROR] ❌ Failed to mine Genesis Block on {network.upper()}!")
@@ -279,28 +282,26 @@ class Miner:
             logging.info(f"[INFO] ✅ Genesis Block Mined on {network.upper()}: {genesis_block.hash}")
             print(f"[INFO] ✅ Genesis Block Created (Hash: {genesis_block.hash[:12]}...)")
 
-        # ✅ Get the latest block height
         block_height = len(self.block_manager.chain)
         block = None
 
         while True:
             try:
-                # ✅ Mine a new block
                 block = self.mine_block(network)
 
-                # ✅ Validate new block before adding
                 if not self.validate_new_block(block):
                     logging.error(f"[ERROR] ❌ Invalid block mined at height {block.index} on {network.upper()}")
                     raise ValueError(f"[ERROR] ❌ Mined block failed validation on {network.upper()}.")
 
-                # ✅ Append the new block to the chain
                 block_height += 1
                 self.block_manager.chain.append(block)
 
-                # ✅ Store block in storage
                 self.storage_manager.store_block(block, block.header.difficulty)
 
-                # ✅ Adjust difficulty dynamically after block is mined
+                # Retrieve and log the current total mined supply
+                total_supply = self.storage_manager.get_total_mined_supply()
+                logging.info(f"[SUPPLY] Total mined supply so far: {total_supply} out of maximum {Constants.MAX_SUPPLY}")
+
                 new_difficulty = self.block_manager.calculate_target(self.storage_manager)
                 logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty on {network.upper()} to: {hex(new_difficulty)}")
 
@@ -320,6 +321,7 @@ class Miner:
                     print(f"[ERROR] ❌ Last valid block hash: {self.block_manager.chain[-1].hash[:12]}...")
                     
                 break
+
 
 
     def validate_new_block(self, new_block):

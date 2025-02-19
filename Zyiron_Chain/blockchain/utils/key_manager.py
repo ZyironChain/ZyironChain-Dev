@@ -107,17 +107,26 @@ class KeyManager:
         else:
             logging.info(f"[AUTO-SET] Default keys are already set for {self.network}.")
 
-    def get_default_public_key(self, role="miner"):
-            """
-            Retrieve the default public key for the active network and role.
-            :param role: Role of the key (e.g., 'miner', 'validator').
-            :return: The hashed public key (scriptPubKey).
-            """
-            if role not in self.keys[self.network]["defaults"]:
-                raise ValueError(f"No default key set for role '{role}' in {self.network}.")
+    def get_default_public_key(self, network=None, role="miner"):
+        """
+        Retrieve the default public key for the given network and role.
+        
+        :param network: (Optional) Network name (e.g., 'mainnet' or 'testnet'). 
+                        If not provided, uses the active network (self.network).
+        :param role: Role of the key (e.g., 'miner', 'validator').
+        :return: The hashed public key (scriptPubKey).
+        """
+        # Use provided network if available, otherwise default to self.network
+        network = network or self.network
 
-            default_identifier = self.keys[self.network]["defaults"][role]
-            return self.keys[self.network]["keys"][default_identifier]["hashed_public_key"]
+        # Ensure the role exists in the specified network's defaults
+        if role not in self.keys[network]["defaults"]:
+            raise ValueError(f"No default key set for role '{role}' in {network}.")
+
+        default_identifier = self.keys[network]["defaults"][role]
+        return self.keys[network]["keys"][default_identifier]["hashed_public_key"]
+
+
 
     def add_key_batch(self, network):
         """
