@@ -1,7 +1,3 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 from typing import TYPE_CHECKING
 
@@ -10,14 +6,13 @@ if TYPE_CHECKING:
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
     from Zyiron_Chain.transactions.fees import FundsAllocator
 
+from Zyiron_Chain.blockchain.constants import Constants  # ✅ Import Constants directly
+
 class PaymentTypeManager:
     """Manages transaction type configurations dynamically using Constants"""
 
     def __init__(self):
-        # Lazy-load Constants when the class is instantiated
-        from Zyiron_Chain.blockchain.constants import Constants
-        self.Constants = Constants
-
+        # Remove self.Constants entirely
         self.TYPE_CONFIG = {
             TransactionType.STANDARD: {
                 "description": "Standard peer-to-peer transactions"
@@ -38,9 +33,9 @@ class PaymentTypeManager:
         if not tx_id:
             return TransactionType.STANDARD  # Default to STANDARD
 
-        # Use the lazily-loaded Constants
+        # Use the Constants class directly
         for tx_type, config in self.TYPE_CONFIG.items():
-            prefixes = self.Constants.TRANSACTION_MEMPOOL_MAP[tx_type.name]["prefixes"]
+            prefixes = Constants.TRANSACTION_MEMPOOL_MAP[tx_type.name]["prefixes"]  # ✅ Use Constants directly
             if any(tx_id.startswith(prefix) for prefix in prefixes):
                 return tx_type
 

@@ -39,29 +39,28 @@ from Zyiron_Chain.blockchain.constants import Constants
 # Ensure this is at the very top of your script, before any other code
 
 class StandardMempool:
-    def __init__(self, poc):
+    def __init__(self, poc, max_size_mb=None):  # ✅ Add max_size_mb parameter
         """
         Initialize the Standard Mempool.
-
-        :param poc: PoC instance to interact with blockchain storage.
+        
+        :param poc: PoC instance for blockchain storage
+        :param max_size_mb: Optional override of max size in MB
         """
-        self.poc = poc  # Store PoC instance inside StandardMempool
-        self.transactions = {}  # Store transactions with their hash as key
-        self.lock = Lock()  # To handle concurrency
+        self.poc = poc
+        self.transactions = {}
+        self.lock = Lock()
         
-        # ✅ Fetch memory size from Constants
-        self.max_size_bytes = Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024  # Convert MB to bytes
-        self.current_size_bytes = 0  # Track current memory usage
+        # ✅ Allow size override while maintaining Constants default
+        self.max_size_mb = max_size_mb if max_size_mb is not None else Constants.MEMPOOL_MAX_SIZE_MB
+        self.max_size_bytes = self.max_size_mb * 1024 * 1024  # Convert MB to bytes
         
-        # ✅ Set transaction expiry times from Constants
-        self.timeout = Constants.MEMPOOL_TRANSACTION_EXPIRY  # 24-hour expiry policy
+        self.current_size_bytes = 0
+        self.timeout = Constants.MEMPOOL_TRANSACTION_EXPIRY
         self.expiry_time = Constants.MEMPOOL_TRANSACTION_EXPIRY
-
-        # ✅ Use FeeModel with max supply from Constants
         self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
-        logging.info(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_bytes / (1024 * 1024)} MB")
-
+        logging.info(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_mb} MB")
+        
     def __len__(self):
         """Returns the number of transactions in the mempool."""
         return len(self.transactions)

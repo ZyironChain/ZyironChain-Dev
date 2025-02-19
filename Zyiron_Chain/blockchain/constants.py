@@ -68,7 +68,7 @@ class Constants:
 
     # 🔹 **Mempool Configuration**
     # 🔹 **Mempool Storage & Allocation Settings**
-    MEMPOOL_MAX_SIZE_MB = 2048  # 🏗️ **Total Mempool Storage Capacity (MB)**
+    MEMPOOL_MAX_SIZE_MB = 1024#  **Total Mempool Storage Capacity (MB)**
     
     # ✅ **Mempool Type Allocations**
     MEMPOOL_STANDARD_ALLOCATION = 0.50  # 🏦 **50% of total mempool reserved for Standard Transactions**

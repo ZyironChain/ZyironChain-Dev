@@ -28,7 +28,7 @@ from Zyiron_Chain.transactions.transactiontype import TransactionType
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.offchain.dispute import DisputeResolutionContract
-
+from Zyiron_Chain.blockchain.network.peerconstant import PeerConstants
 # Lazy import helpers
 def get_block():
     """Lazy import Block to break circular dependency"""
@@ -77,7 +77,6 @@ if TYPE_CHECKING:
     from Zyiron_Chain.blockchain.blockchain import Blockchain
 
 logging.basicConfig(level=logging.INFO)
-
 class PoC:
     def __init__(self):
         """Initialize PoC and databases dynamically based on Constants"""
@@ -135,8 +134,15 @@ class PoC:
 
     def _init_mempools(self):
         """Initialize mempools with lazy imports"""
+        # Standard Mempool
         self.standard_mempool = get_standard_mempool()(self)
-        self.smart_mempool = get_smart_mempool()(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB))
+        
+        # Smart Mempool - use PEER_USER_ID from PeerConstants
+        self.smart_mempool = get_smart_mempool()(
+            peer_id=f"peer_{PeerConstants.PEER_USER_ID}",  # Use dynamic peer_id
+            max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION)
+        )
+        
         self.mempool = self.standard_mempool
 
     def _init_utxo_cache(self):
@@ -164,9 +170,6 @@ class PoC:
             return TinyDBManager()
         else:
             raise ValueError(f"[ERROR] Unsupported database type: {db_type}")
-
-
-
 
 
 

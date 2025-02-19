@@ -85,6 +85,7 @@ class Blockchain:
         except Exception as e:
             logging.error(f"BlockManager init failed: {str(e)}")
             raise
+
         # ✅ Initialize Fee Model using Constants
         self.fee_model = FeeModel(
             max_supply=Decimal(Constants.MAX_SUPPLY),
@@ -227,7 +228,6 @@ class Blockchain:
 
 
 
-
     def _store_and_validate_genesis(self, genesis_block):
         """Store and verify genesis block integrity."""
         try:
@@ -318,7 +318,7 @@ class Blockchain:
             stored_blocks = self.storage_manager.get_all_blocks()
             if stored_blocks:
                 genesis_data = stored_blocks[0]
-                if genesis_data['header']['index'] != 0 or genesis_data['header']['previous_hash'] != self.ZERO_HASH:
+                if genesis_data['header']['index'] != 0 or genesis_data['header']['previous_hash'] != Constants.ZERO_HASH:
                     raise ValueError("Corrupted genesis block in storage")
                 genesis_block = Block.from_dict(genesis_data)
                 if not self.chain:
@@ -328,7 +328,7 @@ class Blockchain:
 
             # **No stored genesis block; create a new one.**
             genesis_block = self._create_genesis_block()
-            genesis_block.previous_hash = self.ZERO_HASH
+            genesis_block.previous_hash = Constants.ZERO_HASH
 
             if not self.validate_new_block(genesis_block):
                 raise ValueError("Generated Genesis block failed validation")

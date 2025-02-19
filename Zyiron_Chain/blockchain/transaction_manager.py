@@ -59,8 +59,8 @@ class TransactionManager:
         self.version = Constants.VERSION  # ✅ Fetch blockchain version
 
         # ✅ Initialize the mempools with sizes from constants
-        self.standard_mempool = StandardMempool(self.poc, max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.STANDARD_MEMPOOL_ALLOCATION))
-        self.smart_mempool = SmartMempool(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.SMART_MEMPOOL_ALLOCATION))
+        self.standard_mempool = StandardMempool(self.poc, max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_STANDARD_ALLOCATION))
+        self.smart_mempool = SmartMempool(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION))
 
         # ✅ Fetch transaction mempool routing from constants
         self.transaction_mempool_map = Constants.TRANSACTION_MEMPOOL_MAP
@@ -68,7 +68,7 @@ class TransactionManager:
         # ✅ Set the default mempool to StandardMempool
         self._mempool = self.standard_mempool  
 
-        logging.info(f"[TRANSACTION MANAGER] Initialized on {self.network.upper()} | Version {self.version} | Standard Mempool: {Constants.STANDARD_MEMPOOL_ALLOCATION * 100}% | Smart Mempool: {Constants.SMART_MEMPOOL_ALLOCATION * 100}%")
+        logging.info(f"[TRANSACTION MANAGER] Initialized on {self.network.upper()} | Version {self.version} | Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}%")
 
     @property
     def mempool(self):
