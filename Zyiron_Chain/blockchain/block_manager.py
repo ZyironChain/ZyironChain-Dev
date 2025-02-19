@@ -130,7 +130,7 @@ class BlockManager:
     def calculate_target(self, storage_manager):
         """
         Dynamically adjusts mining difficulty based on actual vs. expected block times.
-        Uses `CONFIRMATION_RULES["finalization_threshold"]` to determine difficulty adjustments.
+        Uses CONFIRMATION_RULES["finalization_threshold"] to determine difficulty adjustments.
         """
         try:
             if not hasattr(storage_manager, "get_all_blocks"):
@@ -147,36 +147,35 @@ class BlockManager:
             last_block = stored_blocks[-1]
             last_difficulty = int(last_block["header"].get("difficulty", Constants.GENESIS_TARGET), 16)
 
-            # ✅ Ensure at least `finalization_threshold` blocks exist before adjusting difficulty
+            # Ensure at least finalization_threshold blocks exist before adjusting difficulty
             if num_blocks < Constants.CONFIRMATION_RULES["finalization_threshold"]:
                 logging.info("[DIFFICULTY] Not enough blocks for adjustment. Using last difficulty.")
                 return last_difficulty
 
-            # ✅ Get the block at the `finalization_threshold` interval
+            # Get the block at the finalization_threshold interval
             first_block = stored_blocks[-Constants.CONFIRMATION_RULES["finalization_threshold"]]
             
-            # ✅ Calculate actual vs expected block mining time
+            # Calculate actual vs expected block mining time
             actual_time_taken = last_block["header"]["timestamp"] - first_block["header"]["timestamp"]
             expected_time = Constants.CONFIRMATION_RULES["finalization_threshold"] * Constants.TARGET_BLOCK_TIME
 
-            # ✅ Compute adjustment ratio
+            # Compute adjustment ratio
             adjustment_ratio = expected_time / max(actual_time_taken, 1)  # Prevent division by zero
             adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
 
-            # ✅ Compute new difficulty target
+            # Compute new difficulty target
             new_target = int(last_difficulty * adjustment_ratio)
 
-            # ✅ Enforce difficulty limits
+            # Enforce difficulty limits
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-            logging.info(f"[DIFFICULTY] Adjusted difficulty to {hex(new_target)} at block {num_blocks} based on `finalization_threshold` of {Constants.CONFIRMATION_RULES['finalization_threshold']}")
+            logging.info(f"[DIFFICULTY] Adjusted difficulty to {hex(new_target)} at block {num_blocks} based on finalization_threshold of {Constants.CONFIRMATION_RULES['finalization_threshold']}")
 
             return new_target
 
         except Exception as e:
             logging.error(f"[ERROR] Exception in difficulty calculation: {str(e)}")
             return Constants.GENESIS_TARGET
-
 
 
 
@@ -267,55 +266,50 @@ class BlockManager:
 
 
 
-    
+        
     def adjust_difficulty(self, storage_manager):
         """
         Adjust mining difficulty based on actual vs. expected block times.
-        Ensures difficulty is updated every `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
+        Ensures difficulty is updated every DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
         """
         try:
             stored_blocks = storage_manager.get_all_blocks()
             num_blocks = len(stored_blocks)
-
             if num_blocks == 0:
                 logging.info("[DIFFICULTY] No blocks found. Using Genesis Target.")
-                return Constants.GENESIS_TARGET  
+                return Constants.GENESIS_TARGET
 
             if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
                 logging.info(f"[DIFFICULTY] Not enough blocks ({num_blocks}) for difficulty adjustment. Using last recorded difficulty.")
-                return int(stored_blocks[-1]["header"]["difficulty"], 16)
+                last_diff = stored_blocks[-1]["header"].get("difficulty", Constants.GENESIS_TARGET)
+                if isinstance(last_diff, int):
+                    return last_diff
+                else:
+                    return int(last_diff, 16)
 
             # Retrieve first and last block within the adjustment interval
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
             last_block = stored_blocks[-1]
 
-            # Compute actual vs expected mining time
+            # Calculate actual vs. expected time
             actual_time_taken = last_block["header"]["timestamp"] - first_block["header"]["timestamp"]
             expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
 
-            # Compute adjustment ratio with enforced limits
-            adjustment_ratio = expected_time / max(actual_time_taken, 1)  # Prevent division by zero
+            adjustment_ratio = expected_time / max(actual_time_taken, 1)
             adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
 
-            # Get last recorded difficulty safely
-            last_difficulty = int(last_block["header"]["difficulty"], 16)
+            last_diff = last_block["header"].get("difficulty", Constants.GENESIS_TARGET)
+            if isinstance(last_diff, int):
+                last_difficulty = last_diff
+            else:
+                last_difficulty = int(last_diff, 16)
 
-            # Compute new target difficulty
             new_target = int(last_difficulty * adjustment_ratio)
-
-            # Enforce difficulty bounds
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-            # Update and log difficulty
-            self.difficulty_target = new_target
             logging.info(f"[DIFFICULTY] Adjusted difficulty: {hex(new_target)} at block {num_blocks} (Ratio: {adjustment_ratio:.4f})")
-
             return new_target
 
-        except KeyError as e:
-            logging.error(f"[ERROR] Missing key in block data: {e}")
         except Exception as e:
             logging.error(f"[ERROR] Unexpected error during difficulty adjustment: {e}")
-
-        return Constants.GENESIS_TARGET  # Ensure a fallback difficulty target
-
+            return Constants.GENESIS_TARGET

@@ -369,5 +369,5 @@ def verify_database_capacity(self):
         self.env.close()
 class Constants:
     MAX_LMDB_DATABASES = 10  # Must be ≥4
-    MEMPOOL_MAX_SIZE_MB = 2048  # 2GB
+    MEMPOOL_MAX_SIZE_MB = 1024
     NETWORK = "mainnet"  # ✅ Critical for path resolution

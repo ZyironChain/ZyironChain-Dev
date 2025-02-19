@@ -31,10 +31,7 @@ def _ensure_genesis_block(self):
     # rest of the code
 
 
-
-
-
-
+import threading
 
 
 
@@ -182,22 +179,25 @@ class Blockchain:
             self.block_manager.chain.clear()
             raise
 
-        # In your Blockchain class
+            # In your Blockchain class
     def _create_genesis_block(self):
-        """Create, mine, and validate the Genesis block using network-specific settings."""
+        """
+        Create, mine, and validate the Genesis block using network-specific settings,
+        without using an explicit thread lock.
+        """
         try:
-            # ✅ Ensure miner address retrieval succeeds
+            # Ensure miner address retrieval succeeds.
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             if not miner_address:
                 raise ValueError("[ERROR] Failed to retrieve miner address for Genesis block.")
 
-            # ✅ Ensure reward is a valid Decimal
+            # Ensure reward is a valid Decimal.
             try:
                 reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
             except Exception as e:
                 raise ValueError(f"[ERROR] Invalid coinbase reward: {str(e)}")
 
-            # ✅ Construct the Coinbase transaction
+            # Construct the Coinbase transaction.
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
@@ -205,30 +205,37 @@ class Blockchain:
             )
             coinbase_tx.fee = Decimal("0")
 
-            # ✅ Create Genesis block
+            # Use the actual system time for the genesis block's timestamp.
+            genesis_timestamp = int(time.time())
+
+            # Create the Genesis block.
             genesis_block = Block(
                 index=0,
                 previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
-                timestamp=int(time.time()),
+                timestamp=genesis_timestamp,
                 nonce=0,
                 difficulty=Constants.GENESIS_TARGET,
                 miner_address=miner_address
             )
 
-            # ✅ Mine the Genesis block
+            # Mine the Genesis block (this updates nonce and block hash).
             self._mine_genesis_block(genesis_block)
 
-            # ✅ Validate the Genesis block
+            # Validate the Genesis block.
             if not self.validate_new_block(genesis_block):
                 raise ValueError("[ERROR] Generated Genesis block failed validation.")
 
+            # Store the genesis block via the storage manager.
+            self.storage_manager.store_block(genesis_block, Constants.GENESIS_TARGET)
             logging.info(f"[INFO] Genesis block created successfully. Block Hash: {genesis_block.hash}")
+
             return genesis_block
 
         except Exception as e:
             logging.error(f"[ERROR] Genesis creation failed: {str(e)}")
             raise
+
 
 
 

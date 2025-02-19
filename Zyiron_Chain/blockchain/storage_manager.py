@@ -34,75 +34,120 @@ from typing import Dict, Optional
 import logging
 import json
 from Zyiron_Chain.blockchain.constants import Constants
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from decimal import Decimal
+
+import pickle
+import json
+from Zyiron_Chain.database.poc import PoC
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+from Zyiron_Chain.transactions.tx import Transaction
+import logging
+from Zyiron_Chain.blockchain.block import Block
+from Zyiron_Chain.blockchain.blockheader import BlockHeader
+import time
+
+# Remove all existing handlers (prevents log conflicts across modules)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Set up clean logging for this module
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+log = logging.getLogger(__name__)
+log.info(f"{__name__} logger initialized.")
+
+from typing import List, Optional, Dict
+from Zyiron_Chain.blockchain.constants import Constants
+
 class StorageManager:
     def __init__(self, poc_instance, block_manager=None):
         self.poc = poc_instance
         self.utxo_manager = UTXOManager(poc_instance)
         self.block_manager = block_manager
 
-        # Get unqlite_db from PoC with validation
+        # Rely on the PoC to provide the UnQLite database instance.
         self.unqlite_db = getattr(poc_instance, "unqlite_db", None)
         if not self.unqlite_db:
             raise AttributeError("[ERROR] PoC instance missing 'unqlite_db'")
 
-
-
     def get_latest_block(self):
         """
         Retrieve the most recent block from storage.
-        
-        Returns:
-            A Block object representing the latest block, or None if no valid block is found.
+        Returns a Block object representing the latest block, or None if no valid block is found.
         """
         try:
             all_blocks = self.get_all_blocks()
             if not all_blocks:
                 logging.warning("[STORAGE] ⚠️ No blocks found in storage. Chain may be empty.")
                 return None
+
             # Sort blocks by header index and select the one with the highest index
-            latest_block_data = max(all_blocks, key=lambda b: b["header"]["index"])
+            latest_block_data = max(all_blocks, key=lambda b: b["header"].get("index", 0))
             block_hash = latest_block_data.get("hash", Constants.ZERO_HASH)
             block_difficulty = latest_block_data.get("difficulty", Constants.MIN_DIFFICULTY)
+
             if block_hash == Constants.ZERO_HASH:
                 logging.error(f"[ERROR] Retrieved block is missing a valid 'hash': {latest_block_data}")
                 return None
+
+            # Ensure required header fields exist and are valid.
+            header = latest_block_data.get("header", {})
+            if "index" not in header or "previous_hash" not in header or "timestamp" not in header or "nonce" not in header:
+                logging.error(f"[ERROR] Incomplete block header in block data: {latest_block_data}")
+                return None
+
+            # Convert timestamp to integer (if not already)
+            try:
+                timestamp = int(header["timestamp"])
+            except Exception as e:
+                logging.error(f"[ERROR] Invalid timestamp format in block header: {e}")
+                return None
+
+            # Lazy import for Block and Transaction to avoid circular dependencies.
             from Zyiron_Chain.blockchain.block import Block
             from Zyiron_Chain.transactions.tx import Transaction
-            return Block(
-                index=latest_block_data["header"]["index"],
-                previous_hash=latest_block_data["header"]["previous_hash"],
-                transactions=[Transaction.from_dict(tx) for tx in latest_block_data["transactions"]],
-                timestamp=latest_block_data["header"]["timestamp"],
-                nonce=latest_block_data["header"]["nonce"],
+
+            latest_block = Block(
+                index=header["index"],
+                previous_hash=header["previous_hash"],
+                transactions=[Transaction.from_dict(tx) for tx in latest_block_data.get("transactions", [])],
+                timestamp=timestamp,
+                nonce=header["nonce"],
                 difficulty=block_difficulty,
                 miner_address=latest_block_data.get("miner_address", "Unknown")
             )
+            logging.info(f"[STORAGE] ✅ Successfully retrieved Block {latest_block.index} (Hash: {latest_block.hash}).")
+            return latest_block
+
         except Exception as e:
             logging.error(f"[STORAGE ERROR] Failed to retrieve latest block: {str(e)}")
             return None
 
 
-
-        # In StorageManager class
     def purge_chain(self):
-        """Delete all blockchain data and ensure proper logging."""
+        """
+        Delete all blockchain data by delegating the deletion to the PoC.
+        """
         try:
-            self.unqlite_db.delete_all_blocks()
+            self.poc.unqlite_db.delete_all_blocks()
             logging.warning("[STORAGE] ⚠️ All blockchain data purged successfully.")
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to purge blockchain data: {str(e)}")
             raise
 
-
     def get_total_mined_supply(self) -> Decimal:
         """
         Calculate the total coin supply mined by summing the coinbase rewards from all stored blocks.
-        
-        Assumes the coinbase transaction is the first transaction in each block and that its
-        dictionary representation includes an 'outputs' list whose first element has an 'amount'.
-        
-        Returns:
-            A Decimal representing the total mined coin supply.
+        Assumes the coinbase transaction is the first transaction in each block and that its dictionary
+        representation includes an 'outputs' list whose first element has an 'amount'.
+        Returns a Decimal representing the total mined coin supply.
         """
         total = Decimal("0")
         try:
@@ -128,25 +173,12 @@ class StorageManager:
             logging.error(f"[STORAGE ERROR] Failed to calculate total mined supply: {e}")
             return Decimal("0")
 
-
-
-
-
-
     def get_all_blocks(self):
         """
-        Retrieve and convert stored blocks from UnQLite, ensuring all critical fields are included.
-        
-        This method:
-        - Decodes raw blocks (if stored as bytes) using pickle.
-        - Verifies required fields (like 'timestamp') are present.
-        - Safely converts the difficulty value (using base-16 conversion if needed).
-        
-        Returns:
-            A list of dictionaries, each representing a stored block.
+        Retrieve and convert stored blocks from UnQLite via the PoC, ensuring all critical fields are included.
         """
         try:
-            raw_blocks = self.unqlite_db.get_all_blocks()
+            raw_blocks = self.poc.unqlite_db.get_all_blocks()
             processed_blocks = []
             for b in raw_blocks:
                 # If stored as bytes, decode using pickle
@@ -199,165 +231,128 @@ class StorageManager:
             logging.error(f"[STORAGE ERROR] ❌ Exception while retrieving blocks: {str(e)}")
             return []
 
-
-
     def store_block(self, block, difficulty):
         """
-        Store a block in UnQLite, ensuring the 'hash' key is included and block size is within limits.
+        Store a block by delegating the operation to the PoC instance.
+        The PoC is the only component allowed to write to UnQLite.
         """
         try:
-            # ✅ Convert block header to dictionary if necessary
-            block_header = block.header.to_dict() if hasattr(block.header, "to_dict") else block.header
-
-            # ✅ Convert transactions to dictionary format
-            transactions = [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions]
-
-            # ✅ Calculate block size in bytes
-            size = len(json.dumps(transactions).encode("utf-8"))
-
-            # ✅ Ensure block does not exceed max allowed size
-            if size > Constants.MAX_BLOCK_SIZE_BYTES:
-                logging.error(f"[ERROR] ❌ Block {block.index} exceeds max size limit ({size} bytes > {Constants.MAX_BLOCK_SIZE_BYTES} bytes).")
-                raise ValueError("Block size exceeds the maximum allowed limit.")
-
-            # ✅ Ensure difficulty is properly formatted
-            difficulty = max(min(difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
-
-            # ✅ Ensure 'hash' is included at the top level
-            block_data = {
-                "hash": block.hash,  # ✅ Ensure block hash is stored
-                "header": block_header,
-                "transactions": transactions,
-                "size": size,
-                "difficulty": difficulty
-            }
-
-            # ✅ Store block in UnQLite
-            self.unqlite_db.add_block(
-                block_hash=block.hash,
-                block_header=block_header,
-                transactions=transactions,
-                size=size,
-                difficulty=difficulty
-            )
-
-            logging.info(f"[STORAGE] ✅ Block {block.index} stored successfully in UnQLite. (Size: {size} bytes, Difficulty: {difficulty})")
-
+            self.poc.store_block(block, difficulty)
         except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Block storage failed: {str(e)}")
+            logging.error(f"[STORAGE ERROR] ❌ Failed to store block: {str(e)}")
             raise
 
-
-
-
-
-
-    def get_block(self, block_hash):
+    def add_block(self, block_hash: str, block_header: dict, transactions: list, size: int, difficulty: int):
         """
-        Retrieve a block from storage using its hash.
+        Store all block components with explicit parameters by delegating the operation to the PoC instance.
         """
         try:
-            # ✅ Validate block hash input
-            if not isinstance(block_hash, str) or len(block_hash) != Constants.SHA3_384_HASH_SIZE:
-                logging.error(f"[ERROR] ❌ Invalid block hash format: {block_hash}")
-                return None
-
-            # ✅ Retrieve raw block data from UnQLite
-            raw_data = self.unqlite_db.get_block(block_hash)
-            if not raw_data:
-                logging.warning(f"[WARNING] Block {block_hash} not found in UnQLite.")
-                return None
-
-            # ✅ Validate retrieved block structure
-            header_data = raw_data.get("header", {})
-            if not header_data:
-                logging.error(f"[ERROR] ❌ Retrieved block {block_hash} is missing header data.")
-                return None
-
-            # ✅ Rebuild BlockHeader object
-            block_header = BlockHeader(
-                version=header_data.get("version", 1),
-                index=header_data.get("index", 0),
-                previous_hash=header_data.get("previous_hash", Constants.ZERO_HASH),
-                merkle_root=header_data.get("merkle_root", Constants.ZERO_HASH),
-                timestamp=header_data.get("timestamp", int(time.time())),  # Default to current time
-                nonce=header_data.get("nonce", 0),
-                difficulty=header_data.get("difficulty", Constants.MIN_DIFFICULTY)  # ✅ Ensure valid difficulty
-            )
-
-            # ✅ Rebuild transactions from stored data
-            transactions = [
-                Transaction.from_dict(tx) if isinstance(tx, dict) else tx
-                for tx in raw_data.get("transactions", [])
-            ]
-
-            # ✅ Create and return the Block object
-            block = Block(
-                index=header_data["index"],
-                previous_hash=header_data["previous_hash"],
-                transactions=transactions,
-                timestamp=header_data["timestamp"],
-                nonce=header_data["nonce"],
-                difficulty=header_data["difficulty"],
-                miner_address=raw_data.get("miner_address", "Unknown")  # ✅ Use default if missing
-            )
-
-            logging.info(f"[STORAGE] ✅ Successfully retrieved Block {block.index} (Hash: {block.hash}).")
-            return block
-
-        except KeyError as e:
-            logging.error(f"[ERROR] ❌ Missing key in stored block {block_hash}: {str(e)}")
-            return None
-
+            self.poc.unqlite_db.add_block(block_hash, block_header, transactions, size, difficulty)
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Unexpected error retrieving block {block_hash}: {str(e)}")
+            logging.error(f"[STORAGE ERROR] ❌ Failed to add block: {str(e)}")
+            raise
+
+    def delete_all_blocks(self):
+        """
+        Delete all blocks by delegating the deletion to the PoC instance.
+        """
+        try:
+            self.poc.unqlite_db.delete_all_blocks()
+            logging.info("[STORAGE] ✅ All blocks deleted from UnQLite storage.")
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] ❌ Failed to delete all blocks: {e}")
+            raise
+
+    def delete_block(self, block_hash: str):
+        """
+        Delete a block by its hash by delegating the deletion to the PoC instance.
+        """
+        try:
+            self.poc.unqlite_db.delete_block(block_hash)
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] ❌ Failed to delete block {block_hash}: {e}")
+
+    def store_transaction(self, tx_id: str, block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int):
+        """
+        Store a transaction by delegating the operation to the PoC instance.
+        """
+        try:
+            self.poc.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] ❌ Failed to store transaction {tx_id}: {e}")
+            raise
+
+    def get_transaction(self, tx_id: str) -> Dict:
+        """
+        Retrieve a transaction by delegating the operation to the PoC instance.
+        """
+        try:
+            return self.poc.unqlite_db.get_transaction(tx_id)
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] ❌ Failed to retrieve transaction {tx_id}: {e}")
             return None
 
-    # In your StorageManager class
+    def get_all_transactions(self) -> List[Dict]:
+        """
+        Retrieve all transactions by delegating the operation to the PoC instance.
+        """
+        try:
+            return self.poc.unqlite_db.get_all_transactions()
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] ❌ Failed to retrieve transactions: {e}")
+            return []
+
+    def clear_database(self):
+        """
+        Completely wipe the blockchain storage by delegating to the PoC instance.
+        """
+        try:
+            self.poc.unqlite_db.clear_database()
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] Failed to clear database: {e}")
+
+    def close(self):
+        """
+        Close the database connection by delegating to the PoC instance.
+        """
+        try:
+            self.poc.unqlite_db.close()
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] Failed to close database connection: {e}")
+
     def verify_block_storage(self, block: Block) -> bool:
         """
         Validate if a block exists in storage using its hash.
         """
         try:
-            # ✅ Ensure block has a valid hash before querying storage
             if not isinstance(block.hash, str) or len(block.hash) != Constants.SHA3_384_HASH_SIZE:
                 logging.error(f"[ERROR] ❌ Invalid block hash format for verification: {block.hash}")
                 return False
-
-            # ✅ Check if the block exists in UnQLite
-            stored_data = self.unqlite_db.get_block(block.hash)
+            stored_data = self.poc.unqlite_db.get_block(block.hash)
             if stored_data:
                 logging.info(f"[STORAGE] ✅ Block {block.index} exists in UnQLite.")
                 return True
             else:
                 logging.warning(f"[WARNING] Block {block.index} ({block.hash}) not found in storage.")
                 return False
-
         except Exception as e:
             logging.error(f"[ERROR] ❌ Storage verification failed for Block {block.index}: {str(e)}")
             return False
-
 
     def validate_block_structure(self, block: Block) -> bool:
         """
         Validate that a block contains all required fields.
         """
         required_fields = ["index", "hash", "header", "transactions"]
-
-        # ✅ Ensure the block is a valid Block instance
         if not isinstance(block, Block):
             logging.error(f"[ERROR] ❌ Invalid block type: {type(block)}")
             return False
-
-        # ✅ Check for missing attributes
         missing_fields = [field for field in required_fields if not hasattr(block, field)]
         if missing_fields:
             logging.error(f"[ERROR] ❌ Block {block.index} is missing required fields: {missing_fields}")
             return False
-
         logging.info(f"[STORAGE] ✅ Block {block.index} passed structure validation.")
         return True
-
 
     def save_blockchain_state(self, chain: List[Block], pending_transactions: Optional[List[Transaction]] = None):
         """
@@ -365,41 +360,30 @@ class StorageManager:
         Uses an atomic write operation to prevent data corruption.
         """
         try:
-            # ✅ Validate chain integrity before saving
             if not isinstance(chain, list) or not all(isinstance(b, Block) for b in chain):
                 logging.error("[ERROR] ❌ Invalid blockchain data format. Cannot save state.")
                 return
-
-            # ✅ Validate transactions
             if pending_transactions and not all(isinstance(tx, Transaction) for tx in pending_transactions):
                 logging.error("[ERROR] ❌ Invalid pending transaction data format.")
                 return
-
-            # ✅ Convert blockchain data to storage-safe format
             data = {
                 "chain": [self._block_to_storage_format(block) for block in chain],
                 "pending_transactions": [tx.to_dict() for tx in (pending_transactions or [])]
             }
-
-            # ✅ Perform atomic write operation
             temp_file = "blockchain_state.tmp"
             final_file = "blockchain_state.json"
-
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=4)
-
             os.replace(temp_file, final_file)
             logging.info("[STORAGE] ✅ Blockchain state saved successfully.")
-
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to save blockchain state: {str(e)}")
             raise
 
-
-
-
     def _block_to_storage_format(self, block) -> Dict:
-        """Convert a block to a storage-safe format."""
+        """
+        Convert a block to a storage-safe format with error handling.
+        """
         try:
             return {
                 "header": block.header.to_dict() if hasattr(block.header, "to_dict") else block.header,
@@ -412,20 +396,27 @@ class StorageManager:
             return {}
 
     def load_chain(self):
-        """Load the blockchain data via PoC."""
+        """
+        Load the blockchain data via PoC with additional logging.
+        """
         try:
-            return self.poc.load_blockchain_data()
+            chain_data = self.poc.load_blockchain_data()
+            logging.info(f"[INFO] ✅ Loaded {len(chain_data)} blocks from storage.")
+            return chain_data
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to load blockchain: {str(e)}")
             return []
 
     def _store_block_metadata(self, block):
-        """Store block metadata in LMDB for analytics and indexing."""
+        """
+        Store block metadata in LMDB for analytics and indexing.
+        """
         try:
             metadata = {
                 "height": block.index,
                 "parent_hash": block.previous_hash,
-                "timestamp": block.header.timestamp  # ✅ Fixed timestamp access
+                "timestamp": block.header.timestamp,
+                "difficulty": block.header.difficulty,
             }
             self.poc.lmdb_manager.put(f"block_metadata:{block.hash}", json.dumps(metadata))
             logging.info(f"[INFO] ✅ Block metadata stored for {block.hash}")
@@ -433,11 +424,18 @@ class StorageManager:
             logging.error(f"[ERROR] ❌ Failed to store block metadata: {str(e)}")
 
     def export_utxos(self):
-        """Export all unspent UTXOs into LMDB for faster retrieval."""
+        """
+        Export all unspent UTXOs into LMDB for faster retrieval.
+        """
         try:
             all_utxos = self.utxo_manager.get_all_utxos()
+            if not all_utxos:
+                logging.warning("[WARNING] No UTXOs available for export.")
+                return
+            batch_data = {}
             for utxo_key, utxo_value in all_utxos.items():
-                self.poc.lmdb_manager.put(f"utxo:{utxo_key}", json.dumps(utxo_value))
+                batch_data[f"utxo:{utxo_key}"] = json.dumps(utxo_value)
+            self.poc.lmdb_manager.bulk_put(batch_data)
             logging.info(f"[INFO] ✅ Exported {len(all_utxos)} UTXOs to LMDB.")
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to export UTXOs: {str(e)}")
@@ -454,45 +452,39 @@ class StorageManager:
             if not blocks:
                 logging.warning("[STORAGE] ⚠️ No blocks available to calculate confirmations.")
                 return None
-
-            # Sort blocks by their index to ensure correct ordering
             blocks = sorted(blocks, key=lambda b: b["header"]["index"])
             current_chain_length = len(blocks)
-            
-            # Loop through blocks and their transactions
             for b in blocks:
                 for tx in b.get("transactions", []):
-                    # Assuming each transaction dict has a "tx_id" key
                     if tx.get("tx_id") == tx_id:
                         block_index = b["header"].get("index", 0)
                         confirmations = current_chain_length - block_index
                         return confirmations
-            # Transaction not found in any block
             return None
         except Exception as e:
             logging.error(f"[STORAGE ERROR] Failed to get confirmations for transaction {tx_id}: {e}")
             return None
 
-
-
-
-
     def _block_to_storage_format(self, block) -> Dict:
-        """Convert a block to a storage-safe format with error handling."""
+        """
+        Convert a block to a storage-safe format with error handling.
+        """
         try:
             return {
                 "header": block.header.to_dict() if hasattr(block.header, "to_dict") else block.header,
                 "transactions": [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions],
                 "hash": block.hash,
                 "size": len(block.transactions),
-                "difficulty": block.header.difficulty  # ✅ Ensure difficulty is stored
+                "difficulty": block.header.difficulty
             }
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to format block for storage: {str(e)}")
             return {}
 
     def load_chain(self):
-        """Load the blockchain data via PoC with additional logging."""
+        """
+        Load the blockchain data via PoC with additional logging.
+        """
         try:
             chain_data = self.poc.load_blockchain_data()
             logging.info(f"[INFO] ✅ Loaded {len(chain_data)} blocks from storage.")
@@ -502,13 +494,15 @@ class StorageManager:
             return []
 
     def _store_block_metadata(self, block):
-        """Store block metadata in LMDB for analytics and indexing."""
+        """
+        Store block metadata in LMDB for analytics and indexing.
+        """
         try:
             metadata = {
                 "height": block.index,
                 "parent_hash": block.previous_hash,
-                "timestamp": block.header.timestamp,  # ✅ Fixed timestamp access
-                "difficulty": block.header.difficulty,  # ✅ Store difficulty for analytics
+                "timestamp": block.header.timestamp,
+                "difficulty": block.header.difficulty,
             }
             self.poc.lmdb_manager.put(f"block_metadata:{block.hash}", json.dumps(metadata))
             logging.info(f"[INFO] ✅ Block metadata stored for {block.hash}")
@@ -516,26 +510,26 @@ class StorageManager:
             logging.error(f"[ERROR] ❌ Failed to store block metadata: {str(e)}")
 
     def export_utxos(self):
-        """Export all unspent UTXOs into LMDB for faster retrieval."""
+        """
+        Export all unspent UTXOs into LMDB for faster retrieval.
+        """
         try:
             all_utxos = self.utxo_manager.get_all_utxos()
             if not all_utxos:
                 logging.warning("[WARNING] No UTXOs available for export.")
                 return
-
             batch_data = {}
             for utxo_key, utxo_value in all_utxos.items():
                 batch_data[f"utxo:{utxo_key}"] = json.dumps(utxo_value)
-
-            # ✅ Use LMDB bulk insert for performance improvement
             self.poc.lmdb_manager.bulk_put(batch_data)
             logging.info(f"[INFO] ✅ Exported {len(all_utxos)} UTXOs to LMDB.")
-
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to export UTXOs: {str(e)}")
 
     def get_transaction(self, tx_id: str) -> Optional[Transaction]:
-        """Retrieve a transaction from LMDB with improved error handling."""
+        """
+        Retrieve a transaction from LMDB with improved error handling.
+        """
         try:
             tx_data = self.poc.lmdb_manager.get(f"transaction:{tx_id}")
             if not tx_data:

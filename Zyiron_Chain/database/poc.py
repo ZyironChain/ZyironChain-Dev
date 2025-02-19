@@ -13,7 +13,7 @@ import sqlite3
 from decimal import Decimal
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-
+import threading
 # Database imports (safe, no circular deps)
 from Zyiron_Chain.database.unqlitedatabase import BlockchainUnqliteDB
 from Zyiron_Chain.database.sqlitedatabase import SQLiteDB
@@ -78,17 +78,16 @@ if TYPE_CHECKING:
 
 logging.basicConfig(level=logging.INFO)
 class PoC:
-    def __init__(self):
-        """Initialize PoC and databases dynamically based on Constants"""
-        # Initialize databases first (no dependencies)
+    def __init__(self, storage_type=None):
+        self.storage_type = storage_type  # Accept storage_type parameter
         self.databases = Constants.DATABASES
         self.unqlite_db = self._initialize_database("blockchain")
         self.sqlite_db = self._initialize_database("utxo")
         self.duckdb_analytics = self._initialize_database("analytics")
         self.lmdb_manager = self._initialize_database("mempool")
         self.tinydb_manager = self._initialize_database("tinydb")
+        self._db_lock = threading.Lock()  # Global lock for all DB operations
 
-        # Lazy initialize components with dependencies
         self._init_key_manager()
         self._init_storage_manager()
         self._init_transaction_manager()
@@ -99,65 +98,42 @@ class PoC:
         self._init_dispute_contract()
 
     def _init_key_manager(self):
-        """Initialize KeyManager"""
         self.key_manager = KeyManager()
 
     def _init_storage_manager(self):
-        """Initialize StorageManager with lazy imports"""
         StorageManager = get_storage_manager()
         self.storage_manager = StorageManager(self)
 
     def _init_transaction_manager(self):
-        """Initialize TransactionManager with lazy imports"""
         TransactionManager = get_transaction_manager()
-        self.transaction_manager = TransactionManager(
-            self.storage_manager,
-            self.key_manager,
-            self
-        )
+        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, self)
 
     def _init_blockchain(self):
-        """Initialize Blockchain component last"""
         Blockchain = get_blockchain()
-        self.blockchain = Blockchain(
-            storage_manager=self.storage_manager,
-            transaction_manager=self.transaction_manager,
-            key_manager=self.key_manager
-        )
+        self.blockchain = Blockchain(self.storage_manager, self.transaction_manager, self.key_manager)
         self.block_manager = self.blockchain.block_manager
         self.miner = self.blockchain.miner
 
     def _init_fee_model(self):
-        """Initialize FeeModel with lazy loading"""
         FeeModel = get_fee_model()
         self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
     def _init_mempools(self):
-        """Initialize mempools with lazy imports"""
-        # Standard Mempool
         self.standard_mempool = get_standard_mempool()(self)
-        
-        # Smart Mempool - use PEER_USER_ID from PeerConstants
         self.smart_mempool = get_smart_mempool()(
-            peer_id=f"peer_{PeerConstants.PEER_USER_ID}",  # Use dynamic peer_id
+            peer_id=f"peer_{PeerConstants.PEER_USER_ID}",
             max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION)
         )
-        
         self.mempool = self.standard_mempool
 
     def _init_utxo_cache(self):
-        """Initialize UTXO cache"""
         self._cache = {}
 
     def _init_dispute_contract(self):
-        """Initialize Dispute Resolution Contract"""
         self.dispute_contract = DisputeResolutionContract(self)
 
-    # Keep all original database methods unchanged
     def _initialize_database(self, db_key):
-        """Helper function to initialize databases dynamically based on Constants"""
         db_type = self.databases.get(db_key, "Unknown")
-
         if db_type == "UnQLite":
             return BlockchainUnqliteDB()
         elif db_type == "SQLite":
@@ -174,53 +150,49 @@ class PoC:
 
 
     def store_block(self, block, difficulty):
+            """
+            Store a block in UnQLite with a retry mechanism and global lock.
+            """
+            max_retries = 5
+            attempt = 0
+            while attempt < max_retries:
+                try:
+                    with self._db_lock:
+                        block_header = block.header.to_dict() if hasattr(block.header, "to_dict") else block.header
+                        transactions = [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions]
+                        size = len(json.dumps(transactions).encode("utf-8"))
+                        self.unqlite_db.add_block(
+                            block_hash=block.hash,
+                            block_header=block_header,
+                            transactions=transactions,
+                            size=size,
+                            difficulty=difficulty
+                        )
+                    logging.info(f"[STORAGE] Block {block.index} stored successfully in UnQLite. (Size: {size} bytes, Difficulty: {difficulty})")
+                    return
+                except Exception as e:
+                    if "hold the requested lock" in str(e):
+                        logging.error(f"[STORAGE ERROR] Lock error when storing block (attempt {attempt+1}/5): {e}")
+                        time.sleep(1)
+                        attempt += 1
+                    else:
+                        logging.error(f"[STORAGE ERROR] Failed to store block: {e}")
+                        raise
+            raise Exception("Failed to store block after several retries due to lock errors.")
+    
+    def load_blockchain_data(self):
         """
-        Store a block in the PoC layer with atomic transactions to prevent inconsistencies.
-        Ensures block storage routes correctly based on Constants.DATABASES.
+        Load blockchain data from UnQLite via the global lock.
         """
+        logging.info("[POC] Loading blockchain data...")
         try:
-            Block = get_block()  # Use lazy import helper
-
-            if isinstance(block, dict):
-                block = Block.from_dict(block)
-
-            block_data = block.to_dict()
-            block_header = block.header.to_dict()
-            transactions = [tx.to_dict() for tx in block.transactions]
-            size = sum(len(json.dumps(tx)) for tx in transactions)
-
-            blockchain_db = self._get_database("blockchain")
-            mempool_db = self._get_database("mempool")
-
-            try:
-                blockchain_db.begin_transaction()
-                if mempool_db:
-                    mempool_db.begin_transaction()
-
-                blockchain_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
-                
-                if mempool_db:
-                    mempool_db.add_block(block_data['hash'], block_header, transactions, size, difficulty)
-
-                blockchain_db.commit()
-                if mempool_db:
-                    mempool_db.commit()
-
-                logging.info(f"[INFO] Block {block.index} stored successfully in PoC.")
-                
-                # Clear cache after successful storage
-                if block_data['hash'] in self._cache:
-                    del self._cache[block_data['hash']]
-
-            except Exception as inner_e:
-                blockchain_db.rollback()
-                if mempool_db:
-                    mempool_db.rollback()
-                raise
-
+            self.chain = self.unqlite_db.get_all_blocks()
+            logging.info(f"[POC] Loaded {len(self.chain)} blocks.")
         except Exception as e:
-            logging.error(f"[ERROR] Block storage failed: {e}")
-            raise
+            logging.error(f"[POC] Error loading blockchain data: {e}")
+            self.chain = []
+
+
 
 
     def _get_database(self, db_key):
@@ -711,12 +683,6 @@ class PoC:
 
     ### -------------------- UTILITIES -------------------- ###
 
-    def clear_blockchain(self):
-        """
-        Clear blockchain data for testing or reset.
-        """
-        self.chain = []
-        logging.info("[INFO] Blockchain data cleared.")
 
 # -------------------- NODE CLASSES FOR TESTING -------------------- #
 
@@ -739,8 +705,3 @@ class MinerNode:
         logging.info(f"MinerNode {self.node_id} received transaction {transaction.tx_id}")
 
 # -------------------- TEST EXECUTION -------------------- #
-
-if __name__ == "__main__":
-    poc = PoC()
-    poc.clear_blockchain()  # Reset before test
-    print("[INFO] PoC initialized successfully.")

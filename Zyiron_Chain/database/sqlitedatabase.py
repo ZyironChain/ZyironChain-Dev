@@ -239,13 +239,6 @@ class SQLiteDB:
         """)
         return [dict(row) for row in self.cursor.fetchall()]  # Convert rows to dictionary format
 
-    def clear(self):
-        """
-        Clear all data from the database (for testing purposes).
-        """
-        self.cursor.execute("DELETE FROM utxos")
-        self.cursor.execute("DELETE FROM transactions")
-        self.connection.commit()
 
     def close(self):
         """
