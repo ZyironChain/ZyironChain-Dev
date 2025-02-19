@@ -1,0 +1,29 @@
+# Ignore Python virtual environments
+.venv/
+
+# Ignore build and distribution files
+build/
+dist/
+
+# Ignore egg-related files
+*.egg
+*.egg-info/
+
+# Ignore the Keys directory containing sensitive key files
+Keys/
+
+# Ignore .mdb files (for large databases)
+*.mdb
+
+# Ignore SQLite and other database files
+*.sqlite
+ZYCDB/
+
+# Ignore files related to kc package
+kc.egg-info/
+
+# Ignore pycache files
+**/__pycache__/
+
+# Ignore tinydb.json file
+tinydb.json
