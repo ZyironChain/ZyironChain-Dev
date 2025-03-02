@@ -1,3 +1,4 @@
+cat <<EOL > .gitignore
 # Ignore Python virtual environments
 .venv/
 
@@ -45,3 +46,17 @@ frontend/dist/
 
 # Ignore TinyDB database files
 tinydb.json
+
+# Ignore large files
+*.txt
+*.mdb
+*.pyc
+*.json
+*.dll
+*.pyd
+
+# Ignore blockchain storage
+blockchain_storage/
+block_data/
+BlockData/
+EOL
