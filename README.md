@@ -117,6 +117,12 @@ No direct pushes to main – PR approval required.
 At least 1 approval required before merging.
 Auto-merge is disabled – Maintainers review each PR.
 
+#🔒 **Repository Access Policy**
+- **You must request approval before contributing.**
+- Send an email to **zyironchain@gmail.com** or contact @Zyiron_Chain on Telegram.
+- Provide your GitHub username and reason for contributing.
+- Only approved contributors will be granted push/pull access.
+
 
 
 # 5️⃣ Contact for PR Approval
