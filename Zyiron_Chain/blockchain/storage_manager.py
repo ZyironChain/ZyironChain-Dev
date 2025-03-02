@@ -94,23 +94,30 @@ class StorageManager:
         self._initialize_block_data_file()
 
     def _initialize_block_data_file(self):
-        """Initialize block.data file with the correct magic number."""
+        """
+        Initialize block.data file with the correct magic number.
+        - Creates the block data directory if it doesn't exist.
+        - Writes the magic number to the file.
+        - Validates the magic number on startup.
+        """
         try:
+            # ✅ Ensure block data directory exists
             block_data_dir = Constants.DATABASES.get("block_data")
             if not block_data_dir:
                 raise ValueError("[ERROR] Block data directory not found in Constants.DATABASES.")
 
             os.makedirs(block_data_dir, exist_ok=True)
 
+            # ✅ Set the block data file path
             self.current_block_file = os.path.join(block_data_dir, "block.data")
             logging.info(f"[STORAGE] Block data file path set to: {self.current_block_file}")
 
-            if not os.path.exists(self.current_block_file):
-                with open(self.current_block_file, "wb") as f:
-                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))  # Write magic number
-                logging.info(f"[STORAGE] ✅ Created block.data file with magic number {hex(Constants.MAGIC_NUMBER)}.")
+            # ✅ Write the magic number to the file
+            with open(self.current_block_file, "wb") as f:
+                f.write(struct.pack(">I", Constants.MAGIC_NUMBER))  # Write magic number
+            logging.info(f"[STORAGE] ✅ Created block.data file with magic number {hex(Constants.MAGIC_NUMBER)}.")
 
-            # Validate the magic number on startup
+            # ✅ Validate the magic number on startup
             with open(self.current_block_file, "rb") as f:
                 file_magic_number = struct.unpack(">I", f.read(4))[0]
                 if file_magic_number != Constants.MAGIC_NUMBER:
@@ -122,7 +129,6 @@ class StorageManager:
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to initialize block storage: {e}")
             raise
-
 
 
 
@@ -627,81 +633,65 @@ class StorageManager:
 
     def get_all_blocks(self) -> List[Dict]:
         """
-        Retrieve and convert stored blocks from LMDB, ensuring all critical fields are included.
-        Standardizes JSON deserialization and ensures correct block height referencing.
+        Retrieve complete block data with full transactions from storage
         """
+        processed_blocks = []
         try:
-            processed_blocks = []
-
-            # Retrieve all blocks from LMDB block metadata storage
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
-                    if key.decode().startswith("block:"):  # Ensure we're reading block metadata
-                        try:
-                            block_metadata = json.loads(value.decode("utf-8"))
+                    if not key.decode().startswith("block:"):
+                        continue
 
-                            # ✅ Ensure block_header is a dictionary
-                            header = block_metadata.get("block_header")
-                            if not isinstance(header, dict):
-                                logging.error(f"[ERROR] ❌ Block header is not a dictionary: {block_metadata}")
-                                continue
+                    try:
+                        block_meta = json.loads(value.decode())
+                        header = block_meta.get("block_header", {})
+                        
+                        # Get full transactions from txindex
+                        full_transactions = []
+                        for tx_id in block_meta.get("tx_ids", []):
+                            tx_data = self.txindex_db.get(f"tx:{tx_id}".encode())
+                            if tx_data:
+                                full_transactions.append(json.loads(tx_data.decode()))
+                            else:
+                                logging.error(f"Missing transaction {tx_id} in txindex")
 
-                            # ✅ Extract essential fields from block metadata
-                            block_hash = block_metadata.get("hash", Constants.ZERO_HASH)
-                            transactions = block_metadata.get("tx_ids", [])
-                            size = block_metadata.get("block_size", 0)
-                            miner_address = block_metadata.get("miner_address", "Unknown")
+                        processed_blocks.append({
+                            "hash": block_meta.get("hash"),
+                            "header": {
+                                "index": header.get("index"),
+                                "previous_hash": header.get("previous_hash"),
+                                "merkle_root": header.get("merkle_root"),
+                                "timestamp": header.get("timestamp"),
+                                "nonce": header.get("nonce"),
+                                "difficulty": int(header.get("difficulty", Constants.GENESIS_TARGET)),
+                                "version": header.get("version", 1)
+                            },
+                            "transactions": full_transactions,
+                            "size": block_meta.get("block_size", 0),
+                            "miner_address": block_meta.get("miner_address", "Unknown"),
+                            "data_offset": block_meta.get("data_offset")  # Critical for block.data loading
+                        })
 
-                            # ✅ Ensure block index is accessed via block_header["index"]
-                            block_index = header.get("index")
-                            if block_index is None:
-                                logging.error(f"[ERROR] ❌ Block header missing 'index' field: {block_metadata}")
-                                continue
+                    except Exception as e:
+                        logging.error(f"Error processing block {key}: {str(e)}")
 
-                            # ✅ Ensure timestamp is present in header
-                            block_timestamp = header.get("timestamp")
-                            if block_timestamp is None:
-                                logging.error(f"[ERROR] ❌ Block header missing 'timestamp' field: {block_metadata}")
-                                continue
-
-                            # ✅ Convert difficulty safely
-                            difficulty_val = header.get("difficulty", Constants.MIN_DIFFICULTY)
-                            try:
-                                block_difficulty = int(str(difficulty_val), 16) if not isinstance(difficulty_val, int) else difficulty_val
-                            except Exception as conv_e:
-                                logging.error(f"[ERROR] ❌ Failed to convert difficulty value '{difficulty_val}': {conv_e}")
-                                continue
-
-                            # ✅ Append processed block data
-                            processed_blocks.append({
-                                "hash": block_hash,
-                                "header": {
-                                    "index": block_index,  # ✅ Correct reference for block height
-                                    "previous_hash": header.get("previous_hash", Constants.ZERO_HASH),
-                                    "merkle_root": header.get("merkle_root", Constants.ZERO_HASH),
-                                    "timestamp": block_timestamp,
-                                    "nonce": header.get("nonce", 0),
-                                    "difficulty": block_difficulty,
-                                    "version": header.get("version", 1),
-                                },
-                                "transactions": transactions,
-                                "size": size,
-                                "difficulty": block_difficulty,
-                                "miner_address": miner_address
-                            })
-
-                        except json.JSONDecodeError as e:
-                            logging.error(f"[STORAGE ERROR] ❌ Failed to decode block metadata: {e}")
-
-            # ✅ Sort blocks by block_header["index"]
+            # Sort blocks by height and add chain order validation
             processed_blocks.sort(key=lambda b: b["header"]["index"])
+            prev_hash = Constants.ZERO_HASH
+            
+            for block in processed_blocks:
+                if block["header"]["previous_hash"] != prev_hash:
+                    logging.error(f"Chain discontinuity at block {block['header']['index']}")
+                    return []
+                prev_hash = block["hash"]
 
-            logging.info(f"[STORAGE] ✅ Successfully retrieved {len(processed_blocks)} blocks from LMDB.")
+            logging.info(f"Retrieved {len(processed_blocks)} valid blocks from storage")
             return processed_blocks
 
         except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Exception while retrieving blocks: {str(e)}")
+            logging.error(f"Critical storage error: {str(e)}")
+            self.purge_chain()
             return []
 
 
@@ -774,26 +764,32 @@ class StorageManager:
         """
         try:
             with self.block_metadata_db.env.begin(write=True) as txn:
+                # Prepare block metadata
                 block_metadata = {
                     "hash": block_hash,
                     "block_header": block_header,
                     "transaction_count": len(transactions),
                     "block_size": size,
                     "difficulty": difficulty,
-                    "tx_ids": [tx["tx_id"] for tx in transactions]
+                    "tx_ids": [tx["tx_id"] for tx in transactions]  # Ensure all transactions have a "tx_id" field
                 }
 
-                # ✅ Store block metadata
+                # ✅ Store block metadata in `block_metadata.lmdb`
                 txn.put(f"block:{block_hash}".encode(), json.dumps(block_metadata).encode("utf-8"))
 
-                # ✅ Index each transaction
+                # ✅ Index each transaction in `txindex.lmdb`
                 for idx, tx in enumerate(transactions):
-                    txn.put(f"tx:{tx['tx_id']}".encode(), json.dumps({
+                    if not isinstance(tx, dict) or "tx_id" not in tx:
+                        logging.error(f"[STORAGE ERROR] ❌ Invalid transaction format at index {idx}")
+                        continue
+
+                    tx_index_data = {
                         "block_hash": block_hash,
                         "position": idx,
                         "block_height": block_header["index"],
                         "timestamp": block_header["timestamp"]
-                    }).encode("utf-8"))
+                    }
+                    txn.put(f"tx:{tx['tx_id']}".encode(), json.dumps(tx_index_data).encode("utf-8"))
 
             logging.info(f"[STORAGE] ✅ Block {block_hash} and transactions indexed in LMDB.")
 
@@ -893,9 +889,16 @@ class StorageManager:
                 "timestamp": timestamp
             }
 
+            # ✅ Serialize transaction data to JSON
+            try:
+                serialized_data = json.dumps(transaction_data).encode("utf-8")
+            except Exception as e:
+                logging.error(f"[STORAGE ERROR] ❌ Failed to serialize transaction data for {tx_id}: {e}")
+                return
+
+            # ✅ Store the transaction data in the index
             with self.txindex_db.env.begin(write=True) as txn:
-                # ✅ Store the transaction data in the index
-                txn.put(f"tx:{tx_id}".encode(), json.dumps(transaction_data).encode("utf-8"))
+                txn.put(f"tx:{tx_id}".encode(), serialized_data)
 
             logging.info(f"[STORAGE] ✅ Transaction {tx_id} stored successfully in LMDB.")
 
@@ -1358,3 +1361,5 @@ class StorageManager:
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to retrieve pending transactions: {e}")
             return []        
+
+

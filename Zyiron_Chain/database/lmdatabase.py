@@ -26,10 +26,12 @@ import json
 import os
 import logging
 from Zyiron_Chain.blockchain.constants import Constants
-
+import threading
 from lmdb import open
 
 import lmdb
+from Zyiron_Chain.database.lmdbwriter import StorageInitError
+
 
 class LMDBManager:
     def __init__(self, db_path=None):
@@ -99,7 +101,24 @@ class LMDBManager:
             logging.error(f"Database initialization failed: {str(e)}")
             self.env.close()
             raise
-
+    def get(self, key, db=None):
+        """
+        Retrieve a value from LMDB by key.
+        
+        Args:
+            key (str): The key to retrieve.
+            db (lmdb._Database): Optional database to query (defaults to blocks_db).
+        
+        Returns:
+            dict: Deserialized data or None if not found.
+        """
+        try:
+            with self.env.begin(db=db or self.blocks_db) as txn:
+                value = txn.get(key.encode())
+                return json.loads(value.decode()) if value else None
+        except Exception as e:
+            logging.error(f"Failed to retrieve key {key}: {str(e)}")
+            return None
 
     def get_db_path(self, db_name):
         """Returns the path for the specified database"""

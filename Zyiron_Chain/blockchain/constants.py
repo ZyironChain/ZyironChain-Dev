@@ -61,6 +61,18 @@ class Constants:
     }
     UTXO_FLAG = UTXO_FLAGS[NETWORK]
 
+
+    LMDB_MAP_SIZE = 128  # 1 GB
+    
+    DATABASES = {
+        "block_metadata": "block_metadata",
+        "txindex": "txindex",
+        "utxo": "utxo"
+    }
+
+
+
+
     # 🔹 **Block Header Flags**
     BLOCK_HEADER_FLAGS = {
         "mainnet": "",

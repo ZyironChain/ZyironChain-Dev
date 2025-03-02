@@ -19,7 +19,7 @@ from decimal import Decimal
 import time
 import logging
 from Zyiron_Chain.blockchain.constants import Constants
-
+from Zyiron_Chain.transactions.tx import Transaction
 
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 from Zyiron_Chain.blockchain.block import Block
@@ -27,14 +27,9 @@ from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.blockchain.utils.hashing import Hashing 
 
-def _ensure_genesis_block(self):
-    from Zyiron_Chain.blockchain.block_manager import BlockManager
-    # rest of the code
-
-
 import threading
 
-
+from Zyiron_Chain.blockchain.blockchainerror import BlockchainInitError
 
 
 class Blockchain:
@@ -169,19 +164,58 @@ class Blockchain:
 
 
     def _load_chain_from_storage(self):
+        """Load blockchain from storage, using block.data offsets for full deserialization"""
         try:
-            stored_blocks = self.storage_manager.get_all_blocks()
-            for block_data in stored_blocks:
-                if not isinstance(block_data, dict):
-                    logging.error(f"[ERROR] ❌ Invalid block data type: {type(block_data)}")
-                    continue
-                block = Block.from_dict(block_data)
-                self.chain.append(block)
-            logging.info(f"✅ Successfully loaded {len(self.chain)} blocks from storage.")
+            # Get all block metadata from LMDB
+            stored_blocks_metadata = self.storage_manager.get_all_blocks()
+            
+            if not stored_blocks_metadata:
+                logging.info("[INFO] No existing blocks found in storage")
+                return
+
+            # Load blocks in order using data offsets
+            for block_metadata in sorted(stored_blocks_metadata, key=lambda b: b["header"]["index"]):
+                try:
+                    # Get storage location from metadata
+                    data_offset = block_metadata.get("data_offset")
+                    if data_offset is None:
+                        raise ValueError("Block metadata missing data_offset")
+
+                    # Load full block from block.data file
+                    block = self.storage_manager.get_block_from_data_file(data_offset)
+                    if block is None:
+                        raise ValueError("Failed to load block from data file")
+
+                    # Validate transactions are proper objects
+                    if not all(isinstance(tx, dict) for tx in block.transactions):
+                        raise TypeError("Block contains invalid transaction format")
+
+                    # Convert transactions to proper objects
+                    processed_transactions = []
+                    for tx_data in block.transactions:
+                        if tx_data.get("type") == "COINBASE":
+                            processed_transactions.append(CoinbaseTx.from_dict(tx_data))
+                        else:
+                            processed_transactions.append(Transaction.from_dict(tx_data))
+                    
+                    # Rebuild block with proper transactions
+                    block.transactions = processed_transactions
+                    self.chain.append(block)
+                    
+                    logging.info(f"[INFO] Loaded block {block.index} from storage")
+
+                except Exception as e:
+                    logging.error(f"[ERROR] Failed to load block {block_metadata.get('hash')}: {str(e)}")
+                    raise
+
+            logging.info(f"[INFO] Successfully loaded {len(self.chain)} blocks from storage")
+
         except Exception as e:
             logging.error(f"[ERROR] Chain loading failed: {str(e)}")
+            self.storage_manager.purge_chain()
             self.chain.clear()
             raise
+
 
             # In your Blockchain class
     def _create_genesis_block(self):
@@ -207,7 +241,7 @@ class Blockchain:
                 miner_address=miner_address,
                 reward=reward
             )
-            coinbase_tx.fee = Decimal("0")
+            coinbase_tx.fee = Decimal("0")  # Coinbase transactions have no fees
 
             # ✅ Use the actual system time for the Genesis block's timestamp
             genesis_timestamp = int(time.time())
@@ -218,13 +252,10 @@ class Blockchain:
                 previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
                 timestamp=genesis_timestamp,
-                nonce=0,
+                nonce=0,  # Start nonce at 0
                 difficulty=Constants.GENESIS_TARGET,
                 miner_address=miner_address
             )
-
-            # ✅ Compute double SHA3-384 hash for block integrity
-            genesis_block.hash = Hashing.double_sha3_384(genesis_block.calculate_hash().encode())
 
             # ✅ Mine the Genesis block (this updates nonce and block hash)
             self._mine_genesis_block(genesis_block)
@@ -244,12 +275,12 @@ class Blockchain:
             raise
 
 
-
     def _store_and_validate_genesis(self, genesis_block):
         """
         Stores the Genesis block and verifies its integrity.
         """
         try:
+            # ✅ Recalculate the block hash to ensure it matches the stored hash
             computed_hash = Hashing.double_sha3_384(genesis_block.calculate_hash().encode())
 
             if genesis_block.hash != computed_hash:
@@ -275,41 +306,49 @@ class Blockchain:
             raise
 
 
-
     def _mine_genesis_block(self, block=None):
-        """Mines the Genesis block with the correct SHA3-384 target difficulty using double hashing."""
+        """
+        Mines the Genesis block with the correct SHA3-384 target difficulty using double hashing.
+        Ensures the block hash has the required leading zeros.
+        """
         try:
             if block is None:
+                # ✅ Retrieve miner address
                 miner_address = self.key_manager.get_default_public_key(self.network, "miner")
                 if not miner_address:
                     raise ValueError("[ERROR] Failed to retrieve miner address for Genesis block.")
 
+                # ✅ Create the Coinbase transaction
                 coinbase_tx = CoinbaseTx(
                     block_height=0,
                     miner_address=miner_address,
                     reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
                 )
-                coinbase_tx.fee = Decimal("0")
+                coinbase_tx.fee = Decimal("0")  # Coinbase transactions have no fees
+
+                # ✅ Create the Genesis block
                 block = Block(
                     index=0,
                     previous_hash=Constants.ZERO_HASH,
                     transactions=[coinbase_tx],
                     timestamp=int(time.time()),
-                    nonce=0,
+                    nonce=0,  # Start nonce at 0
                     difficulty=Constants.GENESIS_TARGET,
-                    miner_address=miner_address  # Ensure miner address is included
+                    miner_address=miner_address
                 )
 
             logging.info("[INFO] ⛏️ Starting mining of Genesis block...")
             start_time = time.time()
             last_update = start_time
 
+            # Mine the Genesis block
             while int(block.hash, 16) >= block.difficulty:
-                block.header.nonce += 1
+                block.header.nonce += 1  # Increment the nonce in the block header
 
-                # ✅ Compute double SHA3-384 hash for Genesis block
+                # Compute double SHA3-384 hash for the Genesis block
                 block.hash = Hashing.double_sha3_384(block.calculate_hash().encode())
 
+                # Show live progress every second
                 current_time = time.time()
                 if current_time - last_update >= 1:
                     elapsed = int(current_time - start_time)
@@ -319,7 +358,7 @@ class Blockchain:
             logging.info(f"[INFO] ✅ Genesis block mined successfully with hash: {block.hash}")
 
             try:
-                # ✅ Ensure double SHA3-384 hash is stored correctly
+                # Store the Genesis block in the storage manager
                 self.storage_manager.store_block(block, Constants.GENESIS_TARGET)
                 logging.info("[INFO] ✅ Genesis block stored successfully.")
             except Exception as e:
@@ -331,19 +370,13 @@ class Blockchain:
             raise
 
 
-
-
-
-
-
-
-
     def _ensure_genesis_block(self):
         """
         Ensures the Genesis block exists, validating it against storage.
         If missing or corrupted, a new Genesis block is created, mined, and stored.
         """
         try:
+            # ✅ Check if the Genesis block already exists in storage
             stored_blocks = self.storage_manager.get_all_blocks()
             
             if stored_blocks:
@@ -398,8 +431,6 @@ class Blockchain:
             logging.info("⚡ Purging corrupted chain data...")
             self.storage_manager.purge_chain()
             raise
-
-
 
 
 
@@ -469,7 +500,27 @@ class Blockchain:
 
             raise
 
+    def _validate_genesis_block(self, genesis_block):
+        """
+        Validate the Genesis block by checking:
+        - The hash meets the difficulty target (leading zeros).
+        - The block has the correct index (0) and previous hash (Constants.ZERO_HASH).
+        """
+        try:
+            # Check block structure
+            if genesis_block.index != 0 or genesis_block.previous_hash != Constants.ZERO_HASH:
+                raise ValueError("[ERROR] ❌ Invalid Genesis block structure.")
 
+            # Check that the hash meets the difficulty target
+            if int(genesis_block.hash, 16) >= genesis_block.difficulty:
+                raise ValueError(f"[ERROR] ❌ Genesis block hash does not meet difficulty target: {genesis_block.hash}")
+
+            logging.info("[INFO] ✅ Genesis block validated successfully.")
+            return True
+
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Genesis block validation failed: {e}")
+            return False
 
 
     def _validate_block_structure(self, block: Block) -> bool:

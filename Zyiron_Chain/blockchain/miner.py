@@ -105,20 +105,22 @@ class Miner:
         """
         Proof-of-Work function using SHA3-384:
         - Mines the block by finding a nonce that meets the target difficulty.
-        - Periodically prints live mining status.
+        - Periodically prints live mining status with a live count of elapsed time every 5 seconds.
         - Returns the valid nonce and block hash.
         """
         nonce = 0
         last_update = start_time
         hash_attempts = 0
+        elapsed_seconds = 0  # Track elapsed time in seconds
 
         logging.info(f"[MINING] ⛏️ Starting Proof-of-Work for Block {block_height} on {self.network.upper()}...")
 
-        # ✅ Precompute static header data (excludes nonce)
+        # ✅ Precompute static header data (includes miner_address)
         static_header_data = (
             f"{block_header.version}{block_header.index}"
             f"{block_header.previous_hash}{block_header.merkle_root}"
             f"{block_header.timestamp}{block_header.difficulty}"
+            f"{block_header.miner_address}"  # Include miner_address
         ).encode()
 
         while True:
@@ -137,12 +139,13 @@ class Miner:
 
             nonce += 1
 
-            # ✅ Show live progress every 5 seconds
+            # ✅ Show live progress every 5 seconds with a live count
             current_time = time.time()
-            if current_time - last_update >= Constants.BLOCK_PROPAGATION_DELAY:  # ✅ Dynamic delay from Constants
-                elapsed = current_time - start_time
-                logging.info(f"[LIVE] ⏳ Block {block_height} | Nonce: {nonce} | Attempts: {hash_attempts} | Elapsed: {elapsed:.2f}s")
+            if current_time - last_update >= 5:  # Update every 5 seconds
+                elapsed_seconds = int(current_time - start_time)  # Calculate total elapsed time
+                logging.info(f"[LIVE] ⏳ Block {block_height} | Nonce: {nonce} | Attempts: {hash_attempts} | Elapsed: {elapsed_seconds}s")
                 last_update = current_time
+
 
     def _calculate_block_size(self):
         """
@@ -442,9 +445,7 @@ class Miner:
                     
                 if self.block_manager.chain:
                     print(f"[ERROR] ❌ Last valid block hash: {self.block_manager.chain[-1].hash[:12]}...")
-                    
                 break
-
 
 
 
@@ -539,16 +540,18 @@ class Miner:
 
 
 
-
     def mine_block(self, network=Constants.NETWORK):
         """
         Mines a new block with Proof-of-Work, dynamically adjusting difficulty,
         and prints live updates of the nonce and elapsed time.
-        Uses extraNonce (Bitcoin-style) to extend mining attempts.
         """
         from threading import Lock
         import time
         from decimal import Decimal
+        import json
+        import hashlib
+        import logging
+        from Zyiron_Chain.blockchain.constants import Constants
 
         mining_lock = Lock()
         valid_txs = []
@@ -645,8 +648,9 @@ class Miner:
                             new_block.hash = hashlib.sha3_384(header_data).hexdigest()
                             attempts += 1
 
+                            # Check if the hash meets the difficulty target (leading zeros)
                             if int(new_block.hash, 16) < new_block.difficulty:
-                                break
+                                break  # Valid hash found
 
                             new_block.nonce += 1
 

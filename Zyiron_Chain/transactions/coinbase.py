@@ -50,6 +50,13 @@ import time
 from typing import Dict
 
 
+import time
+from decimal import Decimal
+from typing import Dict
+import hashlib
+from Zyiron_Chain.blockchain.constants import Constants
+
+
 class CoinbaseTx:
     """Represents a block reward (coinbase) transaction"""
 
@@ -127,10 +134,7 @@ class CoinbaseTx:
             "fee": str(self.fee),      # <-- New field to ensure fee is present
             "hash": self.hash,
             "size": self.size
-    }
-
-
-
+        }
 
     @classmethod
     def from_dict(cls, data: Dict):

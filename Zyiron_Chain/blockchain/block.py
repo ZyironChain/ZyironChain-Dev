@@ -68,66 +68,74 @@ class Block:
         self.transactions = transactions
         self.miner_address = miner_address
         self.difficulty = difficulty or Constants.GENESIS_TARGET
-        self.nonce = nonce
+        self.nonce = nonce  # Ensure nonce is initialized
         self._merkle_root = None
         self.timestamp = int(timestamp or time.time())
 
-        # Initialize header with miner_address
+        # Initialize header with miner_address and nonce
         self.header = BlockHeader(
             version=Constants.VERSION,
             index=self.index,
             previous_hash=self.previous_hash,
             merkle_root=self.merkle_root,
             timestamp=self.timestamp,
-            nonce=self.nonce,
+            nonce=self.nonce,  # Pass nonce to the header
             difficulty=self.difficulty,
-            miner_address=self.miner_address  # Pass miner_address here
+            miner_address=self.miner_address
         )
         self.hash = self.calculate_hash()
 
+    def calculate_hash(self):
+        """Calculate the block's hash using SHA3-384."""
+        header_string = (
+            f"{self.header.version}{self.header.index}{self.header.previous_hash}"
+            f"{self.header.merkle_root}{self.header.timestamp}"
+            f"{self.header.nonce}{self.header.difficulty}"
+            f"{self.header.miner_address}"
+        ).encode()
+        return Hashing.double_sha3_384(header_string)
+
 
     def _adjust_difficulty(self):
-        """Ensure difficulty respects minimum and maximum limits from Constants"""
+        """Ensure difficulty respects network limits"""
         return max(min(self.difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
 
     @property
     def merkle_root(self):
         """Lazily computed Merkle root property"""
         if self._merkle_root is None:
             self._merkle_root = self._compute_merkle_root()
+            # Remove the validate_hash check since it doesn't exist
         return self._merkle_root
-
-
-
 
     def _compute_merkle_root(self):
         """Compute the Merkle root using double SHA3-384."""
         if not self.transactions:
             return Hashing.double_sha3_384(Constants.ZERO_HASH.encode())
 
-        tx_hashes = [Hashing.double_sha3_384(tx.tx_id.encode()) for tx in self.transactions]
+        tx_hashes = []
+        for tx in self.transactions:
+            if not hasattr(tx, 'tx_id') or not isinstance(tx.tx_id, str):
+                raise ValueError("Invalid transaction format for hashing")
+            tx_hashes.append(Hashing.double_sha3_384(tx.tx_id.encode()))
 
         while len(tx_hashes) > 1:
             if len(tx_hashes) % 2 != 0:
-                tx_hashes.append(tx_hashes[-1])  # ✅ Ensure even pairing
-
-            tx_hashes = [Hashing.double_sha3_384((tx_hashes[i] + tx_hashes[i + 1]).encode()) for i in range(0, len(tx_hashes), 2)]
+                tx_hashes.append(tx_hashes[-1])
+            
+            new_level = []
+            for i in range(0, len(tx_hashes), 2):
+                combined = tx_hashes[i] + tx_hashes[i+1]
+                new_level.append(Hashing.double_sha3_384(combined.encode()))
+            tx_hashes = new_level
 
         return tx_hashes[0]
 
 
 
 
-    def calculate_hash(self):
-        """
-        Calculate the block's hash using SHA3-384.
-        """
-        header_string = (
-            f"{self.header.version}{self.header.index}{self.header.previous_hash}"
-            f"{self.header.merkle_root}{self.header.timestamp}{self.header.nonce}{self.header.difficulty}"
-            f"{self.header.miner_address}"
-        ).encode()
-        return Hashing.double_sha3_384(header_string)
+
 
     def store_block(self):
         """
@@ -139,14 +147,15 @@ class Block:
         difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
         poc.store_block(self, difficulty)
 
+
     def to_dict(self):
         """Convert Block into a serializable dictionary."""
         return {
             "index": self.index,
             "previous_hash": self.previous_hash,
-            "transactions": [tx.to_dict() for tx in self.transactions],
+            "transactions": [self._serialize_transaction(tx) for tx in self.transactions],
             "timestamp": self.timestamp,
-            "nonce": self.nonce,  # ✅ Ensure nonce is explicitly stored
+            "nonce": self.nonce,
             "difficulty": self.difficulty,
             "miner_address": self.miner_address,
             "hash": self.hash,
@@ -154,38 +163,60 @@ class Block:
             "header": self.header.to_dict()
         }
 
+    def _serialize_transaction(self, tx):
+        """Validate and serialize transaction data"""
+        if not isinstance(tx, (Transaction, CoinbaseTx)):
+            raise TypeError(f"Invalid transaction type: {type(tx)}")
+        return tx.to_dict()
+    
     @classmethod
     def from_dict(cls, data: dict):
-        """Create a Block from stored dictionary data"""
+        """Deserialization with enhanced validation"""
         try:
+            # Validate header structure
+            header_data = data['header']
+            required_header_fields = ['index', 'previous_hash', 'timestamp', 'nonce']
+            if any(f not in header_data for f in required_header_fields):
+                missing = [f for f in required_header_fields if f not in header_data]
+                raise ValueError(f"Missing header fields: {missing}")
+
+            # Process transactions
             transactions = []
-            for tx_data in data.get('transactions', []):
-                if isinstance(tx_data, dict):
-                    if tx_data.get('type') == 'COINBASE':
+            for idx, tx_data in enumerate(data.get('transactions', [])):
+                if not isinstance(tx_data, dict):
+                    raise TypeError(f"Transaction {idx} must be dict, got {type(tx_data)}")
+                
+                tx_type = tx_data.get('type')
+                try:
+                    if tx_type == 'COINBASE':
                         transactions.append(CoinbaseTx.from_dict(tx_data))
                     else:
                         transactions.append(Transaction.from_dict(tx_data))
-                else:
-                    raise ValueError(f"Invalid transaction data type: {type(tx_data)}")
+                except Exception as e:
+                    raise ValueError(f"Invalid transaction {idx}: {str(e)}") from e
 
-            header_data = data['header']
             return cls(
                 index=header_data['index'],
                 previous_hash=header_data['previous_hash'],
                 transactions=transactions,
-                timestamp=header_data.get('timestamp'),
+                timestamp=header_data['timestamp'],
                 nonce=header_data['nonce'],
                 difficulty=header_data.get('difficulty', Constants.GENESIS_TARGET),
                 miner_address=data.get('miner_address')
             )
         except KeyError as e:
-            raise ValueError(f"[ERROR] ❌ Missing required field in block data: {str(e)}")
+            raise ValueError(f"Missing required field: {str(e)}") from e
+
+
         
     @property
     def is_coinbase(self, tx_index=0) -> bool:
-        """Check if transaction is coinbase"""
+        """Validate coinbase transaction"""
+        if not self.transactions:
+            return False
         return isinstance(self.transactions[tx_index], CoinbaseTx)
-
+    
+    
     def validate_transactions(self, fee_model, mempool, block_size):
         """
         Validate all transactions in the block, ensuring:
