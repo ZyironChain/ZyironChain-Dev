@@ -9,21 +9,39 @@ dist/
 *.egg
 *.egg-info/
 
-# Ignore the Keys directory containing sensitive key files
+# Ignore compiled Python files
+**/__pycache__/
+*.pyc
+
+# Ignore sensitive key files
 Keys/
+Keys/*.json
 
-# Ignore .mdb files (for large databases)
+# Ignore large database files
 *.mdb
-
-# Ignore SQLite and other database files
+*.lmdb
 *.sqlite
+*.db
+*.json
+blockchain_storage/
 ZYCDB/
 
-# Ignore files related to kc package
-kc.egg-info/
+# Ignore Git metadata files
+.git/
 
-# Ignore pycache files
-**/__pycache__/
+# Ignore logs
+logs/
+*.log
 
-# Ignore tinydb.json file
+# Ignore frontend build files
+frontend/node_modules/
+frontend/dist/
+
+# Ignore temporary files
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Ignore TinyDB database files
 tinydb.json
