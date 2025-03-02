@@ -106,8 +106,6 @@ class SendZYC:
             return inputs, total_input
 
 
-
-
     def prepare_tx_out(self, recipient, amount, change_address, change_amount):
         """
         Prepare transaction outputs for the recipient and change.
@@ -307,5 +305,3 @@ class SendZYC:
             except Exception as e:
                 logging.error(f"[ERROR] Failed to sign transaction {transaction.tx_id}: {e}")
                 raise ValueError(f"Transaction signing error: {e}")
-
-

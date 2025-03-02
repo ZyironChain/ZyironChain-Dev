@@ -33,7 +33,7 @@ from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 import importlib
 
 
-from Zyiron_Chain.blockchain.utils.hashing import sha3_384_hash
+
 
 
 def get_poc():
@@ -47,6 +47,8 @@ if TYPE_CHECKING:
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
     from Zyiron_Chain.transactions.fees import FundsAllocator
 
+
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
 class Transaction:
     """Represents a standard blockchain transaction"""
 
@@ -93,7 +95,7 @@ class Transaction:
         self.hash = self.calculate_hash()
 
         # Store PoC reference for blockchain interactions
-        self.poc = poc if poc else get_poc()
+        self.poc = poc if poc else PoC()
 
         # Compute transaction size
         self.size = self._calculate_size()
@@ -118,13 +120,13 @@ class Transaction:
         prefix = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [""])[0]
         # Include timestamp and a random element to ensure uniqueness.
         tx_data = f"{prefix}{self.timestamp}{hashlib.sha3_384(str(time.time()).encode()).hexdigest()}"
-        return hashlib.sha3_384(tx_data.encode()).hexdigest()[:24]
+        return Hashing.hash(tx_data.encode())  # Use Hashing.hash here
 
     def _get_default_utxo_manager(self):
         """Retrieve the default UTXO manager instance dynamically using Constants."""
         from Zyiron_Chain.transactions.utxo_manager import UTXOManager
-        from Zyiron_Chain.database.poc import PoC
-        db_type = Constants.DATABASES.get("utxo", "SQLite")
+        # Use LMDB for UTXO storage as defined in Constants
+        db_type = Constants.DATABASES.get("utxo", "LMDB")  # Default to LMDB instead of SQLite
         return UTXOManager(PoC(storage_type=db_type))  # PoC now accepts storage_type
 
     @classmethod
@@ -218,6 +220,7 @@ class Transaction:
         logging.info(f"[TRANSACTION] ✅ Validated {len(validated_outputs)} transaction outputs successfully.")
         return validated_outputs
 
+
     def _calculate_fee(self) -> Decimal:
         """Calculate transaction fee using FeeModel, ensuring it meets the required minimum fee."""
         try:
@@ -273,7 +276,9 @@ class Transaction:
             input_data = "".join(f"{i.tx_out_id}" for i in self.inputs)
             output_data = "".join(f"{o.script_pub_key}{o.amount}" for o in self.outputs)
             tx_string = f"{self.tx_id}{self.timestamp}{input_data}{output_data}"
-            tx_hash = hashlib.sha3_384(tx_string.encode()).hexdigest()
+
+            # Use Hashing.hash instead of sha3_384_hash
+            tx_hash = Hashing.hash(tx_string.encode())
             logging.info(f"[TRANSACTION] Computed transaction hash: {tx_hash[:24]}...")
             return tx_hash
         except Exception as e:
@@ -299,18 +304,23 @@ class Transaction:
             logging.warning(f"[WARNING] No valid scriptPubKey found for {recipient_address}, defaulting to recipient address.")
             return recipient_address
 
+
     def to_dict(self) -> Dict:
         """Serialize Transaction to a dictionary, ensuring proper data formatting."""
         return {
             "tx_id": self.tx_id,
-            "inputs": [inp.to_dict() if isinstance(inp, TransactionIn) else inp for inp in self.inputs],
-            "outputs": [out.to_dict() if isinstance(out, TransactionOut) else out for out in self.outputs],
+            "inputs": [inp.to_dict() if hasattr(inp, "to_dict") else inp for inp in self.inputs],
+            "outputs": [out.to_dict() if hasattr(out, "to_dict") else out for out in self.outputs],
             "timestamp": round(self.timestamp, 6),
-            "type": self.type,  # Already a string
-            "fee": str(self.fee),
+            "type": self.type,         # Original field (for backward compatibility)
+            "tx_type": self.type,      # <-- New field required by the binary serializer
+            "fee": str(self.fee),       # <-- New field to ensure fee is present
             "size": self.size,
             "hash": self.hash
         }
+
+
+
 
     def store_transaction(self):
         """
@@ -322,6 +332,7 @@ class Transaction:
             logging.info(f"[INFO] ✅ Transaction {self.tx_id} stored successfully in {storage_type}.")
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to store transaction {self.tx_id}: {e}")
+
 
     def store_utxo(self):
         """

@@ -18,6 +18,10 @@ from decimal import Decimal
 from hashlib import sha3_384
 from Zyiron_Chain.blockchain.constants import Constants
 
+import logging
+from typing import Dict
+from Zyiron_Chain.blockchain.constants import Constants
+
 class TransactionIn:
     """
     Represents a transaction input, referencing a previous UTXO.
@@ -35,7 +39,7 @@ class TransactionIn:
         if not isinstance(script_sig, str) or not script_sig.strip():
             raise ValueError("[ERROR] script_sig must be a non-empty string.")
 
-        # ✅ Enforce consistent transaction ID format (fallback to ZERO_HASH if needed)
+        # Enforce consistent transaction input format (fallback to ZERO_HASH if needed)
         self.tx_out_id = tx_out_id.strip() if tx_out_id.strip() else Constants.ZERO_HASH
         self.script_sig = script_sig.strip()
 
@@ -63,26 +67,22 @@ class TransactionIn:
         if not isinstance(data, dict):
             raise TypeError("[ERROR] Input data must be a dictionary.")
 
-        # ✅ Validate required fields
+        # Validate required fields
         required_fields = ["tx_out_id", "script_sig"]
         missing_fields = [field for field in required_fields if field not in data]
-
         if missing_fields:
             raise KeyError(f"[ERROR] Missing required fields: {', '.join(missing_fields)}")
 
         tx_out_id = data.get("tx_out_id", "").strip()
         script_sig = data.get("script_sig", "").strip()
 
-        # ✅ Ensure transaction ID follows proper structure
         if not tx_out_id:
             logging.warning("[WARNING] tx_out_id missing, using ZERO_HASH as fallback.")
             tx_out_id = Constants.ZERO_HASH
-
         if not script_sig:
             raise ValueError("[ERROR] script_sig must be a non-empty string.")
 
         logging.info(f"[TRANSACTION INPUT] ✅ Parsed TransactionIn from dict: tx_out_id={tx_out_id}")
-
         return cls(tx_out_id=tx_out_id, script_sig=script_sig)
 
     def validate(self) -> bool:
@@ -91,17 +91,18 @@ class TransactionIn:
         
         :return: True if the input is valid, False otherwise.
         """
-        # ✅ Ensure tx_out_id is a valid string and not the ZERO_HASH (unless it's Coinbase)
-        if not self.tx_out_id or not isinstance(self.tx_out_id, str) or (self.tx_out_id == Constants.ZERO_HASH and self.script_sig != "COINBASE"):
+        # Ensure tx_out_id is a valid string and not the ZERO_HASH (unless it's for a coinbase transaction)
+        if not self.tx_out_id or not isinstance(self.tx_out_id, str) or \
+           (self.tx_out_id == Constants.ZERO_HASH and self.script_sig != "COINBASE"):
             logging.error(f"[VALIDATION ERROR] ❌ Invalid tx_out_id: {self.tx_out_id}")
             return False
-        
-        # ✅ Ensure script_sig follows proper security constraints
+
+        # Ensure script_sig follows proper security constraints (e.g., valid SHA3-384 hash format)
         if not self.script_sig or not isinstance(self.script_sig, str):
             logging.error(f"[VALIDATION ERROR] ❌ Invalid script_sig: {self.script_sig}")
             return False
 
-        # ✅ Ensure script_sig is a valid SHA3-384 hash (mock verification)
+        # For our purposes, we assume a valid SHA3-384 hash is 96 lowercase hexadecimal characters
         if len(self.script_sig) != 96 or not all(c in "0123456789abcdef" for c in self.script_sig.lower()):
             logging.error(f"[VALIDATION ERROR] ❌ Invalid script_sig format: {self.script_sig}")
             return False

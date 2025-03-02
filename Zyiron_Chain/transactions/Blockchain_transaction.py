@@ -43,7 +43,7 @@ from typing import List, Dict
     
 from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
-from Zyiron_Chain.blockchain.utils.hashing import sha3_384_hash
+
 
 import time
 import logging
@@ -108,9 +108,9 @@ class TransactionFactory:
             logging.warning(f"[WARN] Transaction fee too low ({fee}). Adjusting to minimum: {Constants.MIN_TRANSACTION_FEE}")
             fee = Constants.MIN_TRANSACTION_FEE
 
-        # Generate a unique transaction ID using SHA3-384 hashing
+        # Generate a unique transaction ID using SHA3-384 double hash (following the new rule)
         base_data = f"{prefix}{','.join(str(i['amount']) for i in inputs)}{str(time())}"
-        tx_id = sha3_384(base_data.encode()).hexdigest()[:64]  # Proper hashing
+        tx_id = sha3_384(sha3_384(base_data.encode()).hexdigest().encode()).hexdigest()[:64]  # Double hash for tx_id
 
         # Create the transaction object with validated inputs and outputs
         transaction = Transaction(

@@ -32,7 +32,7 @@ class UTXOManager:
         :param peer_id: Unique identifier for the peer.
         """
         self.peer_id = peer_id
-        self.lmdb = LMDBManager("utxo_{peer_id}.lmdb")  # ✅ Each peer has its own LMDB storage
+        self.lmdb = LMDBManager(f"utxo_{peer_id}.lmdb")  # ✅ Each peer has its own LMDB storage
         self._cache = {}  # ✅ Local cache for fast access
 
     def register_utxo(self, tx_out: TransactionOut):
@@ -86,8 +86,6 @@ class UTXOManager:
         self.lmdb.delete(tx_out_id)  # ✅ Remove from LMDB
         logging.info(f"[UTXO MANAGER] ❌ UTXO {tx_out_id} deleted from peer {self.peer_id}'s LMDB.")
 
-
-
     def convert_to_standard_transaction(self, tx_id, new_payment_type=None):
         """
         Convert a confirmed transaction into a Standard transaction by default.
@@ -125,8 +123,6 @@ class UTXOManager:
             logging.info(f"[INFO] Transaction {tx_id} converted from {original_type} to {utxo_data['transaction_type']}.")
 
         return utxo_data["transaction_type"]
-
-
 
     def update_from_block(self, block: Dict):
         """Update UTXO set from block transactions, ensuring proper validation."""
@@ -170,7 +166,6 @@ class UTXOManager:
 
         self.lmdb.delete(tx_out_id)  # ✅ Use LMDB for decentralized storage
         logging.info(f"[UTXO MANAGER] ❌ Consumed UTXO: {tx_out_id} from LMDB.")
-
 
     def lock_utxo(self, tx_out_id: str):
         """Lock UTXO for transaction processing, ensuring LMDB consistency."""

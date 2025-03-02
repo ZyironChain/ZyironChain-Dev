@@ -95,7 +95,6 @@ class FeeModel:
 
     def _generate_interpolated_thresholds(self):
         """Generate congestion thresholds dynamically for block sizes 1-10 using linear interpolation."""
-        # Use any necessary imports here
         base_thresholds = {
             1: {"STANDARD": [12000, 60000], "SMART": [6000, 30000], "INSTANT": [3000, 15000]},
             5: {"STANDARD": [60000, 300000], "SMART": [30000, 150000], "INSTANT": [15000, 75000]},
@@ -122,55 +121,23 @@ class FeeModel:
         """Perform linear interpolation to estimate congestion thresholds."""
         return y1 + (y2 - y1) * ((x - x1) / (x2 - x1))
 
-    def _generate_interpolated_thresholds(self):
-        """Generate congestion thresholds dynamically for block sizes 1-10 using linear interpolation."""
-        base_thresholds = {
-            1: {"STANDARD": [12000, 60000], "SMART": [6000, 30000], "INSTANT": [3000, 15000]},
-            5: {"STANDARD": [60000, 300000], "SMART": [30000, 150000], "INSTANT": [15000, 75000]},
-            10: {"STANDARD": [120000, 600000], "SMART": [60000, 300000], "INSTANT": [30000, 150000]},
-        }
-
-        # ✅ Generate interpolated congestion thresholds for block sizes 2-4 and 6-9
-        interpolated_thresholds = {}
-        for block_size in range(1, 11):
-            if block_size in base_thresholds:
-                interpolated_thresholds[block_size] = base_thresholds[block_size]
-            else:
-                # ✅ Determine the closest base sizes (1-5 or 5-10)
-                x1, x2 = (1, 5) if block_size < 5 else (5, 10)
-
-                # ✅ Interpolate values for each transaction type
-                interpolated_thresholds[block_size] = {
-                    tx_type: [
-                        round(self._interpolate(block_size, x1, base_thresholds[x1][tx_type][0], x2, base_thresholds[x2][tx_type][0])),
-                        round(self._interpolate(block_size, x1, base_thresholds[x1][tx_type][1], x2, base_thresholds[x2][tx_type][1])),
-                    ]
-                    for tx_type in ["STANDARD", "SMART", "INSTANT"]
-                }
-
-        return interpolated_thresholds
-
     def get_congestion_level(self, block_size, payment_type, amount):
         """Determine congestion level based on block size, payment type, and transaction amount."""
         if isinstance(payment_type, TransactionType):
             payment_type = payment_type.name.upper()
 
-        # ✅ Ensure block size is within valid range
         if not (1 <= block_size <= 10):
             raise ValueError(f"[ERROR] Unsupported block size: {block_size}. Must be between 1MB and 10MB.")
 
-        # ✅ Ensure valid payment type
         valid_payment_types = ["STANDARD", "SMART", "INSTANT", "COINBASE"]
         if payment_type not in valid_payment_types:
             raise ValueError(f"[ERROR] Unsupported payment type: {payment_type}")
 
-        # ✅ Retrieve congestion thresholds
         thresholds = self.congestion_thresholds.get(block_size, {}).get(payment_type, [])
 
         if not thresholds:
             raise KeyError(f"[ERROR] No congestion thresholds for {payment_type} at block size {block_size}")
 
-        # ✅ Determine congestion level
         if amount < thresholds[0]:
             return "LOW"
         elif thresholds[0] <= amount <= thresholds[1]:
@@ -185,12 +152,10 @@ class FeeModel:
         congestion_level = self.get_congestion_level(block_size, payment_type, amount)
         base_fee = self.calculate_fee(block_size, payment_type, amount, tx_size)
 
-        # ✅ Ensure valid tax rate
         tax_rate = self.tax_rates.get(congestion_level, Decimal("0"))
         tax_fee = base_fee * tax_rate
         miner_fee = base_fee - tax_fee
 
-        # ✅ Allocate tax funds
         allocation = self.allocator.allocate(tax_fee)
 
         return {
@@ -209,7 +174,6 @@ class FeeModel:
         congestion_level = self.get_congestion_level(block_size, payment_type, amount)
         base_fee_percentage = self.fee_percentages[congestion_level].get(payment_type, Decimal("0"))
 
-        # ✅ Base fee calculation
         base_fee = max(Decimal(Constants.MIN_TRANSACTION_FEE), base_fee_percentage * Decimal(tx_size))
 
         return base_fee
@@ -221,5 +185,4 @@ class FeeModel:
 
         fee = input_total - output_total
 
-        # ✅ Prevent negative fees
         return max(Decimal(Constants.MIN_TRANSACTION_FEE), fee)

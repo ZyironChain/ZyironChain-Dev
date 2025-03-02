@@ -65,10 +65,10 @@ class Wallet:
         """
         if network == "testnet":
             public_key = self.testnet_public_key
-            prefix = "KCT"
+            prefix = "ZYT"
         elif network == "mainnet":
             public_key = self.mainnet_public_key
-            prefix = "KYC"
+            prefix = "ZYC"
         else:
             raise ValueError("Invalid network. Choose 'testnet' or 'mainnet'.")
 

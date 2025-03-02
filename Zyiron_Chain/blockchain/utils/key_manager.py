@@ -96,27 +96,12 @@ class KeyManager:
             json.dump(self.keys, file, indent=4)
         print(colored(f"Keys saved to {self.key_file}.", "green"))
 
-    def _auto_set_network_defaults(self):
-        """
-        Auto-set the default key for the currently active network.
-        This ensures that the correct key is used when switching networks dynamically.
-        """
-        if not self.keys[self.network]["defaults"]:
-            logging.info(f"[AUTO-SET] No default keys found for {self.network}. Generating new batch...")
-            self.add_key_batch(self.network)
-        else:
-            logging.info(f"[AUTO-SET] Default keys are already set for {self.network}.")
+
 
     def get_default_public_key(self, network=None, role="miner"):
         """
         Retrieve the default public key for the given network and role.
-        
-        :param network: (Optional) Network name (e.g., 'mainnet' or 'testnet'). 
-                        If not provided, uses the active network (self.network).
-        :param role: Role of the key (e.g., 'miner', 'validator').
-        :return: The hashed public key (scriptPubKey).
         """
-        # Use provided network if available, otherwise default to self.network
         network = network or self.network
 
         # Ensure the role exists in the specified network's defaults

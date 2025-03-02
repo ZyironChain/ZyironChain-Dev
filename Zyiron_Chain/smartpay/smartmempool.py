@@ -31,24 +31,21 @@ class SmartMempool:
     def __init__(self, peer_id: str = None, max_size_mb=None):
         """
         Initialize the Smart Mempool.
-
-        :param peer_id: Unique peer identifier for LMDB storage. Defaults to PeerConstants.PEER_USER_ID.
-        :param max_size_mb: Optional size override in megabytes.
         """
-        # Use PeerConstants.PEER_USER_ID if peer_id is not provided
         self.peer_id = peer_id if peer_id is not None else f"peer_{PeerConstants.PEER_USER_ID}"
-        
         self.transactions = {}  # In-memory transaction tracking
         self.lock = Lock()  # Handle concurrency
-        
+
         # Allow size override while maintaining Constants default
         self.max_size_mb = max_size_mb if max_size_mb is not None else Constants.MEMPOOL_MAX_SIZE_MB
         self.max_size_bytes = self.max_size_mb * 1024 * 1024  # Convert MB to bytes
-        
+
         self.current_size_bytes = 0  # Track current memory usage
         self.confirmation_blocks = Constants.SMART_MEMPOOL_PRIORITY_BLOCKS  # Dynamic confirmation window
-        self.lmdb = LMDBManager(f"smart_mempool_{self.peer_id}.lmdb")  # Each peer has its own LMDB storage
-        
+
+        # Set the correct path for the smart_mempool LMDB database
+        self.lmdb = LMDBManager(f"./blockchain_storage/BlockData/smart_mempool_{self.peer_id}.lmdb")  # Correct path
+
         logging.info(f"[MEMPOOL] Initialized Smart Mempool with max size {self.max_size_mb} MB and peer_id {self.peer_id}")
 
     def add_transaction(self, transaction: SmartTransaction, current_block_height: int):
@@ -95,11 +92,12 @@ class SmartMempool:
             }
             self.current_size_bytes += transaction_size
 
-            # ✅ Persist to LMDB
+            # ✅ Persist to LMDB (Ensure it's stored in the correct database)
             self.lmdb.put(transaction.tx_id, transaction.to_dict())
 
             logging.info(f"[INFO] Smart Transaction {transaction.tx_id} added to the mempool.")
             return True
+
 
     def evict_transactions(self, size_needed: int):
         """
@@ -112,7 +110,8 @@ class SmartMempool:
 
             while self.current_size_bytes + size_needed > self.max_size_bytes and sorted_txs:
                 tx_id, tx_data = sorted_txs.pop(0)
-            self.remove_transaction(tx_id, reason="Low Priority Eviction")
+                self.remove_transaction(tx_id, reason="Low Priority Eviction")
+
 
     def get_pending_transactions(self, block_size_mb: float, current_block_height: int):
         """
@@ -150,6 +149,7 @@ class SmartMempool:
 
             return selected_txs
 
+
     def remove_transaction(self, tx_id: str, reason: str = "Manual Removal"):
         """
         Remove a transaction from the mempool and LMDB storage.
@@ -167,6 +167,7 @@ class SmartMempool:
             self.lmdb.delete(tx_id)
 
             logging.info(f"[INFO] Smart Transaction {tx_id} removed from the mempool. Reason: {reason}")
+
 
     def track_inclusion(self, tx_id: str, block_height: int):
         """

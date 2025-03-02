@@ -7,40 +7,32 @@ import re
 import hashlib
 import time
 from Zyiron_Chain.blockchain.constants import Constants  # ✅ Import latest constants
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
+
+
+import re
+import time
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
+
 
 class BlockHeader:
-    _HASH_PATTERN: re.Pattern = re.compile(r'^[a-fA-F0-9]{96}$')  # ✅ Ensures SHA3-384 96-character hex
+    _HASH_PATTERN: re.Pattern = re.compile(r'^[a-fA-F0-9]{96}$')  # Ensures SHA3-384 hash format
 
-    def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce, difficulty):
+    def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce, difficulty, miner_address):
         """
-        Initialize a BlockHeader.
-        :param version: The block version (from Constants).
-        :param index: The block index.
-        :param previous_hash: The hash of the previous block.
-        :param merkle_root: The Merkle root of the transactions.
-        :param timestamp: The block creation timestamp.
-        :param nonce: The nonce used for mining.
-        :param difficulty: The mining difficulty.
+        Initialize a BlockHeader with all required fields.
         """
-        self.version = Constants.VERSION  # ✅ Always set to current blockchain version
+        self.version = version
         self.index = index
         self.previous_hash = previous_hash
         self.merkle_root = merkle_root
-
-        # ✅ Enforce proper timestamp validation
-        self.timestamp = int(timestamp if timestamp else time.time())
-
-        # ✅ Ensure difficulty is within predefined limits
-        self.difficulty = self._adjust_difficulty(difficulty)
-
+        self.timestamp = timestamp
         self.nonce = nonce
-
-    def _adjust_difficulty(self, difficulty):
-        """Ensure difficulty is within predefined min/max from Constants."""
-        return max(min(difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+        self.difficulty = self._adjust_difficulty(difficulty)  # Ensure difficulty is within bounds
+        self.miner_address = miner_address  # Miner's address is stored
 
     def to_dict(self):
-        """Convert BlockHeader into a dictionary."""
         return {
             "version": self.version,
             "index": self.index,
@@ -48,89 +40,106 @@ class BlockHeader:
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
-            "difficulty": self.difficulty
+            "difficulty": self.difficulty,
+            "miner_address": self.miner_address
         }
 
     @classmethod
     def from_dict(cls, data):
-        """
-        Create a BlockHeader instance from a dictionary.
-        :param data: Dictionary representation of a block header.
-        :return: BlockHeader instance.
-        """
         return cls(
-            version=data.get("version", Constants.VERSION),  # ✅ Fallback to latest version
+            version=data.get("version", Constants.VERSION),
             index=data["index"],
             previous_hash=data["previous_hash"],
             merkle_root=data["merkle_root"],
             timestamp=data["timestamp"],
             nonce=data["nonce"],
-            difficulty=data.get("difficulty", Constants.GENESIS_TARGET)  # ✅ Ensure difficulty exists
+            difficulty=data.get("difficulty", Constants.GENESIS_TARGET),
+            miner_address=data.get("miner_address", "Unknown")
         )
 
+
+
+
+
+
+
+    def _adjust_difficulty(self, difficulty):
+        """
+        Ensure difficulty is within predefined min/max from Constants.
+        """
+        return max(min(difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
     def calculate_hash(self):
         """
-        Calculates the SHA3-384 hash of the block header.
+        Calculate the block header's double SHA3-384 hash.
         """
         header_string = (
             f"{self.version}{self.index}{self.previous_hash}"
             f"{self.merkle_root}{self.timestamp}{self.nonce}{self.difficulty}"
-        )
-        return hashlib.sha3_384(header_string.encode()).hexdigest()
+        ).encode()
+        return Hashing.double_sha3_384(header_string)
 
     @property
     def hash_block(self):
         """
-        Returns the hash of the block header.
+        Returns the hash of the block header (double SHA3-384).
         """
         return self.calculate_hash()
 
     def validate(self):
         """
-        Comprehensive header validation with precise checks
+        Comprehensive header validation, with precise checks for version, index, timestamps, etc.
         """
         validation_errors = []
-        
-        # ✅ Validate version
-        if not isinstance(self.version, str) or self.version != Constants.VERSION:
-            validation_errors.append(f"Invalid version: Must match Constants.VERSION ({Constants.VERSION})")
 
-        # ✅ Validate index
+        # Validate version
+        if not isinstance(self.version, str) or self.version != Constants.VERSION:
+            validation_errors.append(f"Invalid version: must match Constants.VERSION ({Constants.VERSION})")
+
+        # Validate index
         if not isinstance(self.index, int) or self.index < 0:
-            validation_errors.append("Invalid index: Must be non-negative integer")
-        
-        # ✅ Validate hashes using class-level pattern
+            validation_errors.append("Invalid index: must be a non-negative integer")
+
+        # Validate hashes using class-level pattern
         if not self._HASH_PATTERN.fullmatch(str(self.previous_hash)):
-            validation_errors.append("Invalid previous_hash: 96-character hex required")
+            validation_errors.append("Invalid previous_hash: must be 96-char hex for SHA3-384")
         if not self._HASH_PATTERN.fullmatch(str(self.merkle_root)):
-            validation_errors.append("Invalid merkle_root: 96-character hex required")
-        
-        # ✅ Validate timestamp
-        max_time_drift = Constants.CONFIRMATION_RULES["maximum_timestamp_drift"]  # ✅ Dynamic max drift
+            validation_errors.append("Invalid merkle_root: must be 96-char hex for SHA3-384")
+
+        # Validate timestamp
+        max_time_drift = Constants.TRANSACTION_CONFIRMATIONS.get("maximum_timestamp_drift", 7200)  # Default: 2 hours
         current_time = time.time()
         try:
             ts = float(self.timestamp)
             if not (current_time - max_time_drift <= ts <= current_time + max_time_drift):
-                validation_errors.append(f"Invalid timestamp: Drift exceeds {max_time_drift // 3600} hours (value: {ts})")
+                validation_errors.append(
+                    f"Invalid timestamp: drift exceeds {max_time_drift // 3600} hours (value: {ts})"
+                )
         except (TypeError, ValueError):
-            validation_errors.append("Invalid timestamp format: Must be numeric")
-        
-        # ✅ Validate mining parameters
+            validation_errors.append("Invalid timestamp format: must be numeric")
+
+        # Validate nonce
         if not isinstance(self.nonce, int) or self.nonce < 0:
-            validation_errors.append("Invalid nonce: Must be non-negative integer")
+            validation_errors.append("Invalid nonce: must be a non-negative integer")
+
+        # Validate difficulty
         if not isinstance(self.difficulty, int) or self.difficulty < Constants.MIN_DIFFICULTY:
-            validation_errors.append(f"Invalid difficulty: Must be ≥ {Constants.MIN_DIFFICULTY}")
+            validation_errors.append(f"Invalid difficulty: must be >= {Constants.MIN_DIFFICULTY}")
+
+        # Validate miner address
+        if not isinstance(self.miner_address, str) or not self.miner_address.strip():
+            validation_errors.append("Invalid miner_address: must be a non-empty string")
 
         if validation_errors:
             raise ValueError("BlockHeader validation failed:\n- " + "\n- ".join(validation_errors))
 
     def __repr__(self):
         """
-        Debug-friendly representation
+        Debug-friendly representation.
         """
         return (
             f"BlockHeader(version={self.version}, index={self.index}, "
             f"previous_hash={self.previous_hash[:10]}..., "
             f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, "
-            f"timestamp={self.timestamp}, difficulty={hex(self.difficulty)})"
+            f"timestamp={self.timestamp}, difficulty={hex(self.difficulty)}, "
+            f"miner_address={self.miner_address})"
         )

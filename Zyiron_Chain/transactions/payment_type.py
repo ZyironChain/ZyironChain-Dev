@@ -12,7 +12,7 @@ class PaymentTypeManager:
     """Manages transaction type configurations dynamically using Constants"""
 
     def __init__(self):
-        # Remove self.Constants entirely
+        # The TYPE_CONFIG is dynamically populated using Constants
         self.TYPE_CONFIG = {
             TransactionType.STANDARD: {
                 "description": "Standard peer-to-peer transactions"
@@ -33,9 +33,9 @@ class PaymentTypeManager:
         if not tx_id:
             return TransactionType.STANDARD  # Default to STANDARD
 
-        # Use the Constants class directly
+        # Dynamically check the prefixes using Constants
         for tx_type, config in self.TYPE_CONFIG.items():
-            prefixes = Constants.TRANSACTION_MEMPOOL_MAP[tx_type.name]["prefixes"]  # ✅ Use Constants directly
+            prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("prefixes", [])
             if any(tx_id.startswith(prefix) for prefix in prefixes):
                 return tx_type
 

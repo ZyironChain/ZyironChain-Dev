@@ -16,10 +16,24 @@ if TYPE_CHECKING:
 
 
 
+from enum import Enum, auto
+
 class TransactionType(Enum):
-    """Defines all supported transaction types"""
+    """Defines all supported transaction types."""
     STANDARD = auto()  # Regular peer-to-peer transactions
     SMART = auto()     # Smart contract transactions
     INSTANT = auto()   # Instant settlement transactions
     COINBASE = auto()  # Block reward transactions
 
+    @property
+    def name(self):
+        """Return the name of the transaction type."""
+        return self.name.upper()
+
+    @classmethod
+    def from_str(cls, value: str):
+        """Convert a string to a TransactionType Enum."""
+        try:
+            return cls[value.upper()]
+        except KeyError:
+            raise ValueError(f"[ERROR] Invalid transaction type: {value}.")

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
     from Zyiron_Chain.transactions.fees import FundsAllocator
 
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
 
 
 class TransactionManager:
@@ -87,13 +88,15 @@ class TransactionManager:
         else:
             raise ValueError(f"Invalid mempool type: {mempool_type}")
 
+
     def store_transaction_in_mempool(self, transaction):
         """
         Store a transaction in the appropriate mempool, validating type and routing accordingly.
         """
         try:
-            # ✅ Ensure transaction ID has the correct network prefix
-            if not transaction.tx_id.startswith(Constants.ADDRESS_PREFIX):
+            # ✅ Ensure transaction ID has the correct network prefix using double hashing
+            hashed_tx_id = Hashing.double_sha3_384(transaction.tx_id.encode())  # Ensure double hashing
+            if not hashed_tx_id.startswith(Constants.ADDRESS_PREFIX):
                 logging.error(
                     f"[ERROR] Transaction {transaction.tx_id} has an invalid address prefix for {self.network}. "
                     f"Expected: {Constants.ADDRESS_PREFIX}"
@@ -101,7 +104,7 @@ class TransactionManager:
                 return False
 
             # ✅ Identify transaction type dynamically
-            tx_type = PaymentTypeManager().get_transaction_type(transaction.tx_id)
+            tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
             if not tx_type:
                 logging.error(f"[ERROR] Unable to determine transaction type for {transaction.tx_id}")
                 return False
@@ -120,15 +123,16 @@ class TransactionManager:
             # ✅ Handle successful addition
             if success:
                 self.storage_manager.poc.route_transaction_to_mempool(transaction)
-                logging.info(f"[INFO] Transaction {transaction.tx_id} stored in {mempool_type}.")
+                logging.info(f"[INFO] Transaction {hashed_tx_id} stored in {mempool_type}.")
                 return True
             else:
-                logging.error(f"[ERROR] Failed to store transaction {transaction.tx_id} in the {mempool_type}.")
+                logging.error(f"[ERROR] Failed to store transaction {hashed_tx_id} in the {mempool_type}.")
                 return False
 
         except Exception as e:
             logging.error(f"[ERROR] Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
             return False
+
 
 
     def select_transactions_for_block(self, max_block_size_mb=10):
@@ -205,13 +209,17 @@ class TransactionManager:
 
 
 
+
     def _calculate_transaction_size(self, tx):
         """
         Calculate transaction size for block inclusion.
         - Uses SHA3-384-based size estimation.
         - Ensures metadata (timestamp, nonce, tx_id) is included.
         """
-        base_size = len(tx.tx_id) + len(str(tx.timestamp)) + len(str(tx.nonce))
+        # Double hash the transaction ID for proper validation
+        tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
+
+        base_size = len(tx_id) + len(str(tx.timestamp)) + len(str(tx.nonce))
 
         input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True)) for inp in tx.inputs)
         output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True)) for out in tx.outputs)
@@ -232,6 +240,9 @@ class TransactionManager:
             # ✅ 1. Skip validation for coinbase transactions (Already Validated)
             if isinstance(tx, CoinbaseTx):
                 return True
+
+            # ✅ 2. Double hash the transaction ID for proper validation
+            tx.tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
 
             # ✅ 2. Verify cryptographic signatures
             if not tx.verify_signature():
@@ -297,6 +308,7 @@ class TransactionManager:
         except Exception as e:
             logging.error(f"[TRANSACTION VALIDATION] ❌ Unexpected validation error: {str(e)}")
             return False
+
 
 
 
@@ -564,8 +576,8 @@ class TransactionManager:
         """
         # ✅ Define block size constraints dynamically
         total_block_size = (block_size_mb or Constants.MEMPOOL_MAX_SIZE_MB) * 1024 * 1024
-        smart_tx_allocation = int(total_block_size * Constants.SMART_MEMPOOL_ALLOCATION)
-        standard_tx_allocation = int(total_block_size * Constants.STANDARD_MEMPOOL_ALLOCATION)
+        smart_tx_allocation = int(total_block_size * Constants.BLOCK_ALLOCATION_SMART)
+        standard_tx_allocation = int(total_block_size * Constants.BLOCK_ALLOCATION_STANDARD)
 
         # ✅ Fetch transactions from each mempool based on defined allocations
         smart_txs = self.smart_mempool.get_smart_transactions(smart_tx_allocation, len(self.storage_manager.block_manager.chain))
@@ -594,4 +606,4 @@ class TransactionManager:
             logging.info(f"[MEMPOOL] ✅ Selected {len(selected_txs)} transactions | Total Size: {current_size} bytes")
             return selected_txs
 
-        return all_txs  # ✅ Return all pending transactions if no size limit is set.
+        return all_txs  # ✅ Return all pending transactions if no size limit is set

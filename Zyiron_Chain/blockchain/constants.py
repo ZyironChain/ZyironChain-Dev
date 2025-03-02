@@ -1,74 +1,125 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+import hashlib
 
 from decimal import Decimal
 
-
-
-
+#CHANGE NETWORK HERE TO ACESS THE ALL THE NETWORKS WHEN NETWORKS ARE SELECTED IT AUTO SWITCHES TO THE CORRECT PORTS 
 
 class Constants:
     """
-    Centralized configuration for blockchain constants, covering mining, transaction fees, UTXO management,
-    mempool, smart contracts, and network behavior.
+    Centralized blockchain constants with automatic network switching,
+    transaction handling, UTXO management, mempool configuration, and storage.
     """
-        # 🔹 **Versioning & Network Configuration**
-    VERSION = "1.0.0"  # ✅ Defines the current version of the blockchain
+
+    # 🔹 **Versioning & Network Configuration**
+    VERSION = "1.0.0"
 
     # 🔹 **Network Configuration**
-    AVAILABLE_NETWORKS = ["mainnet", "testnet"]  # ✅ Allowed network types
-    NETWORK = "mainnet"  # 🌐 Default network (Switch to 'testnet' when needed)
+    AVAILABLE_NETWORKS = ["mainnet", "testnet", "regnet"]
+    NETWORK = "mainnet"  # 🌐 Default network (Auto-switching enabled)
 
-    # ✅ Validate the network setting
     if NETWORK not in AVAILABLE_NETWORKS:
-        raise ValueError(f"[ERROR] Invalid network: {NETWORK}. Must be 'mainnet' or 'testnet'.")
+        raise ValueError(f"[ERROR] Invalid network: {NETWORK}. Must be one of {AVAILABLE_NETWORKS}.")
 
-    # 🔹 **Address Prefixes (Mainnet & Testnet)**
-    MAINNET_ADDRESS_PREFIX = "KYC"
-    TESTNET_ADDRESS_PREFIX = "KYT"
+    # 🔹 **Network-Based Folder Names**
+    NETWORK_FOLDERS = {
+        "mainnet": "BlockData",
+        "testnet": "TestBlockData_Testnet",
+        "regnet": "RegBlockData_Regnet"
+    }
+    NETWORK_FOLDER = NETWORK_FOLDERS[NETWORK]
 
-    # ✅ Dynamically selects the correct address prefix
-    ADDRESS_PREFIX = MAINNET_ADDRESS_PREFIX if NETWORK == "mainnet" else TESTNET_ADDRESS_PREFIX
+    # 🔹 **Storage Paths**
+    BLOCKCHAIN_STORAGE_PATH = f"./blockchain_storage/{NETWORK_FOLDER}/"
+
+    # 🔹 **Address Prefixes**
+    NETWORK_ADDRESS_PREFIXES = {
+        "mainnet": "ZYC",
+        "testnet": "ZYT",
+        "regnet": "ZYR"
+    }
+    ADDRESS_PREFIX = NETWORK_ADDRESS_PREFIXES[NETWORK]
+
+
+    MAX_LMDB_DATABASES = 200
+
+    # 🔹 **Magic Numbers**
+    MAGIC_NUMBERS = {
+        "mainnet": 0x5A594331,
+        "testnet": 0x5A595432,
+        "regnet": 0x5A595233
+    }
+    MAGIC_NUMBER = MAGIC_NUMBERS[NETWORK]
+
+    # 🔹 **UTXO Flags**
+    UTXO_FLAGS = {
+        "mainnet": "",
+        "testnet": "TEST-UTXO",
+        "regnet": "REG-UTXO"
+    }
+    UTXO_FLAG = UTXO_FLAGS[NETWORK]
+
+    # 🔹 **Block Header Flags**
+    BLOCK_HEADER_FLAGS = {
+        "mainnet": "",
+        "testnet": "TEST-0002",
+        "regnet": "REG-0003"
+    }
+    BLOCK_HEADER_FLAG = BLOCK_HEADER_FLAGS[NETWORK]
 
     # 🔹 **Genesis & Mining Parameters**
-    GENESIS_TARGET = 0x000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  
-    MIN_DIFFICULTY = 0x000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  
-    MAX_DIFFICULTY = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  
+    GENESIS_TARGET = 0x000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    MIN_DIFFICULTY = 0x000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    MAX_DIFFICULTY = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 
     # 🔹 **Difficulty Adjustment Parameters**
-    TARGET_BLOCK_TIME = 300  # ⏳ **5-minute block time**
-    DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # 🔄 **Adjust difficulty every 2 blocks**
-    MIN_DIFFICULTY_FACTOR = 0.85  # ⬇️ **Max decrease: 15%**
-    MAX_DIFFICULTY_FACTOR = 4.0  # ⬆️ **Max increase: 400%**
-    
+    if NETWORK == "regnet":
+        TARGET_BLOCK_TIME = 120  # ⏳ **Regnet has a 2-minute block time**
+        DIFFICULTY_ADJUSTMENT_INTERVAL = 1  # 🔄 **Adjust difficulty every block**
+        MIN_DIFFICULTY_FACTOR = 0.5  # ⬇️ **Regnet allows difficulty reduction by 50%**
+        MAX_DIFFICULTY_FACTOR = 10.0  # ⬆️ **Regnet difficulty can increase by 1000%**
+    else:
+        TARGET_BLOCK_TIME = 300  # ⏳ **5-minute block time (Mainnet & Testnet)**
+        DIFFICULTY_ADJUSTMENT_INTERVAL = 2  # 🔄 **Adjust difficulty every 2 blocks**
+        MIN_DIFFICULTY_FACTOR = 0.85  # ⬇️ **Max decrease: 15%**
+        MAX_DIFFICULTY_FACTOR = 4.0  # ⬆️ **Max increase: 400%**
+
+    # 🔹 **Coin Economics**
+    MAX_SUPPLY = None if NETWORK in ["testnet", "regnet"] else 84_096_000  # 🪙 **No max supply for testnet & regnet**
+    INITIAL_COINBASE_REWARD = 100.00  # 🎁 **Starting block reward**
+    BLOCKCHAIN_HALVING_BLOCK_HEIGHT = 420_480  # 📉 **Halving every ~4 years (~5 min block time)**
+    COIN = Decimal("0.00000001")  # ✅ Smallest currency unit
+
+    # 🔹 **Maximum Block Size**
+    MAX_BLOCK_SIZE_SETTINGS = {
+        "mainnet": (1 * 1024 * 1024, 10 * 1024 * 1024),
+        "testnet": (1 * 1024 * 1024, 10 * 1024 * 1024),
+        "regnet": (1 * 1024 * 1024, 2 * 1024 * 1024)
+    }
+    MIN_BLOCK_SIZE_BYTES, MAX_BLOCK_SIZE_BYTES = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
+
     # 🔹 **Hashing & Security**
     ZERO_HASH = "0" * 96  # 📌 **SHA3-384 produces 96-character hex hashes**
     # 🔹 **SHA3-384 Hash & Difficulty Target Settings**
     SHA3_384_HASH_SIZE = 96  # ✅ **SHA3-384 produces 96-character hex hashes**
     DIFFICULTY_TARGET_SIZE = 384  # ✅ **Target size in bits for SHA3-384 difficulty calculations**
-    # 🔹 **Maximum Block Size**
-    MAX_BLOCK_SIZE_BYTES = 10 * 1024 * 1024  # 🚀 10MB (10 * 1024 * 1024 bytes)
+    TRANSACTION_EXPIRY_TIME = 86400  # ⏳ **Transactions expire after 24 hours in mempool**
+    DISPUTE_RESOLUTION_TTL = 3600  # ⚖️ **Transactions must be resolved within 1 hour**
 
-    # 🔹 **Coin Economics**
-    MAX_SUPPLY = 84_096_000  # 🪙 **Max coin supply**
-    INITIAL_COINBASE_REWARD = 100.00  # 🎁 **Initial mining reward**
-    BLOCKCHAIN_HALVING_BLOCK_HEIGHT = 420_480  # 📉 **Halves every ~4 years (~5 min block time) until max supply**
-    # 🔹 **Smallest Unit Definition**
-    COIN = Decimal("0.00000001")  # ✅ Smallest unit of the currency 
+    # 🔹 **Multi-Hop Payment Channels**
+    MULTIHOP_MIN_CHANNEL_LIFETIME = 3600  # ⏳ **1-hour min channel open time**
+    MULTIHOP_MAX_HOPS = 10  # 🔄 **Max 10 hops per transaction**
+    MULTIHOP_REBROADCAST_TIMEOUT = 180  # ⏳ **Rebroadcast pending multi-hop transactions after 3 minutes**
 
+    # 🔹 **Instant Payment & HTLC Settings**
+    HTLC_LOCK_TIME = 120  # ⏳ **HTLC lock expires in 2 minutes**
+    HTLC_EXPIRY_TIME = 7200  # ⏳ **HTLC expires after 2 hours (ZKP-based)**
+    INSTANT_PAYMENT_TTL = 600  # ⚡ **Instant payments must be confirmed within 10 minutes**
+    PAYMENT_CHANNEL_INACTIVITY_TIMEOUT = 7200  # ⏳ **Payment channels auto-close after 2 hours of inactivity**
 
-# 🔹 **Transaction Confirmation Requirements**
-    TRANSACTION_CONFIRMATIONS = {
-        "STANDARD": 8,   # ✅ Standard transactions require 8 confirmations
-        "SMART": 5,      # ✅ Smart contract transactions require 5 confirmations
-        "INSTANT": 2,    # ✅ Instant transactions require 2 confirmations
-        "COINBASE": 12   # ✅ Coinbase transactions require 12 confirmations
-    }
-
-    # 🔹 **Mempool Configuration**
-    # 🔹 **Mempool Storage & Allocation Settings**
-    MEMPOOL_MAX_SIZE_MB = 1024#  **Total Mempool Storage Capacity (MB)**
+    MEMPOOL_MAX_SIZE_MB = 256 # 🏗️ **Total Mempool Storage Capacity (MB)**
     
     # ✅ **Mempool Type Allocations**
     MEMPOOL_STANDARD_ALLOCATION = 0.50  # 🏦 **50% of total mempool reserved for Standard Transactions**
@@ -84,57 +135,154 @@ class Constants:
 
     # ✅ **Mempool Transaction Expiry Policy**
     MEMPOOL_TRANSACTION_EXPIRY = 86400  # ⏳ **Transactions expire after 24 hours in the mempool**
-    MAX_LMDB_DATABASES= 10
 
-
-    # 🔹 **Instant Payment & HTLC Settings**a
-    HTLC_LOCK_TIME = 120  # ⏳ **HTLC lock expires in 2 minutes**
-    HTLC_EXPIRY_TIME = 7200  # ⏳ **HTLC expires after 2 hours (ZKP-based)**
-    INSTANT_PAYMENT_TTL = 600  # ⚡ **Instant payments must be confirmed within 10 minutes**
-    PAYMENT_CHANNEL_INACTIVITY_TIMEOUT = 7200  # ⏳ **Payment channels auto-close after 2 hours of inactivity**
-
-    # 🔹 **Dynamic Fee Adjustment**
-    MIN_TRANSACTION_FEE = 0.100000000  # ⚠️ **Minimum possible fee per transaction**
-    FEE_INCREMENT_FACTOR = 1.10  # 🔼 **Increase fee by 10% if rebroadcasted**
-
-    # 🔹 **Transaction Expiry & Disputes**
-    TRANSACTION_EXPIRY_TIME = 86400  # ⏳ **Transactions expire after 24 hours in mempool**
-    DISPUTE_RESOLUTION_TTL = 3600  # ⚖️ **Transactions must be resolved within 1 hour**
-
-    # 🔹 **Multi-Hop Payment Channels**
-    MULTIHOP_MIN_CHANNEL_LIFETIME = 3600  # ⏳ **1-hour min channel open time**
-    MULTIHOP_MAX_HOPS = 10  # 🔄 **Max 10 hops per transaction**
-    MULTIHOP_REBROADCAST_TIMEOUT = 180  # ⏳ **Rebroadcast pending multi-hop transactions after 3 minutes**
-
-    # 🔹 **Storage Layer (Databases & Routing)**
-    DATABASES = {
-        "blockchain": "UnQLite",
-        "mempool": "LMDB",
-        "utxo": "SQLite",
-        "analytics": "DuckDB",
-        "tinydb": "TinyDB",  # ✅ **Added TinyDB for lightweight storage**
+    # 🔹 **Transaction Confirmation Requirements**
+    TRANSACTION_CONFIRMATION_SETTINGS = {
+        "mainnet": {"STANDARD": 8, "SMART": 5, "INSTANT": 2, "COINBASE": 12},
+        "testnet": {"STANDARD": 3, "SMART": 2, "INSTANT": 1, "COINBASE": 6},
+        "regnet": {"STANDARD": 6, "SMART": 4, "INSTANT": 2, "COINBASE": 8}
     }
+    TRANSACTION_CONFIRMATIONS = TRANSACTION_CONFIRMATION_SETTINGS[NETWORK]
+
+    # 🔹 **Testnet Faucet**
+    ENABLE_FAUCET = True if NETWORK == "testnet" else False
+
+    # 🔹 **Database Configuration**
+    # 🔹 **Database Configuration**
+# 🔹 **Database Configuration**
+    NETWORK_DATABASES = {
+        "mainnet": {
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata.lmdb",
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex.lmdb",
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo.lmdb",
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history.lmdb",
+            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index.lmdb",
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool.lmdb",
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats.lmdb",
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks.lmdb",
+            "flag": "MAINNET"  # ✅ Ensures correct network identification
+        },
+        "testnet": {
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Testnet.lmdb",
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Testnet.lmdb",
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Testnet.lmdb",
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Testnet.lmdb",
+            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index_Testnet.lmdb",
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Testnet.lmdb",
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Testnet.lmdb",
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Testnet.lmdb",
+            "flag": "TESTNET"  # ✅ Ensures correct network identification
+        },
+        "regnet": {
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Regnet.lmdb",
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Regnet.lmdb",
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Regnet.lmdb",
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Regnet.lmdb",
+            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index_Regnet.lmdb",
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Regnet.lmdb",
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Regnet.lmdb",
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Regnet.lmdb",
+            "flag": "REGNET"  # ✅ Ensures correct network identification
+        }
+    }
+    DATABASES = NETWORK_DATABASES[NETWORK]  # ✅ Assigns the correct database set
+
+    @staticmethod
+    def get_db_path(db_name: str) -> str:
+        """Returns the correct database path based on the current network and db type."""
+        
+        # Ensure network is assigned correctly
+        network = Constants.NETWORK
+        print(f"[DEBUG] Fetching database path for network: {network}")
+
+        # Constants.DATABASES is already the config for the current network
+        network_db_config = Constants.DATABASES
+        
+        print(f"[DEBUG] Found network configuration: {network_db_config}")
+        
+        if db_name not in network_db_config:
+            raise ValueError(f"[ERROR] Database '{db_name}' not found for {network} network.")
+        
+        # Return the correct path for the requested database
+        db_path = network_db_config[db_name]
+        print(f"[DEBUG] Database path for '{db_name}': {db_path}")
+        return db_path
+
+
+
+
+    # 🔹 **Wallet Address Handling Rules**
+    ACCEPTED_ADDRESS_PREFIXES = ["ZYC"] if NETWORK == "mainnet" else ["ZYT"]
+
+    # 🔹 **Fee & Mempool Expiry**
+    MIN_TRANSACTION_FEE = 0.0 if NETWORK == "regnet" else 0.100000000
+    FEE_INCREMENT_FACTOR = 1.0 if NETWORK == "regnet" else 1.10
+    MEMPOOL_TRANSACTION_EXPIRY = {"mainnet": 86400, "testnet": 21600, "regnet": 3600}[NETWORK]
+
+    # 🔹 **Block Propagation Delay**
+    BLOCK_PROPAGATION_DELAY = {"mainnet": 15, "testnet": 5, "regnet": 0}[NETWORK]
 
     # 🔹 **Smart Mempool Priority Blocks**
-    SMART_MEMPOOL_PRIORITY_BLOCKS = (4, 5)  # ✅ **Smart transactions prioritized in block confirmations**
+    SMART_MEMPOOL_PRIORITY_BLOCKS = (4, 5)
 
     # 🔹 **Rebroadcasting & Fee Scaling**
     REBROADCAST_INTERVAL = 300  # ⏳ **Rebroadcast unconfirmed transactions every 5 minutes**
     REBROADCAST_FEE_INCREASE = 0.10  # 🔼 **Increase fee by 10% upon rebroadcast**
 
 
-
-    # 🔹 **Confirmation Definitions**
-    CONFIRMATION_RULES = {
-        "description": "A transaction confirmation occurs when a block containing the transaction is mined and added to the blockchain. Each new block built on top of this confirms the transaction further.",
-        "minimum_required": 1,  # ✅ Minimum confirmations for a transaction to be considered valid
-        "finalization_threshold": 6,  # ✅ Number of confirmations required for finalization (irreversible status)
-        "coinbase_requirement": 12,  # ✅ Coinbase transactions require 12 confirmations before funds are spendable
+    # 🔹 **Write-Ahead Logging (WAL) & LMDB Batch Flushing (Auto-switch by Network)**
+    LMDB_WAL_FLUSH_INTERVAL_SETTINGS = {
+        "mainnet": 2,  # ⏳ Flush every 2 seconds for Mainnet
+        "testnet": 3,  # ⏳ Flush every 3 seconds for Testnet
+        "regnet": 3    # ⏳ Flush every 3 seconds for Regnet
     }
+    LMDB_WAL_FLUSH_INTERVAL = LMDB_WAL_FLUSH_INTERVAL_SETTINGS[NETWORK]  # ✅ Auto-switching WAL timer
 
+    # 🔹 **High-Write Databases That Require WAL**
+    LMDB_HIGH_WRITE_DATABASES = {
+        "mainnet": [
+            "mempool.lmdb",
+            "utxo.lmdb",
+            "txindex.lmdb",
+            "fee_stats.lmdb"
+        ],
+        "testnet": [
+            "mempool.lmdb",
+            "utxo.lmdb",
+            "txindex.lmdb",
+            "fee_stats.lmdb"
+        ],
+        "regnet": [
+            "mempool.lmdb",
+            "utxo.lmdb",
+            "txindex.lmdb",
+            "fee_stats.lmdb"
+        ]
+    }
+    HIGH_WRITE_DATABASES = LMDB_HIGH_WRITE_DATABASES[NETWORK]  # ✅ Auto-switching database list
 
+    # 🔹 **WAL Folder Naming & Network Flags**
+    WAL_FOLDER_NAMES = {
+        "mainnet": "WriteLog",   # 🏦 Standard WAL folder for Mainnet
+        "testnet": "WriteLog-Testnet",  # 🏦 WAL labeled for Testnet
+        "regnet": "WriteLog-Regnet"  # 🏦 WAL labeled for Regnet
+    }
+    WAL_FOLDER_NAME = WAL_FOLDER_NAMES[NETWORK]  # ✅ Auto-switching WAL directory name
 
-    # 🔹 **Transaction Prefixes & Mempool Routing**
+    # 🔹 **WAL Folder Flags (Prevent Network Confusion)**
+    WAL_FOLDER_FLAGS = {
+        "mainnet": "",
+        "testnet": "TESTNET-WAL",
+        "regnet": "REGNET-WAL"
+    }
+    WAL_FOLDER_FLAG = WAL_FOLDER_FLAGS[NETWORK]  # ✅ Auto-switching WAL flag
+
     TRANSACTION_MEMPOOL_MAP = {
         "STANDARD": {
             "prefixes": [],
@@ -154,6 +302,7 @@ class Constants:
         "COINBASE": {
             "prefixes": ["COINBASE-"],
             "mempool": "StandardMempool",
-            "database": "UnQLite"
+            "database": "LMDB"
         }
     }
+

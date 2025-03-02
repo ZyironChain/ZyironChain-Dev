@@ -41,6 +41,14 @@ import hashlib
 from decimal import Decimal
 from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
+
+
+import hashlib
+from decimal import Decimal
+import time
+from typing import Dict
+
 
 class CoinbaseTx:
     """Represents a block reward (coinbase) transaction"""
@@ -91,17 +99,18 @@ class CoinbaseTx:
         return max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
 
     def _generate_tx_id(self, block_height: int, timestamp: float) -> str:
-        """Generate a unique transaction ID using SHA3-384 hashing."""
+        """Generate a unique transaction ID using SHA3-384 double hashing."""
         prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get("COINBASE", {}).get("prefixes", [])
         prefix = prefixes[0] if prefixes else "COINBASE-"
         tx_data = f"{prefix}{block_height}-{timestamp}-{self.miner_address}-{self.reward}"
-        return hashlib.sha3_384(tx_data.encode()).hexdigest()[:24]
+        # Double hash using SHA3-384 (hashlib's sha3_384)
+        return hashlib.sha3_384(hashlib.sha3_384(tx_data.encode()).hexdigest().encode()).hexdigest()[:64]
 
     def calculate_hash(self) -> str:
         """Calculate the SHA3-384 hash of the transaction."""
         output = self.outputs[0]
         tx_data = f"{self.tx_id}{self.timestamp}{output['address']}{Decimal(output['amount'])}"
-        return hashlib.sha3_384(tx_data.encode()).hexdigest()
+        return hashlib.sha3_384(hashlib.sha3_384(tx_data.encode()).hexdigest().encode()).hexdigest()
 
     def to_dict(self) -> Dict:
         """Serialize the CoinbaseTx to a dictionary."""
@@ -113,10 +122,15 @@ class CoinbaseTx:
             "inputs": self.inputs,
             "outputs": self.outputs,
             "timestamp": self.timestamp,
-            "type": self.type,
+            "type": self.type,        # Original field
+            "tx_type": self.type,     # <-- New field required by the serializer
+            "fee": str(self.fee),      # <-- New field to ensure fee is present
             "hash": self.hash,
             "size": self.size
-        }
+    }
+
+
+
 
     @classmethod
     def from_dict(cls, data: Dict):
