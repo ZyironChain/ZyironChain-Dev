@@ -30,7 +30,7 @@ import threading
 from lmdb import open
 
 import lmdb
-from Zyiron_Chain.database.lmdbwriter import StorageInitError
+
 
 
 class LMDBManager:

@@ -29,7 +29,6 @@ from Zyiron_Chain.blockchain.utils.hashing import Hashing
 
 import threading
 
-from Zyiron_Chain.blockchain.blockchainerror import BlockchainInitError
 
 
 class Blockchain:
