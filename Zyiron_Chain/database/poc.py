@@ -788,25 +788,3 @@ class PoC:
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to synchronize node {node.node_id}: {e}")
 
-
-# -------------------- NODE CLASSES FOR TESTING -------------------- #
-
-class FullNode:
-    def __init__(self, node_id):
-        self.node_id = node_id
-
-    def receive_block(self, block):
-        logging.info(f"FullNode {self.node_id} received block {block}")
-
-class ValidatorNode(FullNode):
-    def validate_block(self, block):
-        logging.info(f"ValidatorNode {self.node_id} is validating block {block}")
-
-class MinerNode:
-    def __init__(self, node_id):
-        self.node_id = node_id
-
-    def receive_transaction(self, transaction):
-        logging.info(f"MinerNode {self.node_id} received transaction {transaction.tx_id}")
-
-# -------------------- TEST EXECUTION -------------------- #

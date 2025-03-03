@@ -513,25 +513,26 @@ class StorageManager:
         """
         Retrieve the most recent block from LMDB storage.
         Returns a Block object representing the latest block, or None if no valid block is found.
+        Ensures:
+        - LMDB data integrity.
+        - Proper hash format validation.
+        - Magic number consistency in block.data.
         """
         try:
-            # -------------------------------------------------------------------------------------
-            # 1) Gather all block metadata from LMDB
-            # -------------------------------------------------------------------------------------
+            logging.info("[STORAGE] 🔄 Retrieving latest block from LMDB...")
+
+            # ✅ Step 1: Retrieve all stored block metadata
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 all_blocks = []
                 for key, value in cursor:
-                    # Only process keys that start with "block:"
                     if key.decode().startswith("block:"):
                         try:
-                            # Convert the stored bytes to JSON
                             block_metadata = json.loads(value.decode("utf-8"))
-
                             if not isinstance(block_metadata, dict):
                                 logging.error(f"[STORAGE ERROR] ❌ Invalid block format (not a dict): {block_metadata}")
                                 continue
-                            
+
                             header = block_metadata.get("block_header")
                             if not isinstance(header, dict) or "index" not in header:
                                 logging.error("[STORAGE ERROR] ❌ Block header missing 'index'")
@@ -543,50 +544,45 @@ class StorageManager:
                             logging.error(f"[STORAGE ERROR] ❌ Corrupt block metadata in LMDB: {e}")
                             continue
 
-            # If no blocks are found, return None
             if not all_blocks:
-                logging.warning("[STORAGE] ⚠️ No blocks found in storage. Chain may be empty.")
+                logging.warning("[STORAGE] ⚠️ No blocks found in LMDB. Blockchain may be empty.")
                 return None
 
-            # -------------------------------------------------------------------------------------
-            # 2) Sort blocks by their index and pick the highest (latest)
-            # -------------------------------------------------------------------------------------
+            # ✅ Step 2: Identify the latest block by index
             latest_block_data = max(all_blocks, key=lambda b: b["block_header"]["index"], default=None)
             if not latest_block_data:
                 logging.error("[ERROR] ❌ Could not determine latest block.")
                 return None
 
+            # ✅ Step 3: Validate block hash format
             block_hash = latest_block_data.get("hash", Constants.ZERO_HASH)
-            if block_hash == Constants.ZERO_HASH:
-                logging.error(f"[ERROR] ❌ Retrieved block is missing a valid 'hash': {latest_block_data}")
+            if not isinstance(block_hash, str) or not all(c in "0123456789abcdefABCDEF" for c in block_hash):
+                logging.error(f"[ERROR] ❌ Invalid block hash format: {block_hash}")
                 return None
 
-            # Ensure the block header has the basic required fields
-            required_keys = ["index", "previous_hash", "timestamp", "nonce"]
+            # ✅ Step 4: Ensure block header contains all required fields
+            required_keys = {"index", "previous_hash", "timestamp", "nonce", "difficulty"}
             header = latest_block_data["block_header"]
-            if not all(k in header for k in required_keys):
+            if not required_keys.issubset(header):
                 logging.error(f"[ERROR] ❌ Incomplete block metadata: {latest_block_data}")
                 return None
 
-            # -------------------------------------------------------------------------------------
-            # 3) Validate the timestamp format
-            # -------------------------------------------------------------------------------------
+            # ✅ Step 5: Validate timestamp
             try:
                 timestamp = int(header["timestamp"])
+                if timestamp <= 0:
+                    raise ValueError("Invalid timestamp")
             except (ValueError, TypeError) as e:
                 logging.error(f"[ERROR] ❌ Invalid timestamp format: {e}")
                 return None
 
-            # -------------------------------------------------------------------------------------
-            # 4) Check magic number in the block.data file once, to confirm correctness
-            # -------------------------------------------------------------------------------------
+            # ✅ Step 6: Verify block.data magic number (Ensures valid block storage)
             if not os.path.exists(self.current_block_file):
                 logging.error(f"[STORAGE ERROR] ❌ block.data file not found: {self.current_block_file}")
                 return None
 
             try:
                 with open(self.current_block_file, "rb") as f:
-                    # Ensure the file is at least 4 bytes (the size of the magic number)
                     if os.path.getsize(self.current_block_file) < 4:
                         logging.error(f"[STORAGE ERROR] ❌ block.data file is too small to contain magic number.")
                         return None
@@ -603,9 +599,7 @@ class StorageManager:
                 logging.error(f"[STORAGE ERROR] ❌ Failed to read magic number: {e}")
                 return None
 
-            # -------------------------------------------------------------------------------------
-            # 5) Fetch the actual block from the data file using its offset
-            # -------------------------------------------------------------------------------------
+            # ✅ Step 7: Fetch block from `block.data` using its stored offset
             block_offset = latest_block_data.get("data_offset")
             if not isinstance(block_offset, int):
                 logging.error("[ERROR] ❌ Block data offset missing or invalid in LMDB. Cannot retrieve block.")
@@ -904,12 +898,12 @@ class StorageManager:
         - Returns None if transaction does not exist
         """
         try:
-            if not isinstance(tx_id, str):
+            if not isinstance(tx_id, (str, bytes)):
                 logging.error(f"[STORAGE ERROR] ❌ Invalid transaction ID format: {tx_id}")
                 return None
 
             # ✅ Convert transaction ID into bytes safely
-            tx_key = f"tx:{tx_id}".encode("utf-8")
+            tx_key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
 
             with self.txindex_db.env.begin() as txn:
                 tx_data = txn.get(tx_key)

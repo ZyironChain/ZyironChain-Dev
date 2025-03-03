@@ -31,6 +31,7 @@ from lmdb import open
 
 import lmdb
 
+from typing import Union
 
 import lmdb
 import json
@@ -352,50 +353,72 @@ class LMDBManager:
     # -------------------------------------------------------------------------
     # Transactions Database
     # -------------------------------------------------------------------------
-    def add_transaction(self, tx_id: str, block_hash: str, inputs: list, outputs: list, timestamp: int):
+    def add_transaction(self, tx_id: Union[str, bytes], block_hash: str, inputs: list, outputs: list, timestamp: int):
         """
         Store a transaction in the 'transactions' DB.
         Key: "tx:{tx_id}"
         Value: JSON with block_hash, inputs, outputs, timestamp
         """
         try:
+            # ✅ Ensure tx_id is properly handled (convert bytes to string safely)
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.decode("utf-8")  # Convert bytes to string safely
+
+            if not isinstance(tx_id, str):
+                raise ValueError(f"[LMDB ERROR] ❌ Invalid tx_id format: Expected str, got {type(tx_id)}")
+
             transaction_data = {
                 "block_hash": block_hash,
-                "inputs": inputs,
-                "outputs": outputs,
-                "timestamp": timestamp
+                "inputs": inputs if isinstance(inputs, list) else [],
+                "outputs": outputs if isinstance(outputs, list) else [],
+                "timestamp": int(timestamp) if isinstance(timestamp, int) else 0
             }
-            key = f"tx:{tx_id.decode() if isinstance(tx_id, bytes) else tx_id}".encode()
 
-            value = json.dumps(transaction_data).encode("utf-8")
+            key = f"tx:{tx_id}".encode("utf-8")  # ✅ Ensure key is properly encoded
+            value = json.dumps(transaction_data).encode("utf-8")  # ✅ Convert JSON to bytes
 
             with self.env.begin(write=True, db=self.transactions_db) as txn:
-                txn.put(key, value)
+                txn.put(key, value)  # ✅ Store transaction in LMDB
 
             logging.info(f"[LMDB] ✅ Transaction {tx_id} stored successfully.")
-        except Exception as e:
-            logging.error(f"[LMDB ERROR] ❌ Failed to store transaction {tx_id}: {e}")
-            raise
 
-    def get_transaction(self, tx_id: str):
+        except json.JSONDecodeError as e:
+            logging.error(f"[LMDB ERROR] ❌ JSON Encoding Failed for transaction {tx_id}: {e}")
+        except ValueError as e:
+            logging.error(f"[LMDB ERROR] ❌ Value Error: {e}")
+        except Exception as e:
+            logging.error(f"[LMDB ERROR] ❌ Unexpected error while storing transaction {tx_id}: {e}")
+            raise  # ✅ Re-raise the exception for debugging
+    def get_transaction(self, tx_id: Union[str, bytes]):
         """
         Retrieve a single transaction from the 'transactions' DB by tx_id.
+        - Handles both str and bytes transaction IDs properly.
         """
         try:
-            key = f"tx:{tx_id.decode() if isinstance(tx_id, bytes) else tx_id}".encode()
+            # ✅ Ensure transaction ID is correctly formatted
+            if not isinstance(tx_id, (str, bytes)):
+                logging.error(f"[LMDB ERROR] ❌ Invalid transaction ID format: {tx_id}")
+                return None
+
+            # ✅ Properly encode the key, handling both string and bytes
+            key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
 
             with self.env.begin(db=self.transactions_db) as txn:
                 data = txn.get(key)
 
             if data:
                 return json.loads(data.decode("utf-8"))
+
+            logging.warning(f"[LMDB] ⚠️ Transaction {tx_id} not found.")
             return None
+
         except json.JSONDecodeError as e:
             logging.error(f"[LMDB ERROR] ❌ Failed to decode transaction {tx_id}: {e}")
             return None
         except Exception as e:
             logging.error(f"[LMDB ERROR] ❌ Failed to retrieve transaction {tx_id}: {e}")
             return None
+
 
     def get_all_transactions(self) -> list:
         """
