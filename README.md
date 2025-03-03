@@ -7,8 +7,8 @@ Zyiron Chain aims to be the most secure, efficient, and democratic payment syste
 # Blockchain Overview
 Zyiron Chain is a Post-Quantum Cryptography (PQC) resistant blockchain utilizing SHA3-384 for hashing and Falcon 1024 for digital signatures. It is structured into three layers:
 
-Layer 1: Protocol Layer – Handles block creation, consensus (PoW with SHA3-384), and transaction validation.
-Layer 2: Instant Payments – Facilitates low-latency payments with multi-hop routing and batching.
+Layer 1: Protocol Layer – Handles block creation, consensus (PoW with SHA3-384), and transaction validation.( what is being worked on the core protcol)
+Layer 2: Instant Payments – Facilitates low-latency payments with multi-hop routing and batching. (under development)
 Layer 3: Governance – A democratic system for upgrades, dispute resolution, and community voting (under development).
 
 
@@ -93,9 +93,7 @@ governance.py – (Planned) Manages on-chain voting & protocol upgrades.
 Getting Started
 
 # 1️⃣ Install Dependencies
-bash
-Copy
-Edit
+
 pip install -r requirements.txt
 
 # 2️⃣ Run the Blockchain
@@ -110,18 +108,14 @@ python key_manager.py
 
 # How to Contribute
 1️⃣ Clone the Repository
-bash
-Copy
-Edit
+
 git clone https://github.com/ZyironChain/ZyironChain-Dev.git
 2️⃣ Create a New Branch
 
 git checkout -b feature-branch
 3️⃣ Commit & Push
 
-git add .
-git commit -m "Description of changes"
-git push origin feature-branch
+
 4️⃣ Submit a Pull Request
 All contributions must go through Pull Requests (PRs) and be reviewed.
 
@@ -132,19 +126,29 @@ At least 1 approval required before merging.
 Auto-merge is disabled – Maintainers review each PR.
 
 #🔒 **Repository Access Policy**
+
 - **You must request approval before contributing.**
-- Send an email to **zyironchain@gmail.com** or contact @Zyiron_Chain on Telegram.
+  
+- Send an email to **zyironchain@gmail.com**
+  
+- or contact @Zyiron_Chain on Telegram.
+
 - Provide your GitHub username and reason for contributing.
+  
 - Only approved contributors will be granted push/pull access.
 
 
 
 # 5️⃣ Contact for PR Approval
+
 Email: zyironchain@gmail.com
+
 Instagram: @zyironchain
+
 Telegram: @Zyiron_Chain
-Development Roadmap
-Zyiron Chain is 40% complete. The core is functional, but key areas still need development:
+
+# Development Roadmap
+Zyiron Chain is 60% complete. The core is functional, but key areas still need development:
 
 # ✅ Built:
 
@@ -155,13 +159,11 @@ LMDB & File-Based Storage
 🛠 Needs Work:
 
 # P2P Networking
-Governance Layer (Layer 3)
-Custodial Wallets (NTRU Encryption)
+Custodial Wallets BIP 39 MEMOPHRASE 
 HTLC Smart Contracts for Instant Pay
 Block Explorer & Analytics APIs
 Code Debugging & Security Audits
 Automated Fee Scaling
-AI-Powered Governance Model
 Multi-Hop Payment Optimization
 Final Thoughts
 🔹 Zyiron Chain is designed to be secure, scalable, and truly decentralized.
@@ -169,26 +171,4 @@ Final Thoughts
 🔹 Have questions? Email zyironchain@gmail.com or request a Zoom call.
 
 🚀 Join us in building the future of decentralized payments! 🚀
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
