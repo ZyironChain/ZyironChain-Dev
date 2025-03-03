@@ -27,9 +27,9 @@ Layer 3: Governance – A democratic system for upgrades, dispute resolution, an
 
 ✅ Two Mempools:
 
-Standard Mempool → For regular and instant transactions.
+✅ Standard Mempool → For regular and instant transactions.
 
-Smart Mempool → For smart contract payments.
+✅Smart Mempool → For smart contract payments.
 
 ✅ Proof-of-Work Consensus: SHA3-384 PoW with 5-minute block times.
 
