@@ -57,6 +57,12 @@ import hashlib
 from Zyiron_Chain.blockchain.constants import Constants
 
 
+import hashlib
+import time
+from decimal import Decimal
+from typing import Dict
+from Zyiron_Chain.blockchain.constants import Constants
+
 class CoinbaseTx:
     """Represents a block reward (coinbase) transaction"""
 
@@ -70,21 +76,20 @@ class CoinbaseTx:
         """
         self.block_height = block_height
         self.miner_address = miner_address
-        # Calculate reward if not provided using halving logic from Constants
         self.reward = reward if reward is not None else self._calculate_reward(block_height)
         self.timestamp = time.time()
         self.tx_id = self._generate_tx_id(block_height, self.timestamp)
         self.inputs = []  # Coinbase transactions have no inputs
-        # Ensure outputs include required fields: address, amount, and script_pub_key
         self.outputs = [{
             "address": miner_address,
             "amount": float(self.reward),
-            "script_pub_key": miner_address  # For simplicity, using miner_address as script_pub_key
+            "script_pub_key": miner_address
         }]
         self.type = "COINBASE"
         self.fee = Decimal("0")
         self.hash = self.calculate_hash()
-        # Compute a rough estimation of the transaction size without recursion.
+
+        # Compute estimated transaction size
         temp_data = {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
@@ -102,22 +107,20 @@ class CoinbaseTx:
         """Dynamically calculate the block reward based on halving intervals."""
         halvings = block_height // Constants.BLOCKCHAIN_HALVING_BLOCK_HEIGHT
         reward = Decimal(Constants.INITIAL_COINBASE_REWARD) / (2 ** halvings)
-        # Ensure the reward does not fall below the minimum transaction fee
         return max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
 
     def _generate_tx_id(self, block_height: int, timestamp: float) -> str:
-        """Generate a unique transaction ID using SHA3-384 double hashing."""
+        """Generate a unique transaction ID using SHA3-384 single hashing."""
         prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get("COINBASE", {}).get("prefixes", [])
         prefix = prefixes[0] if prefixes else "COINBASE-"
         tx_data = f"{prefix}{block_height}-{timestamp}-{self.miner_address}-{self.reward}"
-        # Double hash using SHA3-384 (hashlib's sha3_384)
-        return hashlib.sha3_384(hashlib.sha3_384(tx_data.encode()).hexdigest().encode()).hexdigest()[:64]
+        return hashlib.sha3_384(tx_data.encode()).hexdigest()  # ✅ Single hash
 
     def calculate_hash(self) -> str:
-        """Calculate the SHA3-384 hash of the transaction."""
+        """Calculate the SHA3-384 hash of the transaction (single hash)."""
         output = self.outputs[0]
         tx_data = f"{self.tx_id}{self.timestamp}{output['address']}{Decimal(output['amount'])}"
-        return hashlib.sha3_384(hashlib.sha3_384(tx_data.encode()).hexdigest().encode()).hexdigest()
+        return hashlib.sha3_384(tx_data.encode()).hexdigest()  # ✅ Single hash
 
     def to_dict(self) -> Dict:
         """Serialize the CoinbaseTx to a dictionary."""
@@ -129,9 +132,9 @@ class CoinbaseTx:
             "inputs": self.inputs,
             "outputs": self.outputs,
             "timestamp": self.timestamp,
-            "type": self.type,        # Original field
-            "tx_type": self.type,     # <-- New field required by the serializer
-            "fee": str(self.fee),      # <-- New field to ensure fee is present
+            "type": self.type,  # Original field
+            "tx_type": self.type,  # New field required by the serializer
+            "fee": str(self.fee),  # Ensure fee is present
             "hash": self.hash,
             "size": self.size
         }
@@ -144,7 +147,6 @@ class CoinbaseTx:
             miner_address=data["miner_address"],
             reward=Decimal(data["reward"])
         )
-        # Override fields if provided in the dictionary
         obj.tx_id = data.get("tx_id", obj.tx_id)
         obj.timestamp = data.get("timestamp", obj.timestamp)
         obj.inputs = data.get("inputs", [])

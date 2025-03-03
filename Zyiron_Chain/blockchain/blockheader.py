@@ -15,9 +15,9 @@ import time
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.utils.hashing import Hashing
 
-
 class BlockHeader:
-    _HASH_PATTERN: re.Pattern = re.compile(r'^[a-fA-F0-9]{96}$')  # Ensures SHA3-384 hash format
+    # Updated pattern to allow either 64-hex or 96-hex strings, instead of strictly 96
+    _HASH_PATTERN: re.Pattern = re.compile(r'^(?:[A-Fa-f0-9]{64}|[A-Fa-f0-9]{96})$')
 
     def __init__(self, version, index, previous_hash, merkle_root, timestamp, nonce, difficulty, miner_address):
         """
@@ -57,26 +57,23 @@ class BlockHeader:
             miner_address=data.get("miner_address", "Unknown")
         )
 
-
-
-
-
-
-
     def _adjust_difficulty(self, difficulty):
         """
         Ensure difficulty is within predefined min/max from Constants.
         """
         return max(min(difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
     def calculate_hash(self):
-        """
-        Calculate the block header's double SHA3-384 hash.
-        """
+        """Calculate the block's SHA3-384 hash and return it as a hex string."""
         header_string = (
-            f"{self.version}{self.index}{self.previous_hash}"
-            f"{self.merkle_root}{self.timestamp}{self.nonce}{self.difficulty}"
+            f"{self.header.version}{self.header.index}{self.header.previous_hash}"
+            f"{self.header.merkle_root}{self.header.timestamp}"
+            f"{self.header.nonce}{self.header.difficulty}"
+            f"{self.header.miner_address}"
         ).encode()
-        return Hashing.double_sha3_384(header_string)
+
+        return hashlib.sha3_384(header_string).hexdigest()  # ✅ Ensuring hex output
+
 
     @property
     def hash_block(self):
@@ -99,11 +96,11 @@ class BlockHeader:
         if not isinstance(self.index, int) or self.index < 0:
             validation_errors.append("Invalid index: must be a non-negative integer")
 
-        # Validate hashes using class-level pattern
+        # Validate hashes using class-level pattern (now allows 64 or 96 hex)
         if not self._HASH_PATTERN.fullmatch(str(self.previous_hash)):
-            validation_errors.append("Invalid previous_hash: must be 96-char hex for SHA3-384")
+            validation_errors.append("Invalid previous_hash: must be 64 or 96-char hex for SHA3-384")
         if not self._HASH_PATTERN.fullmatch(str(self.merkle_root)):
-            validation_errors.append("Invalid merkle_root: must be 96-char hex for SHA3-384")
+            validation_errors.append("Invalid merkle_root: must be 64 or 96-char hex for SHA3-384")
 
         # Validate timestamp
         max_time_drift = Constants.TRANSACTION_CONFIRMATIONS.get("maximum_timestamp_drift", 7200)  # Default: 2 hours

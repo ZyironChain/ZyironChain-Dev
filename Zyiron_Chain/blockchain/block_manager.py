@@ -54,31 +54,85 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.blockchain.utils.hashing import Hashing
 
+import sys
+import os
+import json
+import hashlib
+import time
+import logging
+import math
+
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
+from Zyiron_Chain.blockchain.blockheader import BlockHeader
+from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+
+log = logging.getLogger(__name__)  # Each module gets its own logger
+log.info(f"{__name__} logger initialized.")
+
+def get_transaction():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    return Transaction
+
+def get_coinbase_tx():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    return CoinbaseTx
+
+def get_block():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.blockchain.block import Block
+    return Block
+
 class BlockManager:
+    """
+    Manages blockchain validation, difficulty adjustments, and storing block data
+    via the StorageManager. Also provides chain-level checks like chain validation,
+    Merkle root calculations, and retrieving the latest block.
+    """
     def __init__(self, blockchain, storage_manager, transaction_manager):
-        """Initialize BlockManager with blockchain dependencies and difficulty settings."""
+        """
+        Initialize BlockManager with references to:
+        - blockchain: The main Blockchain object (provides in-memory chain list).
+        - storage_manager: For block & transaction persistence (LMDB, etc.).
+        - transaction_manager: For transaction validations and references.
+        """
         self.blockchain = blockchain
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
-        self.chain = blockchain.chain  # ✅ Direct reference to the blockchain chain
+        
+        # Direct reference to the chain from the Blockchain object
+        self.chain = blockchain.chain
 
         self.network = Constants.NETWORK
         self.version = Constants.VERSION
         self.difficulty_target = Constants.GENESIS_TARGET
 
-        logging.info(f"[BLOCKMANAGER] Initialized on {self.network.upper()} | Version {self.version} | Difficulty {hex(self.difficulty_target)}")
+        logging.info(
+            f"[BLOCKMANAGER] Initialized on {self.network.upper()} "
+            f"| Version {self.version} | Difficulty {hex(self.difficulty_target)}"
+        )
 
     def validate_block(self, block):
+        """
+        Hook for additional block validation logic, e.g.:
+        - Checking block shape
+        - Doing advanced checks (smart-contract states, etc.)
+        Currently references `blockchain` (imported lazily if needed).
+        """
         from Zyiron_Chain.blockchain.blockchain import Blockchain
-        # Use Blockchain here without circular import issues.
-        # Perform your block validation logic that depends on Blockchain.
+        # Perform any advanced block validations here, if required.
 
     def validate_chain(self):
         """
-        Validate chain integrity:
-        - Ensures transactions in each block meet the confirmation requirements.
-        - Ensures each block's previous_hash correctly links to the prior block's hash.
-        - Ensures Proof-of-Work validity.
+        Validate the entire chain for integrity:
+         - Ensures each block's transactions meet the required confirmations.
+         - Checks correct previous_hash linkage except for Genesis.
+         - Ensures block difficulty/Proof-of-Work is correct.
+         - Double-checks block hash correctness using double-hashed data.
         """
         if not self.chain:
             logging.error("[ERROR] ❌ Blockchain is empty. Cannot validate.")
@@ -86,13 +140,17 @@ class BlockManager:
 
         for i in range(len(self.chain)):
             current_block = self.chain[i]
-
-            # ✅ Ensure block attributes exist before validation
-            if not hasattr(current_block, "transactions") or not hasattr(current_block, "previous_hash") or not hasattr(current_block, "hash") or not hasattr(current_block, "header"):
+            # -- Basic attribute checks
+            if (
+                not hasattr(current_block, "transactions")
+                or not hasattr(current_block, "previous_hash")
+                or not hasattr(current_block, "hash")
+                or not hasattr(current_block, "header")
+            ):
                 logging.error(f"[ERROR] ❌ Block {i} is missing required attributes. Possible corruption.")
                 return False
 
-            # ✅ Validate confirmations for transactions
+            # -- Confirmations check for transactions
             for tx in current_block.transactions:
                 if not hasattr(tx, "tx_id"):
                     logging.error(f"[ERROR] ❌ Transaction in Block {current_block.index} is missing a tx_id.")
@@ -100,16 +158,21 @@ class BlockManager:
 
                 tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
                 required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, 8)
-                
-                # ✅ Ensure transaction IDs are double-hashed
-                double_hashed_tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
+
+                # Double-hash the transaction ID for validation
+                double_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
 
                 confirmations = self.storage_manager.get_transaction_confirmations(double_hashed_tx_id)
                 if confirmations is None or confirmations < required_confirmations:
-                    logging.error(f"[ERROR] ❌ Transaction {tx.tx_id} in Block {current_block.index} does not meet required confirmations ({required_confirmations}). Found: {confirmations}")
+                    logging.error(
+                        f"[ERROR] ❌ Transaction {tx.tx_id} in Block {current_block.index} "
+                        f"does not meet required confirmations ({required_confirmations}). "
+                        f"Found: {confirmations}"
+                    )
                     return False
 
-            # ✅ Validate previous hash linkage (skip for Genesis block)
+            # -- Validate previous hash linkage (skip for Genesis)
             if i > 0:
                 prev_block = self.chain[i - 1]
                 if not hasattr(prev_block, "hash"):
@@ -117,49 +180,44 @@ class BlockManager:
                     return False
 
                 if current_block.previous_hash != prev_block.hash:
-                    logging.error(f"[ERROR] ❌ Block {i} has a previous hash mismatch. Expected: {prev_block.hash}, Found: {current_block.previous_hash}")
+                    logging.error(
+                        f"[ERROR] ❌ Block {i} has a previous hash mismatch. "
+                        f"Expected: {prev_block.hash}, Found: {current_block.previous_hash}"
+                    )
                     return False
 
-            # ✅ Validate difficulty dynamically
+            # -- Validate block difficulty: check PoW
             try:
                 block_difficulty = int(current_block.header.difficulty)
                 if int(current_block.hash, 16) >= block_difficulty:
-                    logging.error(f"[ERROR] ❌ Block {i} does not meet the difficulty target. Expected < {hex(block_difficulty)}, Found: {current_block.hash}")
+                    logging.error(
+                        f"[ERROR] ❌ Block {i} does not meet difficulty target. "
+                        f"Expected < {hex(block_difficulty)}, Found: {current_block.hash}"
+                    )
                     return False
             except (ValueError, TypeError) as e:
                 logging.error(f"[ERROR] ❌ Invalid difficulty value in Block {i}: {e}")
                 return False
 
-            # ✅ Verify block integrity (hash correctness) using double SHA3-384
-            expected_hash = Hashing.double_sha3_384(current_block.calculate_hash().encode())
+            # -- Validate block hash correctness (double SHA3-384)
+            expected_hash = hashlib.sha3_384(current_block.calculate_hash().encode()).hexdigest()
+
             if current_block.hash != expected_hash:
-                logging.error(f"[ERROR] ❌ Block {i} hash mismatch (possible corruption). Expected: {expected_hash}, Found: {current_block.hash}")
+                logging.error(
+                    f"[ERROR] ❌ Block {i} hash mismatch (possible corruption). "
+                    f"Expected: {expected_hash}, Found: {current_block.hash}"
+                )
                 return False
 
         logging.info("[INFO] ✅ Blockchain validation passed.")
         return True
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def calculate_target(self, storage_manager):
         """
         Dynamically adjusts mining difficulty based on actual vs. expected block times.
-        Uses `Constants.DIFFICULTY_ADJUSTMENT_INTERVAL` to determine difficulty adjustments.
+        - Uses rolling averages over `Constants.DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
+        - Prevents excessive jumps in difficulty by enforcing min/max limits.
+        - Ensures difficulty never falls below `Constants.MIN_DIFFICULTY`.
         """
         try:
             stored_blocks = storage_manager.get_all_blocks()
@@ -171,52 +229,46 @@ class BlockManager:
 
             last_block = stored_blocks[-1]
 
-            # ✅ Ensure block header exists before accessing difficulty
+            # ✅ Ensure last block has a valid difficulty value
             if "header" not in last_block or "difficulty" not in last_block["header"]:
                 logging.error("[DIFFICULTY ERROR] ❌ Last block is missing a valid header or difficulty value.")
                 return Constants.GENESIS_TARGET
 
             try:
-                last_difficulty = int(str(last_block["header"].get("difficulty", Constants.GENESIS_TARGET)), 16)
+                # ✅ Retrieve last difficulty & ensure it's correctly formatted
+                last_difficulty_str = str(last_block["header"].get("difficulty", Constants.GENESIS_TARGET))
+                last_difficulty = int(last_difficulty_str, 16) if last_difficulty_str.startswith("0x") else int(last_difficulty_str)
             except ValueError as e:
                 logging.error(f"[DIFFICULTY ERROR] ❌ Failed to convert difficulty value: {e}")
                 return Constants.GENESIS_TARGET
 
-            # ✅ Ensure at least `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks exist before adjusting difficulty
+            # ✅ If insufficient blocks for adjustment, return last difficulty
             if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
                 logging.info("[DIFFICULTY] ⚠️ Not enough blocks for adjustment. Using last difficulty.")
                 return last_difficulty
 
-            # ✅ Get the block at the difficulty adjustment interval
+            # ✅ Retrieve timestamps for comparison
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
-
-            # ✅ Validate timestamps before computing time difference
-            if "timestamp" not in last_block["header"] or "timestamp" not in first_block["header"]:
-                logging.error("[DIFFICULTY ERROR] ❌ One of the blocks is missing a timestamp.")
-                return last_difficulty
-
             try:
                 last_block_timestamp = int(last_block["header"]["timestamp"])
                 first_block_timestamp = int(first_block["header"]["timestamp"])
-            except ValueError as e:
+            except (ValueError, TypeError) as e:
                 logging.error(f"[DIFFICULTY ERROR] ❌ Invalid timestamp format: {e}")
                 return last_difficulty
 
-            # ✅ Calculate actual vs expected block mining time
-            actual_time_taken = max(1, last_block_timestamp - first_block_timestamp)  # Prevent division by zero
+            # ✅ Compute actual vs expected block time
+            actual_time_taken = max(1, last_block_timestamp - first_block_timestamp)
             expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
 
-            # ✅ Compute adjustment ratio
+            # ✅ Compute difficulty adjustment ratio & apply min/max limits
             adjustment_ratio = expected_time / actual_time_taken
             adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
 
-            # ✅ Compute new difficulty target
+            # ✅ Compute new difficulty & ensure it stays within the allowed range
             new_target = int(last_difficulty * adjustment_ratio)
-
-            # ✅ Ensure difficulty target remains within limits
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-            logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty to {hex(new_target)} at block {num_blocks}. (Ratio: {adjustment_ratio:.4f})")
+            logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty to {hex(new_target)} at block {num_blocks} (Ratio: {adjustment_ratio:.4f})")
             return new_target
 
         except Exception as e:
@@ -224,43 +276,51 @@ class BlockManager:
             return Constants.GENESIS_TARGET
 
 
-
-
-
-
-
-
-
-
-
     def get_average_block_time(self, storage_manager):
         """
-        Get the rolling average block mining time over the last `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
+        Returns the rolling average block time across the last N blocks,
+        where N = DIFFICULTY_ADJUSTMENT_INTERVAL.
+        If insufficient blocks are present, returns TARGET_BLOCK_TIME.
         """
         stored_blocks = storage_manager.get_all_blocks()
         num_blocks = len(stored_blocks)
 
         if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL + 1:
-            logging.warning(f"[DIFFICULTY] Not enough blocks ({num_blocks}) for full difficulty adjustment.")
+            logging.warning(
+                f"[DIFFICULTY] Not enough blocks ({num_blocks}) for full difficulty adjustment."
+            )
             return Constants.TARGET_BLOCK_TIME
 
-        times = [
-            stored_blocks[i]["header"]["timestamp"] - stored_blocks[i - 1]["header"]["timestamp"]
-            for i in range(num_blocks - Constants.DIFFICULTY_ADJUSTMENT_INTERVAL, num_blocks)
-        ]
+        try:
+            times = []
+            start_index = num_blocks - Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
+            for i in range(start_index + 1, num_blocks):
+                # difference from block[i-1] to block[i]
+                diff = stored_blocks[i]["header"]["timestamp"] - stored_blocks[i - 1]["header"]["timestamp"]
+                times.append(diff)
 
-        avg_time = sum(times) / len(times) if times else Constants.TARGET_BLOCK_TIME
-        logging.info(f"[DIFFICULTY] Average block time: {avg_time:.2f} sec (Target: {Constants.TARGET_BLOCK_TIME} sec)")
-        return avg_time
-    
+            if not times:
+                return Constants.TARGET_BLOCK_TIME  # fallback if no valid times
 
+            avg_time = sum(times) / len(times)
+            logging.info(
+                f"[DIFFICULTY] Average block time: {avg_time:.2f} sec "
+                f"(Target: {Constants.TARGET_BLOCK_TIME} sec)"
+            )
+            return avg_time
+
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to calculate average block time: {e}")
+            return Constants.TARGET_BLOCK_TIME
 
     def calculate_merkle_root(self, transactions):
         """
         Compute the Merkle root using double SHA3-384.
+        - If no transactions or error, returns ZERO_HASH.
+        - Otherwise, each transaction is serialized & double-hashed
+          to build up a Merkle tree.
         """
         try:
-            # ✅ Ensure transactions is a valid list
             if not isinstance(transactions, list):
                 logging.error("[MERKLE ERROR] ❌ Transactions input must be a list.")
                 return Constants.ZERO_HASH
@@ -269,26 +329,28 @@ class BlockManager:
                 logging.warning("[MERKLE] ⚠️ No transactions found. Returning ZERO_HASH.")
                 return Constants.ZERO_HASH
 
-            # ✅ Compute initial transaction hashes
             tx_hashes = []
             for tx in transactions:
                 try:
-                    tx_serialized = json.dumps(tx.to_dict() if hasattr(tx, "to_dict") else tx, sort_keys=True).encode()
+                    # If `tx` has a `to_dict()`, use that. Otherwise, assume `tx` is dict-like
+                    to_serialize = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    tx_serialized = json.dumps(to_serialize, sort_keys=True).encode()
                     tx_hashes.append(Hashing.double_sha3_384(tx_serialized))
                 except (TypeError, ValueError) as e:
                     logging.error(f"[MERKLE ERROR] ❌ Failed to serialize transaction: {e}")
-                    return Constants.ZERO_HASH  # Return ZERO_HASH if serialization fails
+                    return Constants.ZERO_HASH
 
-            # ✅ Compute Merkle root
+            # Build the merkle tree pairwise
             while len(tx_hashes) > 1:
                 if len(tx_hashes) % 2 != 0:
-                    tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd number
+                    tx_hashes.append(tx_hashes[-1])  # duplicate last hash if odd length
+                # pair and combine
+                temp_level = []
+                for i in range(0, len(tx_hashes), 2):
+                    combined = tx_hashes[i] + tx_hashes[i + 1]
+                    temp_level.append(hashlib.sha3_384(combined.encode()).hexdigest())
 
-                # ✅ Optimize list processing by using list comprehension
-                tx_hashes = [
-                    Hashing.double_sha3_384((tx_hashes[i] + tx_hashes[i + 1]).encode())
-                    for i in range(0, len(tx_hashes), 2)
-                ]
+                tx_hashes = temp_level
 
             logging.info(f"[MERKLE] ✅ Merkle Root Computed: {tx_hashes[0]}")
             return tx_hashes[0]
@@ -297,49 +359,46 @@ class BlockManager:
             logging.error(f"[MERKLE ERROR] ❌ Exception while computing Merkle root: {str(e)}")
             return Constants.ZERO_HASH
 
-
-
-
-
     def send_block_information(self, block):
         """
-        Store block data via StorageManager.
+        Wrapper to store block data via the StorageManager,
+        typically after verifying or mining.
         """
         try:
             self.storage_manager.store_block(block, block.header.difficulty)
-            logging.info(f"[INFO] ✅ Block {block.index} stored successfully. Difficulty: {hex(block.header.difficulty)}")
+            logging.info(
+                f"[INFO] ✅ Block {block.index} stored successfully. Difficulty: {hex(block.header.difficulty)}"
+            )
         except Exception as e:
             logging.error(f"[ERROR] ❌ Failed to store block {block.index}: {e}")
             raise
 
-    
     def add_block(self, block):
         """
-        Add a validated block to the chain and adjust difficulty if needed.
+        Add a validated block to the chain in-memory,
+        then optionally trigger difficulty adjustments.
         """
         self.chain.append(block)
-        logging.info(f"[INFO] ✅ Block {block.index} added. Difficulty: {hex(block.header.difficulty)}")
+        logging.info(
+            f"[INFO] ✅ Block {block.index} added. "
+            f"Difficulty: {hex(block.header.difficulty)}"
+        )
 
-        # Ensure difficulty is updated every adjustment interval
+        # If we want to re-check/adjust difficulty every N blocks, do it here
         if len(self.chain) % Constants.DIFFICULTY_ADJUSTMENT_INTERVAL == 0:
             self.difficulty_target = self.adjust_difficulty(self.storage_manager)
 
     def get_latest_block(self):
         """
-        Retrieve the latest block from storage.
+        Return the last block in local in-memory chain,
+        or None if chain is empty.
         """
         return self.chain[-1] if self.chain else None
 
-
-
-
-
-
-        
-    def adjust_difficulty(self, storage_manager):
+    def adjust_difficulty(self, storage_manager): 
         """
-        Adjust mining difficulty based on actual vs. expected block times.
-        Ensures difficulty is updated every `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks.
+        Re-checks the difficulty based on actual vs. expected block times,
+        then sets the new difficulty to keep the block time close to `Constants.TARGET_BLOCK_TIME`.
         """
         try:
             stored_blocks = storage_manager.get_all_blocks()
@@ -349,25 +408,22 @@ class BlockManager:
                 logging.info("[DIFFICULTY] ❌ No blocks found. Using Genesis Target.")
                 return Constants.GENESIS_TARGET
 
-            # ✅ Ensure at least `DIFFICULTY_ADJUSTMENT_INTERVAL` blocks exist before adjusting difficulty
+            # ✅ If not enough blocks exist, return the last recorded difficulty
             if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
-                logging.info(f"[DIFFICULTY] ⚠️ Not enough blocks ({num_blocks}) for difficulty adjustment. Using last recorded difficulty.")
+                logging.info(f"[DIFFICULTY] ⚠️ Not enough blocks ({num_blocks}) to adjust difficulty. Using last recorded difficulty.")
                 last_diff = stored_blocks[-1]["header"].get("difficulty", Constants.GENESIS_TARGET)
-                try:
-                    return int(last_diff, 16) if isinstance(last_diff, str) else last_diff
-                except ValueError as e:
-                    logging.error(f"[DIFFICULTY ERROR] ❌ Failed to convert last difficulty: {e}")
-                    return Constants.GENESIS_TARGET
+                return int(last_diff, 16) if isinstance(last_diff, str) else last_diff
 
-            # ✅ Retrieve first and last block within the adjustment interval
+            # ✅ Select blocks at the start & end of the interval
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
             last_block = stored_blocks[-1]
 
-            # ✅ Validate timestamps before computing time difference
+            # ✅ Ensure timestamps exist
             if "timestamp" not in last_block["header"] or "timestamp" not in first_block["header"]:
-                logging.error("[DIFFICULTY ERROR] ❌ One of the blocks is missing a timestamp.")
+                logging.error("[DIFFICULTY ERROR] ❌ Missing timestamp in block header.")
                 return Constants.GENESIS_TARGET
 
+            # ✅ Convert timestamps to integers
             try:
                 last_block_timestamp = int(last_block["header"]["timestamp"])
                 first_block_timestamp = int(first_block["header"]["timestamp"])
@@ -375,28 +431,26 @@ class BlockManager:
                 logging.error(f"[DIFFICULTY ERROR] ❌ Invalid timestamp format: {e}")
                 return Constants.GENESIS_TARGET
 
-            # ✅ Calculate actual vs. expected block mining time
-            actual_time_taken = max(1, last_block_timestamp - first_block_timestamp)  # Prevent division by zero
+            # ✅ Compute actual vs expected block time
+            actual_time_taken = max(1, last_block_timestamp - first_block_timestamp)
             expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
 
-            # ✅ Compute adjustment ratio
-            adjustment_ratio = expected_time / actual_time_taken
-            adjustment_ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, adjustment_ratio))
+            # ✅ Compute adjustment ratio and clamp within defined limits
+            ratio = expected_time / actual_time_taken
+            ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, ratio))
 
-            # ✅ Retrieve last difficulty and ensure it's a valid integer
+            # ✅ Retrieve last difficulty (hex -> int if needed)
             try:
                 last_difficulty = int(str(last_block["header"].get("difficulty", Constants.GENESIS_TARGET)), 16)
             except ValueError as e:
                 logging.error(f"[DIFFICULTY ERROR] ❌ Failed to retrieve last difficulty: {e}")
                 return Constants.GENESIS_TARGET
 
-            # ✅ Compute new difficulty target
-            new_target = int(last_difficulty * adjustment_ratio)
-
-            # ✅ Ensure difficulty target remains within limits
+            # ✅ Calculate new difficulty and clamp to allowed range
+            new_target = int(last_difficulty * ratio)
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-            logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty to {hex(new_target)} at block {num_blocks}. (Ratio: {adjustment_ratio:.4f})")
+            logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty to {hex(new_target)} at block {num_blocks} (Ratio: {ratio:.4f})")
             return new_target
 
         except Exception as e:

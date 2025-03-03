@@ -36,7 +36,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.utils.hashing import Hashing
 # Ensure this is at the very top of your script, before any other code
 from Zyiron_Chain.database.lmdatabase import LMDBManager
-
+import hashlib
 class StandardMempool:
     def __init__(self, poc, max_size_mb=None):
         """
@@ -73,7 +73,8 @@ class StandardMempool:
 
             # ✅ Ensure transaction IDs use double SHA3-384 hashing
             for tx in stored_txs:
-                tx["tx_id"] = Hashing.double_sha3_384(tx["tx_id"].encode())
+                tx["tx_id"] = hashlib.sha3_384(tx["tx_id"].encode()).hexdigest()
+
 
             logging.info(f"[MEMPOOL] Loaded {len(stored_txs)} pending transactions from LMDB.")
 
@@ -99,7 +100,8 @@ class StandardMempool:
         :return: True if the transaction was added, False otherwise.
         """
         # ✅ Compute double-hashed transaction ID
-        transaction.tx_id = Hashing.double_sha3_384(transaction.tx_id.encode())
+        transaction.tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
+
 
         # 🚫 Reject Smart Transactions
         if transaction.tx_id.startswith("S-"):
@@ -163,7 +165,8 @@ class StandardMempool:
                 "fee": transaction.fee,
                 "fee_per_byte": transaction.fee / transaction_size,
                 "timestamp": time.time(),
-                "parents": [Hashing.double_sha3_384(inp.tx_out_id.encode()) for inp in transaction.inputs],
+                "parents": [hashlib.sha3_384(inp.tx_out_id.encode()).hexdigest() for inp in transaction.inputs],
+
                 "children": [],
                 "status": "Pending"
             }))
@@ -245,7 +248,8 @@ class StandardMempool:
 
             # ✅ Ensure transactions use double SHA3-384 hash format
             for tx in filtered_txs:
-                tx["tx_id"] = Hashing.double_sha3_384(tx["tx_id"].encode())
+                tx["tx_id"] = hashlib.sha3_384(tx["tx_id"].encode()).hexdigest()
+
 
             # ✅ Sort transactions by highest fee-per-byte first
             sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
@@ -440,7 +444,8 @@ class StandardMempool:
         """
         with self.lock:
             # ✅ Ensure transaction ID uses double hash
-            tx_id_hashed = Hashing.double_sha3_384(tx_id.encode())
+            tx_id_hashed = hashlib.sha3_384(tx_id.encode()).hexdigest()
+
 
             # ✅ Fetch transaction from LMDB
             transaction_data = self.lmdb.get(f"mempool:{tx_id_hashed}")
@@ -607,7 +612,8 @@ class StandardMempool:
         """
         with self.lock:
             # ✅ Ensure transaction ID is double-hashed
-            tx_id_hashed = Hashing.double_sha3_384(tx_id.encode())
+            tx_id_hashed = hashlib.sha3_384(tx_id.encode()).hexdigest()
+
 
             # ✅ Fetch transaction from LMDB
             transaction_data = self.lmdb.get(f"mempool:{tx_id_hashed}")

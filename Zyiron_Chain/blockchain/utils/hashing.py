@@ -38,7 +38,8 @@ class Hashing:
         :param data: Input data in bytes format.
         :return: Double SHA3-384 hashed hex string.
         """
-        first_hash = hashlib.sha3_384(data).digest()
+        first_hash = hashlib.sha3_384(data).hexdigest()
+
         return hashlib.sha3_384(first_hash).hexdigest()
 
     @classmethod

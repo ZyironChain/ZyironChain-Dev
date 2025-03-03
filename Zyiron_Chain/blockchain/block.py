@@ -62,7 +62,16 @@ from Zyiron_Chain.blockchain.utils.hashing import Hashing  # ✅ Use new hashing
 from Zyiron_Chain.blockchain.constants import Constants
 
 class Block:
-    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0, difficulty=None, miner_address=None):
+    def __init__(
+        self,
+        index,
+        previous_hash,
+        transactions,
+        timestamp=None,
+        nonce=0,
+        difficulty=None,
+        miner_address=None
+    ):
         self.index = index
         self.previous_hash = previous_hash
         self.transactions = transactions
@@ -72,81 +81,89 @@ class Block:
         self._merkle_root = None
         self.timestamp = int(timestamp or time.time())
 
-        # Initialize header with miner_address and nonce
+        # (1) Compute the Merkle root before creating the block header
+        # so that the BlockHeader has the final, correct merkle_root.
+        computed_merkle = self._compute_merkle_root()
+
+        # (2) Initialize header with the computed merkle_root
         self.header = BlockHeader(
             version=Constants.VERSION,
             index=self.index,
             previous_hash=self.previous_hash,
-            merkle_root=self.merkle_root,
+            merkle_root=computed_merkle,  # Use the computed Merkle root
             timestamp=self.timestamp,
             nonce=self.nonce,  # Pass nonce to the header
             difficulty=self.difficulty,
             miner_address=self.miner_address
         )
+
+        # (3) Calculate the overall block hash (double SHA3-384)
         self.hash = self.calculate_hash()
 
+
+
     def calculate_hash(self):
-        """Calculate the block's hash using SHA3-384."""
+        """Calculate the block's SHA3-384 hash and return it as a hex string."""
         header_string = (
             f"{self.header.version}{self.header.index}{self.header.previous_hash}"
             f"{self.header.merkle_root}{self.header.timestamp}"
             f"{self.header.nonce}{self.header.difficulty}"
             f"{self.header.miner_address}"
         ).encode()
-        return Hashing.double_sha3_384(header_string)
+
+        return hashlib.sha3_384(header_string).hexdigest()  # ✅ Ensuring hex output
 
 
     def _adjust_difficulty(self):
         """Ensure difficulty respects network limits"""
         return max(min(self.difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-
     @property
     def merkle_root(self):
-        """Lazily computed Merkle root property"""
+        """
+        Lazily computed Merkle root property, but we already set it
+        in the constructor as well. This will recompute only if needed.
+        """
         if self._merkle_root is None:
             self._merkle_root = self._compute_merkle_root()
-            # Remove the validate_hash check since it doesn't exist
         return self._merkle_root
 
     def _compute_merkle_root(self):
         """Compute the Merkle root using double SHA3-384."""
         if not self.transactions:
-            return Hashing.double_sha3_384(Constants.ZERO_HASH.encode())
+            return hashlib.sha3_384(Constants.ZERO_HASH.encode()).hexdigest()
+
 
         tx_hashes = []
         for tx in self.transactions:
             if not hasattr(tx, 'tx_id') or not isinstance(tx.tx_id, str):
                 raise ValueError("Invalid transaction format for hashing")
-            tx_hashes.append(Hashing.double_sha3_384(tx.tx_id.encode()))
+        tx_hashes.append(hashlib.sha3_384(tx.tx_id.encode()).hexdigest())
+
 
         while len(tx_hashes) > 1:
             if len(tx_hashes) % 2 != 0:
                 tx_hashes.append(tx_hashes[-1])
-            
+
             new_level = []
             for i in range(0, len(tx_hashes), 2):
-                combined = tx_hashes[i] + tx_hashes[i+1]
-                new_level.append(Hashing.double_sha3_384(combined.encode()))
+                combined = tx_hashes[i] + tx_hashes[i + 1]
+            new_level.append(hashlib.sha3_384(combined.encode()).hexdigest())
+
             tx_hashes = new_level
 
         return tx_hashes[0]
 
-
-
-
-
-
     def store_block(self):
         """
         Use PoC to store the block and ensure proper routing.
-        The PoC will determine where to store transactions (LMDB, etc.).
+        If you're also storing blocks via your miner or chain,
+        be careful not to double-store the same block.
         """
         from Zyiron_Chain.database.poc import PoC  # ✅ Prevent circular import
         poc = PoC()
         difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
         poc.store_block(self, difficulty)
-
 
     def to_dict(self):
         """Convert Block into a serializable dictionary."""
@@ -159,7 +176,7 @@ class Block:
             "difficulty": self.difficulty,
             "miner_address": self.miner_address,
             "hash": self.hash,
-            "merkle_root": self.merkle_root,
+            "merkle_root": self.merkle_root,  # The final computed merkle root
             "header": self.header.to_dict()
         }
 
@@ -168,7 +185,7 @@ class Block:
         if not isinstance(tx, (Transaction, CoinbaseTx)):
             raise TypeError(f"Invalid transaction type: {type(tx)}")
         return tx.to_dict()
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         """Deserialization with enhanced validation"""
@@ -185,7 +202,7 @@ class Block:
             for idx, tx_data in enumerate(data.get('transactions', [])):
                 if not isinstance(tx_data, dict):
                     raise TypeError(f"Transaction {idx} must be dict, got {type(tx_data)}")
-                
+
                 tx_type = tx_data.get('type')
                 try:
                     if tx_type == 'COINBASE':
@@ -207,16 +224,13 @@ class Block:
         except KeyError as e:
             raise ValueError(f"Missing required field: {str(e)}") from e
 
-
-        
     @property
     def is_coinbase(self, tx_index=0) -> bool:
-        """Validate coinbase transaction"""
+        """Check if a transaction is coinbase at the specified index."""
         if not self.transactions:
             return False
         return isinstance(self.transactions[tx_index], CoinbaseTx)
-    
-    
+
     def validate_transactions(self, fee_model, mempool, block_size):
         """
         Validate all transactions in the block, ensuring:
@@ -244,7 +258,10 @@ class Block:
             actual_fee = input_total - output_total
 
             if actual_fee < required_fee:
-                logging.error(f"[ERROR] ❌ Transaction {tx.tx_id} does not meet the required fees. Required: {required_fee}, Given: {actual_fee}")
+                logging.error(
+                    f"[ERROR] ❌ Transaction {tx.tx_id} does not meet the required fees. "
+                    f"Required: {required_fee}, Given: {actual_fee}"
+                )
                 return False
 
         logging.info("[INFO] ✅ All transactions validated successfully.")

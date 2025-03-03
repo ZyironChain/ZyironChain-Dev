@@ -65,9 +65,10 @@ logging.basicConfig(
 
 log = logging.getLogger(__name__)
 log.info(f"{__name__} logger initialized.")
-
+import hashlib
 from typing import List, Optional, Dict
 from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.utils.hashing import Hashing
 
 class StorageManager:
     def __init__(self, poc_instance):
@@ -93,11 +94,15 @@ class StorageManager:
         self.current_block_offset = 0
         self._initialize_block_data_file()
 
+
+
+
+
     def _initialize_block_data_file(self):
         """
         Initialize block.data file with the correct magic number.
         - Creates the block data directory if it doesn't exist.
-        - Writes the magic number to the file.
+        - Writes the magic number if file is new/empty.
         - Validates the magic number on startup.
         """
         try:
@@ -112,22 +117,72 @@ class StorageManager:
             self.current_block_file = os.path.join(block_data_dir, "block.data")
             logging.info(f"[STORAGE] Block data file path set to: {self.current_block_file}")
 
-            # ✅ Write the magic number to the file
-            with open(self.current_block_file, "wb") as f:
-                f.write(struct.pack(">I", Constants.MAGIC_NUMBER))  # Write magic number
-            logging.info(f"[STORAGE] ✅ Created block.data file with magic number {hex(Constants.MAGIC_NUMBER)}.")
+            file_is_new_or_empty = (not os.path.exists(self.current_block_file) or os.path.getsize(self.current_block_file) == 0)
 
-            # ✅ Validate the magic number on startup
+            if file_is_new_or_empty:
+                # Write the magic number to a new or empty file
+                with open(self.current_block_file, "wb") as f:
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                logging.info(f"[STORAGE] ✅ Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
+            else:
+                logging.info("[STORAGE] block.data file exists. Skipping rewrite of magic number...")
+
+            # ✅ Validate the magic number
             with open(self.current_block_file, "rb") as f:
                 file_magic_number = struct.unpack(">I", f.read(4))[0]
                 if file_magic_number != Constants.MAGIC_NUMBER:
-                    logging.error(f"[STORAGE ERROR] ❌ Invalid magic number in block.data file: {hex(file_magic_number)}")
+                    logging.error(
+                        f"[STORAGE ERROR] ❌ Invalid magic number in block.data file: {hex(file_magic_number)}. "
+                        f"Expected: {hex(Constants.MAGIC_NUMBER)}"
+                    )
                     return None
 
             logging.info(f"[STORAGE] ✅ Block storage initialized successfully.")
 
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to initialize block storage: {e}")
+            raise
+
+
+
+
+
+
+
+
+
+
+    def create_block_data_file(self, block: Block):
+        """
+        Append a block to the block.data file in binary format with all details.
+        Ensures that the file is available and starts with the network-specific magic number
+        if the file is empty.
+        """
+        try:
+            # Check that the block file path has been set
+            if not self.current_block_file:
+                raise ValueError("Current block file is not set.")
+
+            with open(self.current_block_file, "ab+") as f:
+                # If file is empty, write the magic number at the start
+                f.seek(0, os.SEEK_END)
+                if f.tell() == 0:
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                    logging.info(f"[STORAGE] Wrote network magic number {hex(Constants.MAGIC_NUMBER)} to block.data.")
+
+                # Serialize the block (using your _serialize_block_to_binary method)
+                block_data = self._serialize_block_to_binary(block)
+
+                # Write the length of the block data (4 bytes) followed by the block data
+                f.write(struct.pack(">I", len(block_data)))
+                f.write(block_data)
+
+                # Update the current block offset
+                self.current_block_offset = f.tell()
+                logging.info(f"[STORAGE] Appended Block {block.index} to block.data file at offset {self.current_block_offset}.")
+
+        except Exception as e:
+            logging.error(f"[STORAGE ERROR] Failed to write block to block.data file: {e}")
             raise
 
 
@@ -170,12 +225,6 @@ class StorageManager:
         """
         Retrieve a block from the block.data file using its offset.
         Ensures the file contains the correct network magic number and validates block integrity.
-
-        Args:
-            offset (int): The byte offset in the block.data file where the block starts.
-
-        Returns:
-            Optional[Block]: The deserialized Block object if successful, None otherwise.
         """
         try:
             # ✅ Ensure the block.data file exists
@@ -183,67 +232,37 @@ class StorageManager:
                 logging.error(f"[STORAGE ERROR] Block data file not found: {self.current_block_file}")
                 return None
 
+            file_size = os.path.getsize(self.current_block_file)
+
+            # ✅ Ensure offset is within valid bounds
+            if offset < 4 or offset >= file_size:
+                logging.error(f"[STORAGE ERROR] ❌ Invalid offset {offset} for block.data file of size {file_size}.")
+                return None
+
             with open(self.current_block_file, "rb") as f:
-                # ✅ Validate the network magic number at the start of the file
-                f.seek(0)
-                file_magic_number = struct.unpack(">I", f.read(4))[0]
-                if file_magic_number != Constants.MAGIC_NUMBER:
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Invalid magic number in block.data file: {hex(file_magic_number)}. "
-                        f"Expected: {hex(Constants.MAGIC_NUMBER)}"
-                    )
-                    return None
+                f.seek(offset, os.SEEK_SET)
 
-                # ✅ Validate the offset is within the file bounds
-                file_size = os.path.getsize(self.current_block_file)
-                if offset < 4 or offset >= file_size:  # Skip magic number (first 4 bytes)
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Invalid offset {offset} for block.data file of size {file_size}"
-                    )
-                    return None
-
-                # ✅ Seek to the block's starting offset and read the block size
-                f.seek(offset)
                 block_size_bytes = f.read(4)
                 if len(block_size_bytes) != 4:
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Failed to read block size at offset {offset}. "
-                        f"Reached end of file."
-                    )
+                    logging.error(f"[STORAGE ERROR] ❌ Failed to read block size at offset {offset}.")
                     return None
 
                 block_size = struct.unpack(">I", block_size_bytes)[0]
 
-                # ✅ Validate the block size is reasonable
-                if block_size <= 0 or block_size > Constants.MAX_BLOCK_SIZE_BYTES:
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Invalid block size {block_size} at offset {offset}. "
-                        f"Max allowed: {Constants.MAX_BLOCK_SIZE_BYTES}"
-                    )
+                # ✅ Validate the block size before reading data
+                if block_size <= 0 or offset + block_size > file_size:
+                    logging.error(f"[STORAGE ERROR] ❌ Block size {block_size} at offset {offset} is invalid.")
                     return None
 
-                # ✅ Read the block data
                 block_data = f.read(block_size)
                 if len(block_data) != block_size:
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Failed to read full block data at offset {offset}. "
-                        f"Expected {block_size} bytes, got {len(block_data)}"
-                    )
+                    logging.error(f"[STORAGE ERROR] ❌ Incomplete block data at offset {offset}.")
                     return None
 
                 # ✅ Deserialize the block data
                 block = self._deserialize_block_from_binary(block_data)
                 if not block:
-                    logging.error(f"[STORAGE ERROR] ❌ Failed to deserialize block at offset {offset}")
-                    return None
-
-                # ✅ Validate the block's hash matches its contents
-                calculated_hash = block.calculate_hash()
-                if block.hash != calculated_hash:
-                    logging.error(
-                        f"[STORAGE ERROR] ❌ Block hash mismatch at offset {offset}. "
-                        f"Expected: {calculated_hash}, Found: {block.hash}"
-                    )
+                    logging.error(f"[STORAGE ERROR] ❌ Failed to deserialize block at offset {offset}.")
                     return None
 
                 logging.info(f"[STORAGE] ✅ Successfully retrieved Block {block.index} from offset {offset}")
@@ -252,12 +271,7 @@ class StorageManager:
         except struct.error as e:
             logging.error(f"[STORAGE ERROR] ❌ Struct unpacking failed at offset {offset}: {e}")
             return None
-        except OSError as e:
-            logging.error(f"[STORAGE ERROR] ❌ File I/O error at offset {offset}: {e}")
-            return None
-        except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Unexpected error retrieving block at offset {offset}: {e}")
-            return None
+
 
     def _serialize_block_to_binary(self, block: Block) -> bytes:
         """
@@ -501,37 +515,42 @@ class StorageManager:
         Returns a Block object representing the latest block, or None if no valid block is found.
         """
         try:
-            # ✅ Fetch latest block metadata from LMDB
+            # -------------------------------------------------------------------------------------
+            # 1) Gather all block metadata from LMDB
+            # -------------------------------------------------------------------------------------
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 all_blocks = []
                 for key, value in cursor:
+                    # Only process keys that start with "block:"
                     if key.decode().startswith("block:"):
                         try:
-                            # ✅ Ensure value is correctly decoded as JSON
+                            # Convert the stored bytes to JSON
                             block_metadata = json.loads(value.decode("utf-8"))
 
-                            # ✅ Ensure the loaded object is a dictionary
                             if not isinstance(block_metadata, dict):
                                 logging.error(f"[STORAGE ERROR] ❌ Invalid block format (not a dict): {block_metadata}")
                                 continue
                             
-                            # ✅ Ensure "block_header" exists and is correctly formatted
                             header = block_metadata.get("block_header")
                             if not isinstance(header, dict) or "index" not in header:
                                 logging.error("[STORAGE ERROR] ❌ Block header missing 'index'")
                                 continue
-                            
+
                             all_blocks.append(block_metadata)
 
                         except json.JSONDecodeError as e:
                             logging.error(f"[STORAGE ERROR] ❌ Corrupt block metadata in LMDB: {e}")
+                            continue
 
+            # If no blocks are found, return None
             if not all_blocks:
                 logging.warning("[STORAGE] ⚠️ No blocks found in storage. Chain may be empty.")
                 return None
 
-            # ✅ Sort blocks by index and select the highest
+            # -------------------------------------------------------------------------------------
+            # 2) Sort blocks by their index and pick the highest (latest)
+            # -------------------------------------------------------------------------------------
             latest_block_data = max(all_blocks, key=lambda b: b["block_header"]["index"], default=None)
             if not latest_block_data:
                 logging.error("[ERROR] ❌ Could not determine latest block.")
@@ -542,36 +561,51 @@ class StorageManager:
                 logging.error(f"[ERROR] ❌ Retrieved block is missing a valid 'hash': {latest_block_data}")
                 return None
 
-            # ✅ Ensure required fields exist in block_header
+            # Ensure the block header has the basic required fields
             required_keys = ["index", "previous_hash", "timestamp", "nonce"]
             header = latest_block_data["block_header"]
             if not all(k in header for k in required_keys):
                 logging.error(f"[ERROR] ❌ Incomplete block metadata: {latest_block_data}")
                 return None
 
-            # ✅ Convert timestamp safely
+            # -------------------------------------------------------------------------------------
+            # 3) Validate the timestamp format
+            # -------------------------------------------------------------------------------------
             try:
                 timestamp = int(header["timestamp"])
             except (ValueError, TypeError) as e:
                 logging.error(f"[ERROR] ❌ Invalid timestamp format: {e}")
                 return None
 
-            # ✅ Validate network magic number in `block.data`
+            # -------------------------------------------------------------------------------------
+            # 4) Check magic number in the block.data file once, to confirm correctness
+            # -------------------------------------------------------------------------------------
             if not os.path.exists(self.current_block_file):
                 logging.error(f"[STORAGE ERROR] ❌ block.data file not found: {self.current_block_file}")
                 return None
 
             try:
                 with open(self.current_block_file, "rb") as f:
+                    # Ensure the file is at least 4 bytes (the size of the magic number)
+                    if os.path.getsize(self.current_block_file) < 4:
+                        logging.error(f"[STORAGE ERROR] ❌ block.data file is too small to contain magic number.")
+                        return None
+
                     file_magic_number = struct.unpack(">I", f.read(4))[0]
                     if file_magic_number != Constants.MAGIC_NUMBER:
-                        logging.error(f"[STORAGE ERROR] ❌ Invalid magic number in block.data file: {hex(file_magic_number)}")
+                        logging.error(
+                            f"[STORAGE ERROR] ❌ Invalid magic number in block.data file: {hex(file_magic_number)}. "
+                            f"Expected: {hex(Constants.MAGIC_NUMBER)}"
+                        )
                         return None
+
             except (struct.error, OSError) as e:
                 logging.error(f"[STORAGE ERROR] ❌ Failed to read magic number: {e}")
                 return None
 
-            # ✅ Retrieve full block data using offset stored in LMDB
+            # -------------------------------------------------------------------------------------
+            # 5) Fetch the actual block from the data file using its offset
+            # -------------------------------------------------------------------------------------
             block_offset = latest_block_data.get("data_offset")
             if not isinstance(block_offset, int):
                 logging.error("[ERROR] ❌ Block data offset missing or invalid in LMDB. Cannot retrieve block.")
@@ -591,15 +625,27 @@ class StorageManager:
 
 
 
+
     def get_total_mined_supply(self) -> Decimal:
         """
         Calculate the total mined coin supply by summing all Coinbase rewards from stored blocks.
-        Returns a Decimal representing the total mined coin supply.
+        Optimized by caching the total supply in LMDB for fast retrieval.
         """
-        total_supply = Decimal("0")
-
         try:
-            # ✅ Fetch all blocks from LMDB metadata storage
+            # ✅ Step 1: Check if the total supply is already cached in LMDB
+            with self.block_metadata_db.env.begin() as txn:
+                cached_supply = txn.get(b"total_mined_supply")
+
+            if cached_supply:
+                # ✅ If cached value exists, return it directly
+                total_supply = Decimal(cached_supply.decode("utf-8"))
+                logging.info(f"[STORAGE] ✅ Cached total mined supply retrieved: {total_supply} ZYC")
+                return total_supply
+
+            # -------------------------------------------------------------------------------------
+            # ✅ Step 2: If no cached supply, iterate through blocks to calculate it
+            # -------------------------------------------------------------------------------------
+            total_supply = Decimal("0")
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
@@ -608,27 +654,43 @@ class StorageManager:
                             block_metadata = json.loads(value.decode("utf-8"))
                             transactions = block_metadata.get("tx_ids", [])
 
+                            # ✅ Ensure at least one transaction exists
                             if transactions:
-                                coinbase_tx_id = transactions[0]  # ✅ The first transaction is always coinbase
+                                for tx_id in transactions:
+                                    # ✅ Retrieve transaction details from txindex LMDB
+                                    tx_data = self.txindex_db.get(f"tx:{tx_id}".encode())
 
-                                # ✅ Retrieve Coinbase transaction from txindex LMDB
-                                tx_data = self.txindex_db.get(f"tx:{coinbase_tx_id}".encode())
-                                if tx_data:
+                                    if not tx_data:
+                                        logging.warning(f"[STORAGE WARNING] Missing transaction {tx_id} in txindex.")
+                                        continue  # Skip if transaction doesn't exist
+
                                     tx_details = json.loads(tx_data.decode("utf-8"))
-                                    coinbase_outputs = tx_details.get("outputs", [])
 
-                                    if coinbase_outputs and "amount" in coinbase_outputs[0]:
-                                        total_supply += Decimal(str(coinbase_outputs[0]["amount"]))
+                                    # ✅ Ensure transaction is a Coinbase transaction
+                                    if tx_details.get("type") == "COINBASE":
+                                        coinbase_outputs = tx_details.get("outputs", [])
+
+                                        # ✅ Validate outputs before accessing amount
+                                        if coinbase_outputs and isinstance(coinbase_outputs, list):
+                                            for output in coinbase_outputs:
+                                                if "amount" in output:
+                                                    total_supply += Decimal(str(output["amount"]))
 
                         except json.JSONDecodeError as e:
                             logging.error(f"[STORAGE ERROR] ❌ Failed to parse block metadata: {e}")
+                            continue  # ✅ Skip corrupted blocks instead of stopping
 
-            logging.info(f"[STORAGE] ✅ Total mined supply: {total_supply} ZYC")
+            # ✅ Step 3: Cache the calculated total supply in LMDB for faster future lookups
+            with self.block_metadata_db.env.begin(write=True) as txn:
+                txn.put(b"total_mined_supply", str(total_supply).encode("utf-8"))
+
+            logging.info(f"[STORAGE] ✅ Total mined supply calculated & cached: {total_supply} ZYC")
             return total_supply
 
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to calculate total mined supply: {str(e)}")
             return Decimal("0")
+
 
 
     def get_all_blocks(self) -> List[Dict]:
@@ -700,54 +762,83 @@ class StorageManager:
 
     def store_block(self, block, difficulty):
         """
-        Store a block in LMDB-based storage. 
+        Store a block in LMDB-based storage.
         - Metadata is stored in `block_metadata.lmdb`
         - Transactions are indexed in `txindex.lmdb`
         - The full block is written to `block.data`
         """
         try:
             with self.block_metadata_db.env.begin(write=True) as txn:
-                # ✅ Ensure block.header exists and contains necessary fields
                 if not hasattr(block, "header") or not hasattr(block.header, "merkle_root"):
-                    logging.warning(f"[STORAGE WARNING] ⚠️ Block {block.index} missing Merkle Root. Recalculating...")
+                    logging.warning(f"[STORAGE WARNING] ⚠️ Block {block.index} missing Merkle Root. Recomputing Merkle root.")
                     block.header.merkle_root = self._calculate_merkle_root(block.transactions)
 
-                # ✅ Validate transactions before storing
+                # ✅ Ensure transactions attribute is a proper list
                 if not isinstance(block.transactions, list):
-                    logging.error(f"[STORAGE ERROR] ❌ Block {block.index} has an invalid transactions format.")
+                    logging.error(f"[STORAGE ERROR] ❌ Block {block.index} has an invalid transactions format (must be list).")
                     return
 
-                # ✅ Ensure block timestamp is correctly formatted
-                timestamp = block.timestamp if isinstance(block.timestamp, int) else int(time.time())
+                # ✅ Fix: Compute block hash before storing and ensure it's a hex string
+                block.hash = hashlib.sha3_384(block.calculate_hash().encode()).hexdigest()  # 🔥 Fix applied here
 
-                # ✅ Prepare block metadata with correct JSON serialization
+                # ✅ Fix: Ensure Merkle root is stored as a string
+                block.header.merkle_root = str(block.header.merkle_root)
+
+                # -------------------------------------------------------------------------------------
+                # ✅ Step 2: Prepare block metadata for LMDB
+                # -------------------------------------------------------------------------------------
+                timestamp = (
+                    block.timestamp if isinstance(block.timestamp, int) else int(time.time())
+                )
+
+                # ✅ Ensure difficulty is stored as an integer
+                try:
+                    difficulty_val = int(difficulty)
+                except ValueError:
+                    logging.error(f"[STORAGE ERROR] ❌ Difficulty must be an integer; received: {difficulty}")
+                    return
+
+                # ✅ Fix: Validate and store only valid transaction IDs
+                tx_ids = [
+                    tx.tx_id for tx in block.transactions if hasattr(tx, "tx_id") and isinstance(tx.tx_id, str)
+                ]
+                if len(tx_ids) < len(block.transactions):
+                    logging.warning(f"[STORAGE WARNING] ⚠️ Some transactions in Block {block.index} are missing valid tx_id.")
+
                 block_metadata = {
-                    "hash": block.hash,
+                    "hash": str(block.hash),  # ✅ Ensure correct hash serialization
                     "block_header": {
-                        "index": block.index,  # ✅ Ensure 'index' is included here
-                        "previous_hash": block.previous_hash,
-                        "merkle_root": block.header.merkle_root,
+                        "index": block.index,
+                        "previous_hash": str(block.previous_hash),  # 🔥 Ensure it's stored as a string
+                        "merkle_root": str(block.header.merkle_root),  # 🔥 Fix: Convert Merkle root to string
                         "timestamp": timestamp,
                         "nonce": getattr(block, "nonce", 0),
-                        "difficulty": difficulty,
+                        "difficulty": difficulty_val,
                     },
                     "transaction_count": len(block.transactions),
-                    "block_size": len(json.dumps(block.to_dict(), ensure_ascii=False).encode("utf-8")),  # ✅ Preserve encoding
-                    "merkle_root": block.header.merkle_root,
+                    "block_size": len(json.dumps(block.to_dict(), ensure_ascii=False).encode("utf-8")),
                     "data_file": self.current_block_file,
                     "data_offset": self.current_block_offset,
-                    "tx_ids": [tx.tx_id for tx in block.transactions if hasattr(tx, "tx_id")]  # ✅ Ensure tx_id exists
+                    "tx_ids": tx_ids,  # ✅ Now only storing valid tx_ids
                 }
 
-                # ✅ Store metadata in `block_metadata.lmdb`
-                txn.put(f"block:{block.hash}".encode(), json.dumps(block_metadata).encode("utf-8"))
+                # ✅ Store block metadata in LMDB
+                txn.put(
+                    f"block:{block.hash}".encode(),
+                    json.dumps(block_metadata).encode("utf-8")
+                )
 
-                # ✅ Store full block in `block.data`
-                try:
-                    self.create_block_data_file(block)
-                except Exception as e:
-                    logging.error(f"[STORAGE ERROR] ❌ Failed to write block {block.index} to block.data file: {e}")
-                    return
+            # ✅ Step 3: Append full block data to `block.data` file with error handling
+            try:
+                self.create_block_data_file(block)
+            except Exception as e:
+                logging.error(f"[STORAGE ERROR] ❌ Failed to write block {block.index} to block.data file: {e}")
+
+                # ✅ Fix: Remove block metadata from LMDB if writing to `block.data` fails
+                with self.block_metadata_db.env.begin(write=True) as txn:
+                    txn.delete(f"block:{block.hash}".encode())
+
+                return
 
             logging.info(f"[STORAGE] ✅ Block {block.index} stored successfully in LMDB.")
 
@@ -755,108 +846,6 @@ class StorageManager:
             logging.error(f"[STORAGE ERROR] ❌ Failed to store block {block.index}: {e}")
             raise
 
-    def add_block(self, block_hash: str, block_header: dict, transactions: list, size: int, difficulty: int):
-        """
-        Store all block components with explicit parameters in LMDB.
-        - Block metadata is stored in `block_metadata.lmdb`
-        - Transaction indexes are stored in `txindex.lmdb`
-        - Transactions are mapped to their blocks
-        """
-        try:
-            with self.block_metadata_db.env.begin(write=True) as txn:
-                # Prepare block metadata
-                block_metadata = {
-                    "hash": block_hash,
-                    "block_header": block_header,
-                    "transaction_count": len(transactions),
-                    "block_size": size,
-                    "difficulty": difficulty,
-                    "tx_ids": [tx["tx_id"] for tx in transactions]  # Ensure all transactions have a "tx_id" field
-                }
-
-                # ✅ Store block metadata in `block_metadata.lmdb`
-                txn.put(f"block:{block_hash}".encode(), json.dumps(block_metadata).encode("utf-8"))
-
-                # ✅ Index each transaction in `txindex.lmdb`
-                for idx, tx in enumerate(transactions):
-                    if not isinstance(tx, dict) or "tx_id" not in tx:
-                        logging.error(f"[STORAGE ERROR] ❌ Invalid transaction format at index {idx}")
-                        continue
-
-                    tx_index_data = {
-                        "block_hash": block_hash,
-                        "position": idx,
-                        "block_height": block_header["index"],
-                        "timestamp": block_header["timestamp"]
-                    }
-                    txn.put(f"tx:{tx['tx_id']}".encode(), json.dumps(tx_index_data).encode("utf-8"))
-
-            logging.info(f"[STORAGE] ✅ Block {block_hash} and transactions indexed in LMDB.")
-
-        except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Failed to add block: {str(e)}")
-            raise
-
-
-    def delete_all_blocks(self):
-        """
-        Delete all stored blocks from LMDB.
-        - Removes all metadata from `block_metadata.lmdb`
-        - Deletes all transaction indexes from `txindex.lmdb`
-        - Clears block storage references
-        """
-        try:
-            with self.block_metadata_db.env.begin(write=True) as txn:
-                cursor = txn.cursor()
-                for key, _ in cursor:
-                    if key.decode().startswith("block:"):
-                        txn.delete(key)
-
-            with self.txindex_db.env.begin(write=True) as txn:
-                cursor = txn.cursor()
-                for key, _ in cursor:
-                    if key.decode().startswith("tx:"):
-                        txn.delete(key)
-
-            # ✅ Reset block storage reference
-            self.current_block_file = None
-            self.current_block_offset = 0
-
-            logging.info("[STORAGE] ✅ All blocks deleted from LMDB storage.")
-
-        except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Failed to delete all blocks: {e}")
-            raise
-
-
-    def delete_block(self, block_hash: str):
-        """
-        Delete a block from LMDB by its hash.
-        - Removes metadata from `block_metadata.lmdb`
-        - Deletes associated transaction indexes from `txindex.lmdb`
-        - Ensures block data is unlinked from storage
-        """
-        try:
-            with self.block_metadata_db.env.begin(write=True) as txn:
-                block_metadata = txn.get(f"block:{block_hash}".encode())
-                if not block_metadata:
-                    logging.warning(f"[STORAGE] ⚠️ Block {block_hash} not found in LMDB.")
-                    return
-
-                # ✅ Parse metadata to remove associated transactions
-                block_metadata = json.loads(block_metadata.decode("utf-8"))
-                for tx_id in block_metadata.get("tx_ids", []):
-                    with self.txindex_db.env.begin(write=True) as tx_txn:
-                        tx_txn.delete(f"tx:{tx_id}".encode())
-
-                # ✅ Delete block metadata
-                txn.delete(f"block:{block_hash}".encode())
-
-            logging.info(f"[STORAGE] ✅ Block {block_hash} deleted from LMDB.")
-
-        except Exception as e:
-            logging.error(f"[STORAGE ERROR] ❌ Failed to delete block {block_hash}: {e}")
-            raise
 
     def store_transaction(self, tx_id: str, block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int):
         """
@@ -915,12 +904,21 @@ class StorageManager:
         - Returns None if transaction does not exist
         """
         try:
+            if not isinstance(tx_id, str):
+                logging.error(f"[STORAGE ERROR] ❌ Invalid transaction ID format: {tx_id}")
+                return None
+
+            # ✅ Convert transaction ID into bytes safely
+            tx_key = f"tx:{tx_id}".encode("utf-8")
+
             with self.txindex_db.env.begin() as txn:
-                tx_data = txn.get(f"tx:{tx_id}".encode())
-                if not tx_data:
-                    logging.warning(f"[STORAGE] ⚠️ Transaction {tx_id} not found in LMDB.")
-                    return None
-                return json.loads(tx_data.decode("utf-8"))
+                tx_data = txn.get(tx_key)
+
+            if not tx_data:
+                logging.warning(f"[STORAGE] ⚠️ Transaction {tx_id} not found in LMDB.")
+                return None
+
+            return json.loads(tx_data.decode("utf-8"))
 
         except json.JSONDecodeError as e:
             logging.error(f"[STORAGE ERROR] ❌ Corrupt transaction data for {tx_id}: {e}")

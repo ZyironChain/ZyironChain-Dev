@@ -101,52 +101,6 @@ class Miner:
         )
 
 
-    def sha3_384_pow(self, block_header, target, block_height, start_time):
-        """
-        Proof-of-Work function using SHA3-384:
-        - Mines the block by finding a nonce that meets the target difficulty.
-        - Periodically prints live mining status with a live count of elapsed time every 5 seconds.
-        - Returns the valid nonce and block hash.
-        """
-        nonce = 0
-        last_update = start_time
-        hash_attempts = 0
-        elapsed_seconds = 0  # Track elapsed time in seconds
-
-        logging.info(f"[MINING] ⛏️ Starting Proof-of-Work for Block {block_height} on {self.network.upper()}...")
-
-        # ✅ Precompute static header data (includes miner_address)
-        static_header_data = (
-            f"{block_header.version}{block_header.index}"
-            f"{block_header.previous_hash}{block_header.merkle_root}"
-            f"{block_header.timestamp}{block_header.difficulty}"
-            f"{block_header.miner_address}"  # Include miner_address
-        ).encode()
-
-        while True:
-            # ✅ Combine static header data with the current nonce
-            header_data = static_header_data + str(nonce).encode()
-
-            # ✅ Use double SHA3-384 hashing for PoW
-            first_hash = hashlib.sha3_384(header_data).digest()
-            block_hash = hashlib.sha3_384(first_hash).hexdigest()
-            hash_attempts += 1
-
-            # ✅ Check if the hash meets the difficulty target
-            if int(block_hash, 16) < target:
-                logging.info(f"[MINING] ✅ Block {block_height} successfully mined after {hash_attempts} attempts.")
-                return nonce, block_hash
-
-            nonce += 1
-
-            # ✅ Show live progress every 5 seconds with a live count
-            current_time = time.time()
-            if current_time - last_update >= 5:  # Update every 5 seconds
-                elapsed_seconds = int(current_time - start_time)  # Calculate total elapsed time
-                logging.info(f"[LIVE] ⏳ Block {block_height} | Nonce: {nonce} | Attempts: {hash_attempts} | Elapsed: {elapsed_seconds}s")
-                last_update = current_time
-
-
     def _calculate_block_size(self):
         """
         Dynamically adjust block size based on mempool transaction volume and block allocation settings.
@@ -395,16 +349,16 @@ class Miner:
         network = network or self.block_manager.blockchain.constants.NETWORK
         print(f"\n[INFO] ⛏️ Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
 
-        # Ensure blockchain is not empty; mine Genesis Block if needed
+        # ✅ Ensure blockchain is initialized and Genesis Block is valid
         if not self.block_manager.chain:
             logging.warning(f"[WARNING] ⚠️ Blockchain is empty! Mining Genesis Block on {network.upper()}...")
-            self.block_manager.blockchain._ensure_genesis_block()  # Ensures Genesis Block is mined
+            self.block_manager.blockchain._ensure_genesis_block()
 
-            # Load the newly mined Genesis Block
+            # ✅ Validate and retrieve the Genesis Block
             genesis_block = self.storage_manager.get_latest_block()
-            if not genesis_block:
-                raise RuntimeError(f"[ERROR] ❌ Failed to mine Genesis Block on {network.upper()}!")
-            
+            if not genesis_block or int(genesis_block.hash, 16) >= genesis_block.difficulty:
+                raise RuntimeError(f"[ERROR] ❌ Genesis Block validation failed on {network.upper()}!")
+
             logging.info(f"[INFO] ✅ Genesis Block Mined on {network.upper()}: {genesis_block.hash}")
             print(f"[INFO] ✅ Genesis Block Created (Hash: {genesis_block.hash[:12]}...)")
 
@@ -415,19 +369,22 @@ class Miner:
             try:
                 block = self.mine_block(network)
 
-                if not self.validate_new_block(block):
+                # ✅ Ensure mined block is valid before adding it
+                if not block or not self.validate_new_block(block):
                     logging.error(f"[ERROR] ❌ Invalid block mined at height {block.index} on {network.upper()}")
                     raise ValueError(f"[ERROR] ❌ Mined block failed validation on {network.upper()}.")
 
                 block_height += 1
                 self.block_manager.chain.append(block)
 
+                # ✅ Store mined block
                 self.storage_manager.store_block(block, block.header.difficulty)
 
-                # Retrieve and log the current total mined supply
+                # ✅ Retrieve and log total mined supply
                 total_supply = self.storage_manager.get_total_mined_supply()
                 logging.info(f"[SUPPLY] Total mined supply so far: {total_supply} out of maximum {Constants.MAX_SUPPLY}")
 
+                # ✅ Dynamically adjust difficulty
                 new_difficulty = self.block_manager.calculate_target(self.storage_manager)
                 logging.info(f"[DIFFICULTY] 🔄 Adjusted difficulty on {network.upper()} to: {hex(new_difficulty)}")
 
@@ -442,7 +399,7 @@ class Miner:
                     print(f"🆔 Block hash: {block.hash[:12]}...")
                 else:
                     print(f"[ERROR] ❌ Error occurred during block initialization on {network.upper()}.")
-                    
+
                 if self.block_manager.chain:
                     print(f"[ERROR] ❌ Last valid block hash: {self.block_manager.chain[-1].hash[:12]}...")
                 break
@@ -542,163 +499,93 @@ class Miner:
 
     def mine_block(self, network=Constants.NETWORK):
         """
-        Mines a new block with Proof-of-Work, dynamically adjusting difficulty,
-        and prints live updates of the nonce and elapsed time.
+        Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
+        - Uses single SHA3-384 hashing.
+        - Dynamically adjusts difficulty based on `Constants.DIFFICULTY_ADJUSTMENT_INTERVAL`.
         """
-        from threading import Lock
-        import time
-        from decimal import Decimal
-        import json
-        import hashlib
-        import logging
-        from Zyiron_Chain.blockchain.constants import Constants
-
         mining_lock = Lock()
-        valid_txs = []
-        new_block = None
-
         with mining_lock:
             try:
                 start_time = time.time()
                 last_update = start_time
 
-                # Retrieve the last stored block safely
-                last_stored_block = self.storage_manager.get_latest_block()
-                if not last_stored_block:
-                    logging.warning("[MINING] ⚠️ No previous block found; attempting to mine Genesis block.")
+                # ✅ Retrieve last stored block safely
+                last_block = self.storage_manager.get_latest_block()
+                if not last_block:
+                    logging.warning("[MINING] ⚠️ No previous block found; mining Genesis block.")
                     self.block_manager.blockchain._ensure_genesis_block()
-                    time.sleep(1)
-                    last_stored_block = self.storage_manager.get_latest_block()
-                    if not last_stored_block:
-                        logging.error("[MINING ERROR] ❌ Failed to retrieve or create Genesis block.")
-                        return None
+                    last_block = self.storage_manager.get_latest_block()
 
-                prev_block = last_stored_block
-                block_height = prev_block.index + 1
-                logging.info(f"\n🔄 Resuming from stored block {prev_block.index} (Hash: {prev_block.hash})")
+                if not last_block:
+                    logging.error("[MINING ERROR] ❌ Failed to retrieve or create Genesis block.")
+                    return None
 
-                # Set new block timestamp safely
-                current_timestamp = int(time.time())
-                new_timestamp = max(current_timestamp, int(prev_block.timestamp) + 1)
+                block_height = last_block.index + 1
+                logging.info(f"\n🔄 Resuming from Block {last_block.index} (Hash: {last_block.hash})")
 
-                # Dynamically adjust difficulty
+                # ✅ Dynamically adjust difficulty
                 current_target = self.block_manager.calculate_target(self.storage_manager)
                 current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
-                # Adjust block size dynamically
-                self._calculate_block_size()
-                current_block_size_mb = self.current_block_size
-
-                # Retrieve miner address safely
+                # ✅ Retrieve miner address safely
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
                 if not miner_address:
                     logging.error("[MINING ERROR] ❌ Failed to retrieve miner address.")
                     return None
 
-                # Fetch transactions safely
-                pending_txs = self.transaction_manager.mempool.get_pending_transactions(block_size_mb=current_block_size_mb)
-                if not isinstance(pending_txs, list):
-                    logging.warning("[MINING] ⚠️ Invalid transaction list retrieved. Defaulting to empty list.")
-                    pending_txs = []
+                self._calculate_block_size()
+                pending_txs = self.transaction_manager.mempool.get_pending_transactions(
+                    block_size_mb=self.current_block_size
+                ) or []
 
-                total_fees = sum(tx.fee for tx in pending_txs if hasattr(tx, "fee")) if pending_txs else Decimal("0")
+                total_fees = sum(tx.fee for tx in pending_txs if hasattr(tx, "fee"))
 
-                # Start extraNonce at 0
-                extraNonce = 0
+                # ✅ Create coinbase transaction
+                coinbase_tx = self._create_coinbase(miner_address, total_fees)
+                valid_txs = [coinbase_tx] + pending_txs
 
-                while True:  # This loop ensures we always have a valid nonce
-                    # Create coinbase transaction with extraNonce
-                    coinbase_tx = self._create_coinbase(miner_address, total_fees)
-                    coinbase_tx.extraNonce = extraNonce  # Set extraNonce field
-                    valid_txs = [coinbase_tx]
-                    current_block_size_bytes = len(json.dumps(coinbase_tx.to_dict()))
+                # ✅ Construct new block
+                new_block = Block(
+                    index=block_height,
+                    previous_hash=last_block.hash,
+                    transactions=valid_txs,
+                    timestamp=int(time.time()),
+                    nonce=0,
+                    difficulty=current_target
+                )
 
-                    for tx in pending_txs:
-                        try:
-                            tx_size = len(json.dumps(tx.to_dict()))
-                            if current_block_size_bytes + tx_size <= Constants.MAX_BLOCK_SIZE_BYTES and \
-                                    self.transaction_manager.validate_transaction(tx):
-                                valid_txs.append(tx)
-                                current_block_size_bytes += tx_size
-                        except Exception as e:
-                            logging.warning(f"[MINING] ⚠️ Skipping transaction due to serialization error: {e}")
+                # ✅ Proof-of-Work Mining
+                nonce = 0
+                hash_attempts = 0  # ✅ Keep track of attempts
+                last_update = start_time
 
-                    # Create the new block
-                    new_block = Block(
-                        index=block_height,
-                        previous_hash=prev_block.hash,
-                        transactions=valid_txs,
-                        timestamp=new_timestamp,
-                        nonce=0,  # Start nonce at 0
-                        difficulty=current_target
-                    )
+                logging.info(f"[MINING] ⛏️ Starting mining loop for Block {block_height}...")
 
-                    attempts = 0
-                    max_nonce = 2**32 - 1  # Use 32-bit nonce like Bitcoin
+                while True:
+                    new_block.header.nonce = nonce
+                    block_hash = hashlib.sha3_384(new_block.calculate_hash().encode()).hexdigest()
 
-                    logging.info(f"\n⛏️ Mining Block {block_height} | Target Difficulty: {hex(current_target)}\n")
-                    static_header_data = (
-                        f"{new_block.index}{new_block.previous_hash}"
-                        f"{new_block.transactions[0].outputs[0]['address']}{new_block.timestamp}"
-                    ).encode()
+                    # ✅ Ensure hash meets difficulty target
+                    if int(block_hash, 16) < new_block.difficulty:
+                        new_block.hash = block_hash
+                        break
 
-                    while new_block.nonce <= max_nonce:
-                        try:
-                            header_data = static_header_data + str(new_block.nonce).encode()
-                            new_block.hash = hashlib.sha3_384(header_data).hexdigest()
-                            attempts += 1
+                    nonce += 1
+                    hash_attempts += 1
 
-                            # Check if the hash meets the difficulty target (leading zeros)
-                            if int(new_block.hash, 16) < new_block.difficulty:
-                                break  # Valid hash found
+                    # ✅ Log live progress every 2 seconds
+                    current_time = time.time()
+                    if current_time - last_update >= 2:
+                        elapsed = int(current_time - start_time)
+                        logging.info(f"[LIVE] ⏳ Block {block_height} | Nonce: {nonce} | Attempts: {hash_attempts} | Time: {elapsed}s")
+                        last_update = current_time
 
-                            new_block.nonce += 1
-
-                            # Show live progress every second
-                            current_time = time.time()
-                            if current_time - last_update >= 1:
-                                elapsed = int(current_time - start_time)
-                                logging.info(f"[LIVE] Block {block_height} mining... Nonce: {new_block.nonce}, Time elapsed: {elapsed}s")
-                                last_update = current_time
-
-                        except Exception as e:
-                            logging.error(f"[MINING ERROR] ❌ Mining loop encountered an error: {e}")
-                            return None
-
-                    # If a valid hash is found, exit the while loop
-                    if int(new_block.hash, 16) < new_block.difficulty:
-                        break  # Block mined successfully
-
-                    # If nonce is exhausted, increment extraNonce and retry
-                    logging.warning(f"[MINING] 🔄 Nonce exhausted. Incrementing extraNonce to {extraNonce + 1}")
-                    extraNonce += 1
-
-                    # If extraNonce gets too large, adjust timestamp and reset extraNonce
-                    if extraNonce > 100000:  # Arbitrary limit for extraNonce
-                        new_timestamp += 1  # Smallest timestamp increment
-                        extraNonce = 0
-                        logging.warning(f"[MINING] 🕒 Adjusting timestamp to {new_timestamp}")
-
-                # Finalize block timestamp to ensure correct ordering
-                new_block.timestamp = max(new_block.timestamp, int(prev_block.timestamp) + 1)
-                new_block.hash = new_block.calculate_hash()
-
-                # Print final success message
-                logging.info(f"✅ Block {block_height} mined successfully with Nonce: {new_block.nonce}, extraNonce: {extraNonce}")
-                logging.info(f"🆔 Block Hash: {new_block.hash}")
-                logging.info(f"🔗 Previous Block Hash: {prev_block.hash}")
-                logging.info(f"⛏️ Miner Address: {new_block.transactions[0].outputs[0]['address']}")
-                logging.info(f"💰 Block Reward: {new_block.transactions[0].outputs[0]['amount']} ZYC")
-                logging.info(f"🔧 Difficulty at time of mining: {hex(new_block.difficulty)}")
-
-                # Store the block and update the chain
                 self.storage_manager.store_block(new_block, new_block.difficulty)
                 self.block_manager.chain.append(new_block)
 
+                logging.info(f"✅ Block {block_height} mined successfully! Hash: {new_block.hash}")
+                return new_block
+
             except Exception as e:
                 logging.error(f"[MINING ERROR] ❌ Mining failed: {e}")
-                if valid_txs:
-                    self.transaction_manager.mempool.restore_transactions(valid_txs)
                 return None
-
-        return new_block
