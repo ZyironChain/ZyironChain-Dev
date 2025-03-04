@@ -620,6 +620,7 @@ class StorageManager:
 
 
 
+
     def get_total_mined_supply(self) -> Decimal:
         """
         Calculate the total mined coin supply by summing all Coinbase rewards from stored blocks.
@@ -632,9 +633,12 @@ class StorageManager:
 
             if cached_supply:
                 # ✅ If cached value exists, return it directly
-                total_supply = Decimal(cached_supply.decode("utf-8"))
-                logging.info(f"[STORAGE] ✅ Cached total mined supply retrieved: {total_supply} ZYC")
-                return total_supply
+                try:
+                    total_supply = Decimal(cached_supply.decode("utf-8"))
+                    logging.info(f"[STORAGE] ✅ Cached total mined supply retrieved: {total_supply} ZYC")
+                    return total_supply
+                except (UnicodeDecodeError, ValueError) as decode_error:
+                    logging.warning(f"[STORAGE WARNING] Failed to decode cached total supply: {decode_error}")
 
             # -------------------------------------------------------------------------------------
             # ✅ Step 2: If no cached supply, iterate through blocks to calculate it
@@ -651,24 +655,32 @@ class StorageManager:
                             # ✅ Ensure at least one transaction exists
                             if transactions:
                                 for tx_id in transactions:
+                                    # ✅ Ensure tx_id is a string before encoding
+                                    tx_key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
+
                                     # ✅ Retrieve transaction details from txindex LMDB
-                                    tx_data = self.txindex_db.get(f"tx:{tx_id}".encode())
+                                    tx_data = self.txindex_db.get(tx_key)
 
                                     if not tx_data:
                                         logging.warning(f"[STORAGE WARNING] Missing transaction {tx_id} in txindex.")
                                         continue  # Skip if transaction doesn't exist
 
-                                    tx_details = json.loads(tx_data.decode("utf-8"))
+                                    try:
+                                        tx_details = json.loads(tx_data.decode("utf-8") if isinstance(tx_data, bytes) else tx_data)
 
-                                    # ✅ Ensure transaction is a Coinbase transaction
-                                    if tx_details.get("type") == "COINBASE":
-                                        coinbase_outputs = tx_details.get("outputs", [])
+                                        # ✅ Ensure transaction is a Coinbase transaction
+                                        if tx_details.get("type") == "COINBASE":
+                                            coinbase_outputs = tx_details.get("outputs", [])
 
-                                        # ✅ Validate outputs before accessing amount
-                                        if coinbase_outputs and isinstance(coinbase_outputs, list):
-                                            for output in coinbase_outputs:
-                                                if "amount" in output:
-                                                    total_supply += Decimal(str(output["amount"]))
+                                            # ✅ Validate outputs before accessing amount
+                                            if coinbase_outputs and isinstance(coinbase_outputs, list):
+                                                for output in coinbase_outputs:
+                                                    if "amount" in output:
+                                                        total_supply += Decimal(str(output["amount"]))
+
+                                    except json.JSONDecodeError as json_error:
+                                        logging.error(f"[STORAGE ERROR] ❌ Failed to parse transaction data: {json_error}")
+                                        continue  # ✅ Skip corrupted transactions instead of stopping
 
                         except json.JSONDecodeError as e:
                             logging.error(f"[STORAGE ERROR] ❌ Failed to parse block metadata: {e}")
@@ -687,9 +699,11 @@ class StorageManager:
 
 
 
+
+
     def get_all_blocks(self) -> List[Dict]:
         """
-        Retrieve complete block data with full transactions from storage
+        Retrieve complete block data with full transactions from storage.
         """
         processed_blocks = []
         try:
@@ -700,17 +714,23 @@ class StorageManager:
                         continue
 
                     try:
-                        block_meta = json.loads(value.decode())
+                        block_meta = json.loads(value.decode("utf-8") if isinstance(value, bytes) else value)
                         header = block_meta.get("block_header", {})
-                        
+
                         # Get full transactions from txindex
                         full_transactions = []
                         for tx_id in block_meta.get("tx_ids", []):
-                            tx_data = self.txindex_db.get(f"tx:{tx_id}".encode())
+                            tx_key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
+                            tx_data = self.txindex_db.get(tx_key)
+
                             if tx_data:
-                                full_transactions.append(json.loads(tx_data.decode()))
+                                try:
+                                    tx_details = json.loads(tx_data.decode("utf-8") if isinstance(tx_data, bytes) else tx_data)
+                                    full_transactions.append(tx_details)
+                                except json.JSONDecodeError as json_error:
+                                    logging.error(f"Error decoding transaction {tx_id}: {json_error}")
                             else:
-                                logging.error(f"Missing transaction {tx_id} in txindex")
+                                logging.warning(f"Missing transaction {tx_id} in txindex.")
 
                         processed_blocks.append({
                             "hash": block_meta.get("hash"),
@@ -729,27 +749,28 @@ class StorageManager:
                             "data_offset": block_meta.get("data_offset")  # Critical for block.data loading
                         })
 
+                    except json.JSONDecodeError as json_error:
+                        logging.error(f"[STORAGE ERROR] ❌ Failed to parse block metadata {key}: {json_error}")
                     except Exception as e:
-                        logging.error(f"Error processing block {key}: {str(e)}")
+                        logging.error(f"[STORAGE ERROR] ❌ Error processing block {key}: {str(e)}")
 
             # Sort blocks by height and add chain order validation
             processed_blocks.sort(key=lambda b: b["header"]["index"])
             prev_hash = Constants.ZERO_HASH
-            
+
             for block in processed_blocks:
                 if block["header"]["previous_hash"] != prev_hash:
-                    logging.error(f"Chain discontinuity at block {block['header']['index']}")
+                    logging.error(f"❌ Chain discontinuity at block {block['header']['index']}")
                     return []
                 prev_hash = block["hash"]
 
-            logging.info(f"Retrieved {len(processed_blocks)} valid blocks from storage")
+            logging.info(f"✅ Retrieved {len(processed_blocks)} valid blocks from storage.")
             return processed_blocks
 
         except Exception as e:
-            logging.error(f"Critical storage error: {str(e)}")
+            logging.error(f"[STORAGE ERROR] ❌ Critical storage error: {str(e)}")
             self.purge_chain()
             return []
-
 
 
 
@@ -841,6 +862,7 @@ class StorageManager:
             raise
 
 
+
     def store_transaction(self, tx_id: str, block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int):
         """
         Store a transaction in LMDB.
@@ -851,16 +873,25 @@ class StorageManager:
         try:
             # ✅ Validate inputs and outputs structure
             if not isinstance(inputs, list) or not all(isinstance(i, dict) for i in inputs):
-                logging.error(f"[STORAGE ERROR] ❌ Invalid inputs structure for transaction {tx_id}.")
+                logging.error(f"[STORAGE ERROR] ❌ Invalid inputs structure for transaction {tx_id}. Expected a list of dictionaries.")
                 return
 
             if not isinstance(outputs, list) or not all(isinstance(o, dict) for o in outputs):
-                logging.error(f"[STORAGE ERROR] ❌ Invalid outputs structure for transaction {tx_id}.")
+                logging.error(f"[STORAGE ERROR] ❌ Invalid outputs structure for transaction {tx_id}. Expected a list of dictionaries.")
                 return
 
             # ✅ Ensure timestamp is a valid integer
             if not isinstance(timestamp, int):
-                logging.error(f"[STORAGE ERROR] ❌ Invalid timestamp format for transaction {tx_id}.")
+                logging.error(f"[STORAGE ERROR] ❌ Invalid timestamp format for transaction {tx_id}. Expected an integer.")
+                return
+
+            # ✅ Ensure tx_id and block_hash are strings
+            if not isinstance(tx_id, str):
+                logging.error(f"[STORAGE ERROR] ❌ Invalid transaction ID format: {tx_id}. Expected a string.")
+                return
+            
+            if not isinstance(block_hash, str):
+                logging.error(f"[STORAGE ERROR] ❌ Invalid block hash format for transaction {tx_id}. Expected a string.")
                 return
 
             # ✅ Prepare transaction data for storage
@@ -872,22 +903,26 @@ class StorageManager:
                 "timestamp": timestamp
             }
 
-            # ✅ Serialize transaction data to JSON
+            # ✅ Serialize transaction data to JSON safely
             try:
                 serialized_data = json.dumps(transaction_data).encode("utf-8")
-            except Exception as e:
+            except (TypeError, ValueError) as e:
                 logging.error(f"[STORAGE ERROR] ❌ Failed to serialize transaction data for {tx_id}: {e}")
                 return
 
+            # ✅ Generate LMDB key safely
+            tx_key = f"tx:{tx_id}".encode("utf-8")
+
             # ✅ Store the transaction data in the index
             with self.txindex_db.env.begin(write=True) as txn:
-                txn.put(f"tx:{tx_id}".encode(), serialized_data)
+                txn.put(tx_key, serialized_data)
 
             logging.info(f"[STORAGE] ✅ Transaction {tx_id} stored successfully in LMDB.")
 
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to store transaction {tx_id}: {e}")
             raise
+
 
 
 
@@ -898,28 +933,34 @@ class StorageManager:
         - Returns None if transaction does not exist
         """
         try:
+            # ✅ Validate transaction ID format
             if not isinstance(tx_id, (str, bytes)):
-                logging.error(f"[STORAGE ERROR] ❌ Invalid transaction ID format: {tx_id}")
+                logging.error(f"[STORAGE ERROR] ❌ Invalid transaction ID format: {tx_id}. Expected str or bytes.")
                 return None
 
-            # ✅ Convert transaction ID into bytes safely
+            # ✅ Ensure tx_id is properly formatted and encoded
             tx_key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
 
+            # ✅ Query LMDB for transaction data
             with self.txindex_db.env.begin() as txn:
                 tx_data = txn.get(tx_key)
 
+            # ✅ Handle missing transactions
             if not tx_data:
                 logging.warning(f"[STORAGE] ⚠️ Transaction {tx_id} not found in LMDB.")
                 return None
 
-            return json.loads(tx_data.decode("utf-8"))
+            # ✅ Decode and parse transaction data safely
+            try:
+                return json.loads(tx_data.decode("utf-8") if isinstance(tx_data, bytes) else tx_data)
+            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                logging.error(f"[STORAGE ERROR] ❌ Corrupt transaction data for {tx_id}: {decode_error}")
+                return None
 
-        except json.JSONDecodeError as e:
-            logging.error(f"[STORAGE ERROR] ❌ Corrupt transaction data for {tx_id}: {e}")
-            return None
         except Exception as e:
             logging.error(f"[STORAGE ERROR] ❌ Failed to retrieve transaction {tx_id}: {e}")
             return None
+
 
     def get_all_transactions(self) -> List[Dict]:
         """

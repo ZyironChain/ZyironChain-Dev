@@ -36,7 +36,7 @@ import json
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
 from typing import TYPE_CHECKING
-
+import hashlib
 if TYPE_CHECKING:
     # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
@@ -95,7 +95,8 @@ class TransactionManager:
         """
         try:
             # ✅ Ensure transaction ID has the correct network prefix using double hashing
-            hashed_tx_id = Hashing.double_sha3_384(transaction.tx_id.encode())  # Ensure double hashing
+            hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
+                # Ensure double hashing
             if not hashed_tx_id.startswith(Constants.ADDRESS_PREFIX):
                 logging.error(
                     f"[ERROR] Transaction {transaction.tx_id} has an invalid address prefix for {self.network}. "
@@ -210,21 +211,36 @@ class TransactionManager:
 
 
 
+
     def _calculate_transaction_size(self, tx):
         """
         Calculate transaction size for block inclusion.
         - Uses SHA3-384-based size estimation.
         - Ensures metadata (timestamp, nonce, tx_id) is included.
         """
-        # Double hash the transaction ID for proper validation
-        tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
+        try:
+            # ✅ Ensure `tx_id` is a string before encoding
+            if isinstance(tx.tx_id, bytes):
+                tx.tx_id = tx.tx_id.decode("utf-8")
 
-        base_size = len(tx_id) + len(str(tx.timestamp)) + len(str(tx.nonce))
+            # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+            single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
 
-        input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True)) for inp in tx.inputs)
-        output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True)) for out in tx.outputs)
+            # ✅ Compute base metadata size (tx_id, timestamp, nonce)
+            base_size = len(single_hashed_tx_id) + len(str(tx.timestamp)) + len(str(tx.nonce))
 
-        return base_size + input_size + output_size
+            # ✅ Compute size of inputs and outputs
+            input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True)) for inp in tx.inputs)
+            output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True)) for out in tx.outputs)
+
+            total_size = base_size + input_size + output_size
+
+            return total_size
+
+        except Exception as e:
+            logging.error(f"[ERROR] ❌ Failed to calculate transaction size for {tx.tx_id}: {str(e)}")
+            return -1  # Return -1 to indicate failure
+
 
     def validate_transaction(self, tx):
         """
@@ -241,15 +257,19 @@ class TransactionManager:
             if isinstance(tx, CoinbaseTx):
                 return True
 
-            # ✅ 2. Double hash the transaction ID for proper validation
-            tx.tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
+            # ✅ 2. Ensure `tx_id` is a string before encoding
+            if isinstance(tx.tx_id, bytes):
+                tx.tx_id = tx.tx_id.decode("utf-8")
 
-            # ✅ 2. Verify cryptographic signatures
+            # ✅ 3. Hash the transaction ID using only **single SHA3-384 hashing**
+            single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
+            # ✅ 4. Verify cryptographic signatures
             if not tx.verify_signature():
-                logging.error(f"[TRANSACTION VALIDATION] ❌ Signature verification failed: {tx.tx_id}")
+                logging.error(f"[TRANSACTION VALIDATION] ❌ Signature verification failed: {single_hashed_tx_id}")
                 return False
 
-            # ✅ 3. Validate UTXO references
+            # ✅ 5. Validate UTXO references
             input_sum = Decimal("0")
             for tx_input in tx.inputs:
                 utxo = self.utxo_manager.get_utxo(tx_input.tx_out_id)
@@ -261,15 +281,15 @@ class TransactionManager:
                     return False
                 input_sum += Decimal(str(utxo.amount))
 
-            # ✅ 4. Validate outputs
+            # ✅ 6. Validate outputs
             output_sum = sum(Decimal(str(out.amount)) for out in tx.outputs)
 
-            # ✅ 5. Check value conservation (Prevent Inflation Attacks)
+            # ✅ 7. Check value conservation (Prevent Inflation Attacks)
             if input_sum < output_sum:
                 logging.error(f"[TRANSACTION VALIDATION] ❌ Inputs < Outputs ({input_sum} < {output_sum})")
                 return False
 
-            # ✅ 6. Validate Transaction Fees
+            # ✅ 8. Validate Transaction Fees
             calculated_fee = input_sum - output_sum
             required_fee = self.fee_model.calculate_fee(
                 tx_size=self._calculate_transaction_size(tx),
@@ -287,16 +307,16 @@ class TransactionManager:
                 )
                 return False
 
-            # ✅ 7. Prevent Replay Attacks (Ensure Unique Nonce & Network ID)
+            # ✅ 9. Prevent Replay Attacks (Ensure Unique Nonce & Network ID)
             if self.storage_manager.check_transaction_exists(
-                tx.tx_id, 
+                single_hashed_tx_id, 
                 nonce=tx.nonce,
                 network_id=tx.network_id
             ):
-                logging.error(f"[TRANSACTION VALIDATION] ❌ Replay attack detected: {tx.tx_id}")
+                logging.error(f"[TRANSACTION VALIDATION] ❌ Replay attack detected: {single_hashed_tx_id}")
                 return False
 
-            logging.info(f"[TRANSACTION VALIDATION] ✅ Transaction {tx.tx_id} successfully validated.")
+            logging.info(f"[TRANSACTION VALIDATION] ✅ Transaction {single_hashed_tx_id} successfully validated.")
             return True
 
         except AttributeError as ae:
@@ -308,7 +328,6 @@ class TransactionManager:
         except Exception as e:
             logging.error(f"[TRANSACTION VALIDATION] ❌ Unexpected validation error: {str(e)}")
             return False
-
 
 
 

@@ -74,6 +74,8 @@ class Miner:
 
         logging.info(f"[MINER] ✅ Miner initialized on {self.network.upper()}.")
 
+
+
     def _validate_coinbase(self, tx):
         """
         Ensure the coinbase transaction follows protocol rules:
@@ -81,24 +83,28 @@ class Miner:
         - Exactly one output.
         - Transaction type is "COINBASE".
         - Fee is zero.
+        - Uses correct single-hash transaction ID validation.
         """
         from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx  # Lazy import
-        
-        # ✅ Ensure transaction ID is properly double hashed
+
+        # ✅ Ensure `tx_id` is present and is a string
         if not hasattr(tx, "tx_id") or not isinstance(tx.tx_id, str):
             logging.error(f"[ERROR] ❌ Invalid Coinbase transaction ID format: {tx.tx_id}")
             return False
-        
-        tx_id_hashed = Hashing.double_sha3_384(tx.tx_id.encode())  # ✅ Apply double SHA3-384 hashing
 
+        # ✅ Ensure `tx_id` is hashed using only **single SHA3-384**
+        single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
+        # ✅ Validate transaction properties
         return (
             isinstance(tx, CoinbaseTx) and
             len(tx.inputs) == 0 and
             len(tx.outputs) == 1 and
             tx.type == "COINBASE" and
             tx.fee == Decimal(0) and
-            tx_id_hashed == tx.tx_id  # ✅ Ensure transaction ID matches double-hashed format
+            single_hashed_tx_id == tx.tx_id  # ✅ Ensure transaction ID matches expected format
         )
+
 
 
     def _calculate_block_size(self):
@@ -264,6 +270,7 @@ class Miner:
         )
 
 
+
     def add_block(self, new_block):
         """
         Adds a new block to the blockchain:
@@ -288,20 +295,42 @@ class Miner:
 
         # ✅ Confirm all transactions before adding the block
         for tx in new_block.transactions:
-            tx_id_hashed = Hashing.double_sha3_384(tx.tx_id.encode())
+            try:
+                # ✅ Ensure `tx_id` is a string before encoding
+                if isinstance(tx.tx_id, bytes):
+                    tx.tx_id = tx.tx_id.decode("utf-8")
 
-            tx_type = PaymentTypeManager().get_transaction_type(tx_id_hashed)
-            required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name, Constants.TRANSACTION_CONFIRMATIONS["STANDARD"])
+                # ✅ Hash transaction ID using only **single SHA3-384**
+                single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
 
-            confirmations = self.storage_manager.get_transaction_confirmations(tx_id_hashed)
+                # ✅ Retrieve transaction type safely
+                tx_type = PaymentTypeManager().get_transaction_type(single_hashed_tx_id)
+                if not tx_type:
+                    logging.warning(f"[WARN] ⚠️ Skipping transaction {single_hashed_tx_id} (Unknown Type).")
+                    continue
 
-            if confirmations is None:
-                logging.error(f"[ERROR] ❌ Could not retrieve confirmations for transaction {tx_id_hashed}.")
-                return False
+                # ✅ Fetch required confirmations dynamically from Constants
+                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                    tx_type.name.upper(), Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
+                )
 
-            if confirmations < required_confirmations:
-                logging.error(f"[ERROR] ❌ Transaction {tx_id_hashed} does not meet required confirmations ({required_confirmations}, Found: {confirmations}).")
-                return False
+                # ✅ Ensure transaction exists before confirming
+                confirmations = self.storage_manager.get_transaction_confirmations(single_hashed_tx_id)
+
+                if confirmations is None:
+                    logging.error(f"[ERROR] ❌ Could not retrieve confirmations for transaction {single_hashed_tx_id}.")
+                    return False
+
+                if confirmations < required_confirmations:
+                    logging.error(
+                        f"[ERROR] ❌ Transaction {single_hashed_tx_id} does not meet required confirmations "
+                        f"({required_confirmations}, Found: {confirmations})."
+                    )
+                    return False
+
+            except Exception as tx_error:
+                logging.error(f"[ERROR] ❌ Failed to confirm transaction {tx.tx_id}: {str(tx_error)}")
+                return False  # ❌ If a transaction fails validation, do not add the block
 
         # ✅ Append block to in-memory chain
         self.block_manager.chain.append(new_block)
@@ -406,6 +435,7 @@ class Miner:
 
 
 
+
     def validate_new_block(self, new_block):
         """
         Validate a newly mined block:
@@ -425,7 +455,7 @@ class Miner:
                 logging.error("[BLOCK VALIDATION ERROR] ❌ Transactions must be a list.")
                 return False
 
-            # ✅ Check Proof-of-Work Target using double SHA3-384
+            # ✅ Check Proof-of-Work Target using single SHA3-384
             try:
                 block_hash_int = int(new_block.hash, 16)
             except ValueError:
@@ -476,10 +506,16 @@ class Miner:
             # ✅ Validate Transactions (Excluding Coinbase)
             for tx in new_block.transactions[1:]:
                 try:
-                    tx_hash = Hashing.double_sha3_384(tx.tx_id.encode())  # ✅ Use a separate variable to avoid modifying tx_id
+                    # ✅ Ensure `tx_id` is a string before encoding
+                    if isinstance(tx.tx_id, bytes):
+                        tx.tx_id = tx.tx_id.decode("utf-8")
 
+                    # ✅ Hash transaction ID using only **single SHA3-384**
+                    single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
+                    # ✅ Validate transaction using single-hashed tx_id
                     if not self.transaction_manager.validate_transaction(tx):
-                        logging.error(f"[ERROR] ❌ Invalid transaction in block {new_block.index}: {tx.tx_id}")
+                        logging.error(f"[ERROR] ❌ Invalid transaction in block {new_block.index}: {single_hashed_tx_id}")
                         return False
 
                 except AttributeError as e:

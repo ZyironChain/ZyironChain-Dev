@@ -40,6 +40,9 @@ import os
 import logging
 from typing import Optional
 from Zyiron_Chain.blockchain.constants import Constants
+from typing import Union, List, Dict
+import json
+import logging
 
 # Optional: If you need the "ParentConstants" folder, etc.
 
@@ -169,6 +172,7 @@ class LMDBManager:
     # Basic Key-Value retrieval. For more advanced usage, your StorageManager
     # might wrap these calls with domain logic.
     # -------------------------------------------------------------------------
+
     def get(self, key: str, db=None):
         """
         Retrieve a JSON-serialized value from LMDB by key.
@@ -178,13 +182,31 @@ class LMDBManager:
         :return: Deserialized JSON (dict) or None if not found.
         """
         db_handle = db or self.blocks_db
+        
+        if not isinstance(key, str):
+            logging.error(f"[STORAGE ERROR] ❌ Invalid key format: {key}. Expected a string.")
+            return None
+
+        key_encoded = key.encode("utf-8")
+
         try:
             with self.env.begin(db=db_handle) as txn:
-                value = txn.get(key.encode())
-                return json.loads(value.decode()) if value else None
+                value = txn.get(key_encoded)
+
+            if not value:
+                logging.warning(f"[STORAGE] ⚠️ Key not found in LMDB: {key}")
+                return None
+
+            try:
+                return json.loads(value.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                logging.error(f"[STORAGE ERROR] ❌ Corrupt JSON data for key {key}: {decode_error}")
+                return None
+
         except Exception as e:
-            logging.error(f"Failed to retrieve key {key}: {str(e)}")
+            logging.error(f"[STORAGE ERROR] ❌ Failed to retrieve key {key}: {str(e)}")
             return None
+
 
     def get_db_path(self, db_name: str) -> str:
         """
@@ -353,7 +375,9 @@ class LMDBManager:
     # -------------------------------------------------------------------------
     # Transactions Database
     # -------------------------------------------------------------------------
-    def add_transaction(self, tx_id: Union[str, bytes], block_hash: str, inputs: list, outputs: list, timestamp: int):
+
+
+    def add_transaction(self, tx_id: Union[str, bytes], block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int):
         """
         Store a transaction in the 'transactions' DB.
         Key: "tx:{tx_id}"
@@ -362,11 +386,17 @@ class LMDBManager:
         try:
             # ✅ Ensure tx_id is properly handled (convert bytes to string safely)
             if isinstance(tx_id, bytes):
-                tx_id = tx_id.decode("utf-8")  # Convert bytes to string safely
+                try:
+                    tx_id = tx_id.decode("utf-8")  # Convert bytes to string safely
+                except UnicodeDecodeError as decode_error:
+                    logging.error(f"[LMDB ERROR] ❌ Failed to decode tx_id {tx_id}: {decode_error}")
+                    return
 
             if not isinstance(tx_id, str):
-                raise ValueError(f"[LMDB ERROR] ❌ Invalid tx_id format: Expected str, got {type(tx_id)}")
+                logging.error(f"[LMDB ERROR] ❌ Invalid tx_id format: Expected str, got {type(tx_id)}")
+                return
 
+            # ✅ Prepare transaction data safely
             transaction_data = {
                 "block_hash": block_hash,
                 "inputs": inputs if isinstance(inputs, list) else [],
@@ -374,50 +404,73 @@ class LMDBManager:
                 "timestamp": int(timestamp) if isinstance(timestamp, int) else 0
             }
 
-            key = f"tx:{tx_id}".encode("utf-8")  # ✅ Ensure key is properly encoded
-            value = json.dumps(transaction_data).encode("utf-8")  # ✅ Convert JSON to bytes
+            # ✅ Generate LMDB key correctly
+            key = f"tx:{tx_id}".encode("utf-8")  # Always convert `tx_id` to a string before encoding
 
+            try:
+                value = json.dumps(transaction_data).encode("utf-8")
+            except (TypeError, ValueError) as json_error:
+                logging.error(f"[LMDB ERROR] ❌ JSON Encoding Failed for transaction {tx_id}: {json_error}")
+                return
+
+            # ✅ Store transaction in LMDB safely
             with self.env.begin(write=True, db=self.transactions_db) as txn:
-                txn.put(key, value)  # ✅ Store transaction in LMDB
+                txn.put(key, value)
 
             logging.info(f"[LMDB] ✅ Transaction {tx_id} stored successfully.")
 
-        except json.JSONDecodeError as e:
-            logging.error(f"[LMDB ERROR] ❌ JSON Encoding Failed for transaction {tx_id}: {e}")
-        except ValueError as e:
-            logging.error(f"[LMDB ERROR] ❌ Value Error: {e}")
         except Exception as e:
             logging.error(f"[LMDB ERROR] ❌ Unexpected error while storing transaction {tx_id}: {e}")
-            raise  # ✅ Re-raise the exception for debugging
-    def get_transaction(self, tx_id: Union[str, bytes]):
+            raise
+
+
+
+
+    def get_transaction(self, tx_id: Union[str, bytes]) -> Optional[Dict]:
         """
         Retrieve a single transaction from the 'transactions' DB by tx_id.
         - Handles both str and bytes transaction IDs properly.
+        - Returns None if transaction is not found or corrupted.
         """
         try:
             # ✅ Ensure transaction ID is correctly formatted
             if not isinstance(tx_id, (str, bytes)):
-                logging.error(f"[LMDB ERROR] ❌ Invalid transaction ID format: {tx_id}")
+                logging.error(f"[LMDB ERROR] ❌ Invalid transaction ID format: {tx_id}. Expected str or bytes.")
                 return None
 
-            # ✅ Properly encode the key, handling both string and bytes
-            key = f"tx:{tx_id}".encode("utf-8") if isinstance(tx_id, str) else b"tx:" + tx_id
+            # ✅ Convert bytes tx_id to string safely
+            if isinstance(tx_id, bytes):
+                try:
+                    tx_id = tx_id.decode("utf-8")
+                except UnicodeDecodeError as decode_error:
+                    logging.error(f"[LMDB ERROR] ❌ Failed to decode tx_id {tx_id}: {decode_error}")
+                    return None
 
+            # ✅ Properly encode the key before retrieval
+            key = f"tx:{tx_id}".encode("utf-8")
+
+            # ✅ Fetch transaction data from LMDB
             with self.env.begin(db=self.transactions_db) as txn:
                 data = txn.get(key)
 
-            if data:
+            # ✅ Handle missing transactions
+            if not data:
+                logging.warning(f"[LMDB] ⚠️ Transaction {tx_id} not found.")
+                return None
+
+            # ✅ Decode and parse JSON safely
+            try:
                 return json.loads(data.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                logging.error(f"[LMDB ERROR] ❌ Failed to decode transaction {tx_id}: {decode_error}")
+                return None
 
-            logging.warning(f"[LMDB] ⚠️ Transaction {tx_id} not found.")
-            return None
-
-        except json.JSONDecodeError as e:
-            logging.error(f"[LMDB ERROR] ❌ Failed to decode transaction {tx_id}: {e}")
-            return None
         except Exception as e:
             logging.error(f"[LMDB ERROR] ❌ Failed to retrieve transaction {tx_id}: {e}")
             return None
+
+
+
 
 
     def get_all_transactions(self) -> list:

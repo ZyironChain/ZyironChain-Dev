@@ -90,6 +90,8 @@ class StandardMempool:
             return 0  # Return 0 if an error occurs
 
 
+
+
     def add_transaction(self, transaction, smart_contract, fee_model):
         """
         Add a transaction to the Standard Mempool and register it in the smart contract.
@@ -99,82 +101,89 @@ class StandardMempool:
         :param fee_model: Fee model to calculate minimum acceptable fees.
         :return: True if the transaction was added, False otherwise.
         """
-        # ✅ Compute double-hashed transaction ID
-        transaction.tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
-
-
-        # 🚫 Reject Smart Transactions
-        if transaction.tx_id.startswith("S-"):
-            logging.error(f"[ERROR] Smart Transactions (S-) are not allowed in Standard Mempool. Rejected: {transaction.tx_id}")
-            return False
-
-        # 🚫 Validate transaction structure
-        if not transaction.inputs or not transaction.outputs:
-            logging.error(f"[ERROR] Invalid Transaction {transaction.tx_id}: Must have at least one input and one output.")
-            return False
-
-        # 🚫 Ensure all transaction inputs exist in LMDB UTXO set
-        if not self.validate_transaction_inputs(transaction):
-            logging.warning(f"[WARN] Transaction {transaction.tx_id} rejected: Missing valid UTXO inputs.")
-            return False
-
-        transaction_size = transaction.size
-
-        # ✅ Calculate the minimum required fee using Constants
-        min_fee_required = fee_model.calculate_fee(
-            payment_type="Standard",
-            amount=sum(out.amount for out in transaction.outputs),
-            tx_size=transaction.size,
-            block_size=Constants.MAX_BLOCK_SIZE_BYTES
-        )
-
-        # 🚫 Check for insufficient fees
-        if transaction.fee < min_fee_required:
-            logging.error(f"[ERROR] Transaction {transaction.tx_id} rejected due to insufficient fee. Required: {min_fee_required}, Provided: {transaction.fee}")
-            return False
-
-        # 🚫 Check if Mempool is full before adding
-        if self.current_size_bytes + transaction_size > self.max_size_bytes:
-            logging.info("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
-            self.evict_transactions(transaction_size)
-
-        # ✅ Register transaction in Dispute Resolution Contract
         try:
-            smart_contract.register_transaction(
-                transaction_id=transaction.tx_id,
-                parent_id=getattr(transaction, "parent_id", None),
-                utxo_id=getattr(transaction, "utxo_id", None),
-                sender=getattr(transaction, "sender", None),
-                recipient=getattr(transaction, "recipient", None),
-                amount=transaction.amount,
-                fee=transaction.fee
+            # ✅ Ensure `tx_id` is a string before encoding
+            if isinstance(transaction.tx_id, bytes):
+                transaction.tx_id = transaction.tx_id.decode("utf-8")
+
+            # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+            single_hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
+
+            # 🚫 Reject Smart Transactions
+            if single_hashed_tx_id.startswith("S-"):
+                logging.error(f"[ERROR] ❌ Smart Transactions (S-) are not allowed in Standard Mempool. Rejected: {single_hashed_tx_id}")
+                return False
+
+            # 🚫 Validate transaction structure
+            if not transaction.inputs or not transaction.outputs:
+                logging.error(f"[ERROR] ❌ Invalid Transaction {single_hashed_tx_id}: Must have at least one input and one output.")
+                return False
+
+            # 🚫 Ensure all transaction inputs exist in LMDB UTXO set
+            if not self.validate_transaction_inputs(transaction):
+                logging.warning(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} rejected: Missing valid UTXO inputs.")
+                return False
+
+            transaction_size = transaction.size
+
+            # ✅ Calculate the minimum required fee using Constants
+            min_fee_required = fee_model.calculate_fee(
+                payment_type="Standard",
+                amount=sum(out.amount for out in transaction.outputs),
+                tx_size=transaction.size,
+                block_size=Constants.MAX_BLOCK_SIZE_BYTES
             )
-            logging.info(f"[INFO] Transaction {transaction.tx_id} registered in smart contract.")
-        except KeyError as e:
-            logging.error(f"[ERROR] Missing transaction field during registration: {e}")
-            return False
+
+            # 🚫 Check for insufficient fees
+            if transaction.fee < min_fee_required:
+                logging.error(f"[ERROR] ❌ Transaction {single_hashed_tx_id} rejected due to insufficient fee. Required: {min_fee_required}, Provided: {transaction.fee}")
+                return False
+
+            # 🚫 Check if Mempool is full before adding
+            if self.current_size_bytes + transaction_size > self.max_size_bytes:
+                logging.info("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
+                self.evict_transactions(transaction_size)
+
+            # ✅ Register transaction in Dispute Resolution Contract
+            try:
+                smart_contract.register_transaction(
+                    transaction_id=single_hashed_tx_id,
+                    parent_id=getattr(transaction, "parent_id", None),
+                    utxo_id=getattr(transaction, "utxo_id", None),
+                    sender=getattr(transaction, "sender", None),
+                    recipient=getattr(transaction, "recipient", None),
+                    amount=transaction.amount,
+                    fee=transaction.fee
+                )
+                logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} registered in smart contract.")
+            except KeyError as e:
+                logging.error(f"[ERROR] ❌ Missing transaction field during registration: {e}")
+                return False
+            except Exception as e:
+                logging.error(f"[ERROR] ❌ Failed to register transaction in smart contract: {e}")
+                return False
+
+            # ✅ Add transaction to LMDB-backed Mempool
+            with self.lock:
+                self.lmdb.put(f"mempool:{single_hashed_tx_id}", json.dumps({
+                    "tx_id": single_hashed_tx_id,
+                    "size": transaction_size,
+                    "fee": transaction.fee,
+                    "fee_per_byte": transaction.fee / transaction_size,
+                    "timestamp": time.time(),
+                    "parents": [hashlib.sha3_384(inp.tx_out_id.encode()).hexdigest() for inp in transaction.inputs],
+                    "children": [],
+                    "status": "Pending"
+                }))
+
+                self.current_size_bytes += transaction_size
+
+            logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} successfully added to LMDB-backed Standard Mempool.")
+            return True
+
         except Exception as e:
-            logging.error(f"[ERROR] Failed to register transaction in smart contract: {e}")
+            logging.error(f"[ERROR] ❌ Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
             return False
-
-        # ✅ Add transaction to LMDB-backed Mempool
-        with self.lock:
-            self.lmdb.put(f"mempool:{transaction.tx_id}", json.dumps({
-                "tx_id": transaction.tx_id,
-                "size": transaction_size,
-                "fee": transaction.fee,
-                "fee_per_byte": transaction.fee / transaction_size,
-                "timestamp": time.time(),
-                "parents": [hashlib.sha3_384(inp.tx_out_id.encode()).hexdigest() for inp in transaction.inputs],
-
-                "children": [],
-                "status": "Pending"
-            }))
-
-            self.current_size_bytes += transaction_size
-
-        logging.info(f"[INFO] ✅ Transaction {transaction.tx_id} successfully added to LMDB-backed Standard Mempool.")
-        return True
 
 
 
@@ -443,30 +452,37 @@ class StandardMempool:
         :param smart_contract: Instance of DisputeResolutionContract.
         """
         with self.lock:
-            # ✅ Ensure transaction ID uses double hash
-            tx_id_hashed = hashlib.sha3_384(tx_id.encode()).hexdigest()
+            try:
+                # ✅ Ensure `tx_id` is a string before encoding
+                if isinstance(tx_id, bytes):
+                    tx_id = tx_id.decode("utf-8")
 
+                # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+                single_hashed_tx_id = hashlib.sha3_384(tx_id.encode()).hexdigest()
 
-            # ✅ Fetch transaction from LMDB
-            transaction_data = self.lmdb.get(f"mempool:{tx_id_hashed}")
-            if not transaction_data:
-                logging.warning(f"[MEMPOOL] ⚠️ Attempted to remove non-existent transaction {tx_id_hashed}.")
-                return
+                # ✅ Fetch transaction from LMDB
+                transaction_data = self.lmdb.get(f"mempool:{single_hashed_tx_id}")
+                if not transaction_data:
+                    logging.warning(f"[MEMPOOL] ⚠️ Attempted to remove non-existent transaction {single_hashed_tx_id}.")
+                    return
 
-            transaction = json.loads(transaction_data)
+                transaction = json.loads(transaction_data)
 
-            # ✅ Remove transaction from LMDB
-            self.lmdb.delete(f"mempool:{tx_id_hashed}")
+                # ✅ Remove transaction from LMDB
+                self.lmdb.delete(f"mempool:{single_hashed_tx_id}")
 
-            # ✅ Notify smart contract
-            if smart_contract:
-                try:
-                    smart_contract.refund_transaction(tx_id_hashed)
-                    logging.info(f"[MEMPOOL] 🔄 Transaction {tx_id_hashed} refunded in smart contract.")
-                except Exception as e:
-                    logging.error(f"[MEMPOOL] ❌ Failed to refund transaction {tx_id_hashed} in smart contract: {e}")
+                # ✅ Notify smart contract
+                if smart_contract:
+                    try:
+                        smart_contract.refund_transaction(single_hashed_tx_id)
+                        logging.info(f"[MEMPOOL] 🔄 Transaction {single_hashed_tx_id} refunded in smart contract.")
+                    except Exception as e:
+                        logging.error(f"[MEMPOOL] ❌ Failed to refund transaction {single_hashed_tx_id} in smart contract: {e}")
 
-            logging.info(f"[MEMPOOL] ✅ Transaction {tx_id_hashed} successfully removed.")
+                logging.info(f"[MEMPOOL] ✅ Transaction {single_hashed_tx_id} successfully removed.")
+
+            except Exception as e:
+                logging.error(f"[MEMPOOL] ❌ Unexpected error while removing transaction {tx_id}: {str(e)}")
 
 
 
@@ -603,52 +619,58 @@ class StandardMempool:
 
 
 
+
     def rebroadcast_transaction(self, tx_id, smart_contract):
         """
         Rebroadcast a transaction with an increased fee.
-        
+
         :param tx_id: The transaction ID to rebroadcast.
         :param smart_contract: Instance of the DisputeResolutionContract.
+        :return: True if the transaction was rebroadcasted, False otherwise.
         """
         with self.lock:
-            # ✅ Ensure transaction ID is double-hashed
-            tx_id_hashed = hashlib.sha3_384(tx_id.encode()).hexdigest()
-
-
-            # ✅ Fetch transaction from LMDB
-            transaction_data = self.lmdb.get(f"mempool:{tx_id_hashed}")
-            if not transaction_data:
-                logging.error(f"[ERROR] Transaction {tx_id_hashed} not found in the mempool. Cannot rebroadcast.")
-                return False
-
-            transaction = json.loads(transaction_data)
-
-            # ✅ Prevent rebroadcasting if transaction is already confirmed
-            if transaction.get("status") == "Confirmed":
-                logging.warning(f"[WARN] Transaction {tx_id_hashed} is already confirmed. Rebroadcasting skipped.")
-                return False
-
             try:
+                # ✅ Ensure `tx_id` is a string before encoding
+                if isinstance(tx_id, bytes):
+                    tx_id = tx_id.decode("utf-8")
+
+                # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+                single_hashed_tx_id = hashlib.sha3_384(tx_id.encode()).hexdigest()
+
+                # ✅ Fetch transaction from LMDB
+                transaction_data = self.lmdb.get(f"mempool:{single_hashed_tx_id}")
+                if not transaction_data:
+                    logging.error(f"[ERROR] ❌ Transaction {single_hashed_tx_id} not found in the mempool. Cannot rebroadcast.")
+                    return False
+
+                transaction = json.loads(transaction_data)
+
+                # ✅ Prevent rebroadcasting if transaction is already confirmed
+                if transaction.get("status") == "Confirmed":
+                    logging.warning(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} is already confirmed. Rebroadcasting skipped.")
+                    return False
+
                 # ✅ Fetch dynamic increment factor from Constants
                 increment_factor = Constants.REBROADCAST_FEE_INCREASE
                 if increment_factor <= 1.0:
-                    logging.error(f"[ERROR] Invalid increment factor {increment_factor} for transaction {tx_id_hashed}. Must be > 1.0.")
+                    logging.error(f"[ERROR] ❌ Invalid increment factor {increment_factor} for transaction {single_hashed_tx_id}. Must be > 1.0.")
                     return False
 
                 # ✅ Increase the transaction fee dynamically
-                old_fee = transaction["fee"]
+                old_fee = transaction.get("fee", 0)
                 new_fee = old_fee * increment_factor
                 transaction["fee"] = new_fee
 
                 # ✅ Update transaction in LMDB
-                self.lmdb.put(f"mempool:{tx_id_hashed}", json.dumps(transaction))
+                self.lmdb.put(f"mempool:{single_hashed_tx_id}", json.dumps(transaction))
 
                 # ✅ Call smart contract to rebroadcast transaction
-                smart_contract.rebroadcast_transaction(tx_id_hashed, new_fee)
+                smart_contract.rebroadcast_transaction(single_hashed_tx_id, new_fee)
 
-                logging.info(f"[INFO] Transaction {tx_id_hashed} rebroadcasted with new fee: {new_fee:.8f} (Old Fee: {old_fee:.8f})")
+                logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} rebroadcasted with new fee: {new_fee:.8f} (Old Fee: {old_fee:.8f})")
                 return True  # ✅ Success
 
             except Exception as e:
-                logging.error(f"[ERROR] Failed to rebroadcast transaction {tx_id_hashed}: {e}")
+                logging.error(f"[ERROR] ❌ Failed to rebroadcast transaction {tx_id}: {e}")
                 return False  # ✅ Failure
+

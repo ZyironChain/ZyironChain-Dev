@@ -110,52 +110,62 @@ class Blockchain:
 
 
 
+
     def validate_new_block(self, new_block: Block, prev_block: Block = None) -> bool:
         """
         Validate a new block before adding it to the chain.
         """
         # Verify Proof-of-Work
         if not new_block.hash or int(new_block.hash, 16) >= new_block.header.difficulty:
-            logging.error(f"Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
+            logging.error(f"❌ Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
             return False
 
         # Validate previous hash linkage if a previous block is provided
         if prev_block and new_block.previous_hash != prev_block.hash:
-            logging.error(f"Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
+            logging.error(f"❌ Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
             return False
 
-        # For blocks beyond the genesis block, check transaction confirmations
-        if new_block.index > 0:
-            for tx in new_block.transactions:
-                try:
-                    # Double hash the transaction ID
-                    tx.tx_id = Hashing.double_sha3_384(tx.tx_id.encode())
+        # Skip transaction validation for the genesis block
+        if new_block.index == 0:
+            logging.info("✅ Skipping transaction confirmations check for the genesis block.")
+            return True
 
-                    # Determine transaction type and required confirmations
-                    tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
-                    required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
-                        tx_type.name, Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
-                    )
-                    confirmations = self.storage_manager.get_transaction_confirmations(tx.tx_id)
+        # Validate transactions in the block
+        for tx in new_block.transactions:
+            try:
+                # Ensure `tx_id` is a string before encoding
+                if isinstance(tx.tx_id, bytes):
+                    tx.tx_id = tx.tx_id.decode("utf-8")
 
-                    if confirmations is None:
-                        logging.error(f"Transaction {tx.tx_id} confirmations could not be retrieved.")
-                        return False
+                # Apply **only single hashing** to transaction ID
+                single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
 
-                    if confirmations < required_confirmations:
-                        logging.error(
-                            f"Transaction {tx.tx_id} does not meet required confirmations "
-                            f"({required_confirmations}, Confirmations: {confirmations})"
-                        )
-                        return False
-                except Exception as e:
-                    logging.error(f"Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
+                # Determine transaction type and required confirmations
+                tx_type = PaymentTypeManager().get_transaction_type(single_hashed_tx_id)
+                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                    tx_type.name, Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
+                )
+
+                # Fetch confirmations from storage
+                confirmations = self.storage_manager.get_transaction_confirmations(single_hashed_tx_id)
+
+                if confirmations is None:
+                    logging.error(f"❌ Transaction {single_hashed_tx_id} confirmations could not be retrieved.")
                     return False
-        else:
-            # For the genesis block, you can log a message and skip the confirmations check
-            logging.info("Skipping transaction confirmations check for the genesis block.")
+
+                if confirmations < required_confirmations:
+                    logging.error(
+                        f"❌ Transaction {single_hashed_tx_id} does not meet required confirmations "
+                        f"({required_confirmations}, Confirmations: {confirmations})"
+                    )
+                    return False
+
+            except Exception as e:
+                logging.error(f"❌ Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
+                return False
 
         return True
+
 
 
 
@@ -353,6 +363,7 @@ class Blockchain:
 
 
 
+
     def add_block(self, new_block):
         """Add validated block to both chain and storage."""
         try:
@@ -360,10 +371,12 @@ class Blockchain:
             computed_hash = hashlib.sha3_384(new_block.calculate_hash().encode()).hexdigest()
 
             if not new_block.hash or computed_hash != new_block.hash:
-                raise ValueError(f"[ERROR] ❌ Block {new_block.index} has an invalid hash. Expected: {computed_hash}, Found: {new_block.hash}")
+                raise ValueError(
+                    f"❌ [ERROR] Block {new_block.index} has an invalid hash. Expected: {computed_hash}, Found: {new_block.hash}"
+                )
 
             if int(new_block.hash, 16) >= new_block.header.difficulty:
-                raise ValueError(f"[ERROR] ❌ Block {new_block.index} does not meet Proof-of-Work difficulty target.")
+                raise ValueError(f"❌ [ERROR] Block {new_block.index} does not meet Proof-of-Work difficulty target.")
 
             # ✅ Append the block to in-memory chain
             self.chain.append(new_block)
@@ -375,14 +388,17 @@ class Blockchain:
             # ✅ Confirm all transactions according to updated confirmation rules
             for tx in new_block.transactions:
                 try:
-                    # ✅ Ensure transaction ID is hashed with double SHA3-384
-                    tx.tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+                    # ✅ Ensure transaction ID is a string before encoding
+                    if isinstance(tx.tx_id, bytes):
+                        tx.tx_id = tx.tx_id.decode("utf-8")
 
+                    # ✅ Apply **only single hashing** to transaction ID
+                    single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
 
                     # ✅ Retrieve transaction type safely
-                    tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
+                    tx_type = PaymentTypeManager().get_transaction_type(single_hashed_tx_id)
                     if not tx_type:
-                        logging.warning(f"[WARN] ⚠️ Skipping confirmation for transaction {tx.tx_id} (Unknown Type).")
+                        logging.warning(f"⚠️ [WARN] Skipping confirmation for transaction {single_hashed_tx_id} (Unknown Type).")
                         continue
 
                     # ✅ Fetch required confirmations dynamically from Constants
@@ -391,25 +407,25 @@ class Blockchain:
                     )
 
                     # ✅ Ensure transaction exists before confirming
-                    if not self.storage_manager.get_transaction(tx.tx_id):
-                        logging.warning(f"[WARN] ⚠️ Transaction {tx.tx_id} not found in storage. Skipping confirmation.")
+                    if not self.storage_manager.get_transaction(single_hashed_tx_id):
+                        logging.warning(f"⚠️ [WARN] Transaction {single_hashed_tx_id} not found in storage. Skipping confirmation.")
                         continue
 
-                    self.storage_manager.confirm_transaction(tx.tx_id, required_confirmations)
+                    self.storage_manager.confirm_transaction(single_hashed_tx_id, required_confirmations)
 
                 except Exception as tx_error:
-                    logging.error(f"[ERROR] ❌ Failed to confirm transaction {tx.tx_id}: {str(tx_error)}")
+                    logging.error(f"❌ [ERROR] Failed to confirm transaction {single_hashed_tx_id}: {str(tx_error)}")
                     continue  # Proceed to the next transaction even if one fails
 
             # ✅ Verify that the block was properly stored
             stored_block = self.storage_manager.get_block(new_block.hash)
             if not stored_block or stored_block.hash != new_block.hash:
-                raise RuntimeError(f"[ERROR] ❌ Block storage verification failed for Block {new_block.index}")
+                raise RuntimeError(f"❌ [ERROR] Block storage verification failed for Block {new_block.index}")
 
-            logging.info(f"[INFO] ✅ Successfully added Block {new_block.index} [Hash: {new_block.hash[:12]}...]")
+            logging.info(f"✅ [INFO] Successfully added Block {new_block.index} [Hash: {new_block.hash[:12]}...]")
 
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Block addition failed: {str(e)}")
+            logging.error(f"❌ [ERROR] Block addition failed: {str(e)}")
 
             # ✅ Remove invalid block from the chain to prevent corruption
             if self.chain and self.chain[-1] == new_block:
@@ -419,6 +435,8 @@ class Blockchain:
                 self.block_manager.chain.pop()
 
             raise
+
+
 
     def _validate_genesis_block(self, genesis_block):
         """

@@ -18,7 +18,7 @@ class Hashing:
     """
 
     # 🔹 **Enable Double Hashing**
-    DOUBLE_HASHING_ENABLED = True  # ✅ Toggle between single and double SHA3-384 hashing
+    DOUBLE_HASHING_ENABLED = False  # ✅ Toggle between single and double SHA3-384 hashing
 
     @staticmethod
     def sha3_384(data: bytes) -> str:
