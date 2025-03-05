@@ -11,7 +11,7 @@ from typing import Optional, Dict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.database.lmdatabase import LMDBManager
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.transactions.txout import TransactionOut
 
 class UTXOStorage:

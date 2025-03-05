@@ -371,9 +371,9 @@ class Miner:
                 )
                 print(f"[Miner.mine_block] INFO: New block constructed with index {new_block.index}. (Function: mine_block, Class: Miner)")
 
-                from Zyiron_Chain.blockchain.pow import perform_pow
+                from Zyiron_Chain.miner.pow import PowManager
                 print(f"[Miner.mine_block] INFO: Starting PoW for Block {block_height}. (Function: mine_block, Class: Miner)")
-                final_hash, final_nonce, attempts = perform_pow(new_block)
+                final_hash, final_nonce, attempts = PowManager(new_block)
                 print(f"[Miner.mine_block] INFO: PoW completed. Final nonce: {final_nonce}, Attempts: {attempts}. (Function: mine_block, Class: Miner)")
 
                 new_block.hash = final_hash

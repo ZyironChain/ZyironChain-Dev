@@ -8,7 +8,7 @@ from typing import Optional, Dict, List
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.database.lmdatabase import LMDBManager
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
 
 class WalletStorage:
     """

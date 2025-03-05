@@ -21,9 +21,9 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.smartpay.smartpay import SmartTransaction
-from Zyiron_Chain.database.lmdatabase import LMDBManager
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
 
-from Zyiron_Chain.blockchain.network.peerconstant import PeerConstants
+from Zyiron_Chain.network.peerconstant import PeerConstants
 
 class SmartMempool:
     """Manages the Smart Mempool with dynamic transaction prioritization."""

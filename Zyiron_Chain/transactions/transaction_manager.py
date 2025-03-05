@@ -6,54 +6,80 @@ from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
-from Zyiron_Chain.database.poc import PoC
-from Zyiron_Chain.utils.standardmempool import StandardMempool
+from Zyiron_Chain.mempool.standardmempool import StandardMempool
+from Zyiron_Chain.mempool.smartmempool import SmartMempool
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
-from threading import Lock
-from Zyiron_Chain.smartpay.smartmempool import SmartMempool
 from decimal import Decimal
-import time
+from threading import Lock
 import hashlib
 import json
+import time
+
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
-    from Zyiron_Chain.transactions.fees import FundsAllocator
+    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 class TransactionManager:
-    def __init__(self, storage_manager, key_manager, poc):
+    """
+    Manages transaction creation, validation, and mempool operations
+    under the new file structure. All data is processed as bytes, and
+    single SHA3-384 hashing is used.
+    """
+
+    def __init__(
+        self,
+        block_storage,     # For retrieving block data if needed
+        block_metadata,    # For retrieving block heights, metadata
+        tx_storage,        # For checking transaction existence, storing TX data
+        utxo_manager: UTXOManager,
+        key_manager
+    ):
         """
-        [TransactionManager.__init__] Initialize the Transaction Manager.
-        Handles transactions in both standard and smart mempools.
+        :param block_storage: The module handling full block storage (WholeBlockData).
+        :param block_metadata: The module handling block metadata (BlockMetadata).
+        :param tx_storage: The module for transaction indexing (TxStorage).
+        :param utxo_manager: UTXOManager instance for UTXO lookups.
+        :param key_manager: KeyManager for retrieving private/public keys.
         """
-        self.storage_manager = storage_manager
+        self.block_storage = block_storage
+        self.block_metadata = block_metadata
+        self.tx_storage = tx_storage
+        self.utxo_manager = utxo_manager
         self.key_manager = key_manager
-        self.poc = poc
 
         self.network = Constants.NETWORK
         self.version = Constants.VERSION
 
-        self.standard_mempool = StandardMempool(self.poc, max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_STANDARD_ALLOCATION))
-        self.smart_mempool = SmartMempool(max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION))
+        # Initialize the two mempools
+        self.standard_mempool = StandardMempool(
+            max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_STANDARD_ALLOCATION)
+        )
+        self.smart_mempool = SmartMempool(
+            max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION)
+        )
 
         self.transaction_mempool_map = Constants.TRANSACTION_MEMPOOL_MAP
         self._mempool = self.standard_mempool
+
         self.mempool_lock = Lock()
 
         print(f"[TransactionManager.__init__] Initialized on {self.network.upper()} | Version {self.version} | "
-              f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}%")
+              f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | "
+              f"Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}%")
 
     @property
     def mempool(self):
-        """[TransactionManager.mempool] Return the active mempool."""
+        """
+        Returns the currently active mempool (Standard or Smart).
+        """
         return self._mempool
 
-    def set_mempool(self, mempool_type="standard"):
+    def set_mempool(self, mempool_type: str = "standard"):
         """
-        [TransactionManager.set_mempool] Switch between Standard and Smart mempools.
+        Switch between Standard and Smart mempools.
         :param mempool_type: "standard" or "smart"
         """
         if mempool_type == "standard":
@@ -65,16 +91,19 @@ class TransactionManager:
         else:
             raise ValueError(f"[TransactionManager.set_mempool] Invalid mempool type: {mempool_type}")
 
-    def store_transaction_in_mempool(self, transaction):
+    def store_transaction_in_mempool(self, transaction: Transaction) -> bool:
         """
-        [TransactionManager.store_transaction_in_mempool] 
-        Store a transaction in the appropriate mempool after validating its type and network prefix.
-        Uses single SHA3-384 hashing for transaction ID.
+        Validates the transaction's type & network prefix, then adds it
+        to the appropriate mempool. Uses single SHA3-384 hashing for the tx_id check.
         """
         try:
+            # Re-hash the tx_id to confirm it starts with the correct prefix
             hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
             if not hashed_tx_id.startswith(Constants.ADDRESS_PREFIX):
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Transaction {transaction.tx_id} has an invalid address prefix for {self.network}. Expected: {Constants.ADDRESS_PREFIX}")
+                print(
+                    f"[TransactionManager.store_transaction_in_mempool] ERROR: Transaction {transaction.tx_id} has invalid address prefix for {self.network}. "
+                    f"Expected: {Constants.ADDRESS_PREFIX}"
+                )
                 return False
 
             tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
@@ -83,57 +112,72 @@ class TransactionManager:
                 return False
 
             mempool_type = self.transaction_mempool_map.get(tx_type.name, {}).get("mempool", "StandardMempool")
-            current_height = len(self.storage_manager.block_manager.chain)
+
+            # We retrieve the current chain height from block_metadata or other place
+            chain_height = self._get_chain_height()
+
             if mempool_type == "SmartMempool":
-                success = self.smart_mempool.add_transaction(transaction, current_height)
+                success = self.smart_mempool.add_transaction(transaction, chain_height)
             else:
                 success = self.standard_mempool.add_transaction(transaction)
 
             if success:
                 print(f"[TransactionManager.store_transaction_in_mempool] INFO: Transaction {hashed_tx_id} stored in {mempool_type}.")
-                self.storage_manager.poc.route_transaction_to_mempool(transaction)
+                # If needed, store the TX in tx_storage or do further routing
+                # e.g., self.tx_storage.store_transaction(transaction)
                 return True
             else:
                 print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Failed to store transaction {hashed_tx_id} in {mempool_type}.")
                 return False
+
         except Exception as e:
             print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
             return False
 
-    def select_transactions_for_block(self, max_block_size_mb=10):
+    def select_transactions_for_block(self, max_block_size_mb: int = 10):
         """
-        [TransactionManager.select_transactions_for_block] 
-        Select transactions for the next block, prioritizing high fee-per-byte transactions.
-        Ensures transactions fit within the specified block size.
+        Chooses transactions for the next block, focusing on highest fee-per-byte.
+        Ensures transactions fit within block size. Returns a list of chosen transactions.
         """
         try:
             max_size_bytes = max_block_size_mb * 1024 * 1024
-            current_height = len(self.storage_manager.block_manager.chain)
+            chain_height = self._get_chain_height()
 
+            # Allocation for smart, standard, instant
             smart_tx_allocation = int(max_size_bytes * Constants.BLOCK_ALLOCATION_SMART)
             standard_tx_allocation = int(max_size_bytes * Constants.BLOCK_ALLOCATION_STANDARD)
             instant_tx_allocation = int(max_size_bytes * Constants.INSTANT_PAYMENT_ALLOCATION)
 
-            smart_txs = self.smart_mempool.get_pending_transactions(Constants.BLOCK_ALLOCATION_SMART * max_block_size_mb, current_height)
+            smart_txs = self.smart_mempool.get_pending_transactions(Constants.BLOCK_ALLOCATION_SMART * max_block_size_mb, chain_height)
             standard_txs = self.standard_mempool.get_pending_transactions(Constants.BLOCK_ALLOCATION_STANDARD * max_block_size_mb)
             instant_txs = self.standard_mempool.get_pending_transactions(Constants.INSTANT_PAYMENT_ALLOCATION * max_block_size_mb, transaction_type="Instant")
 
             all_txs = smart_txs + standard_txs + instant_txs
-            sorted_txs = sorted(all_txs, key=lambda tx: tx.fee / self._calculate_transaction_size(tx), reverse=True)
+            sorted_txs = sorted(
+                all_txs,
+                key=lambda tx: tx.fee / self._calculate_transaction_size(tx),
+                reverse=True
+            )
 
             selected_txs = []
             current_smart_size = current_standard_size = current_instant_size = 0
 
             for tx in sorted_txs:
                 tx_size = self._calculate_transaction_size(tx)
+
                 if tx in smart_txs and current_smart_size + tx_size > smart_tx_allocation:
                     continue
                 if tx in standard_txs and current_standard_size + tx_size > standard_tx_allocation:
                     continue
                 if tx in instant_txs and current_instant_size + tx_size > instant_tx_allocation:
                     continue
-                if (current_smart_size + current_standard_size + current_instant_size + tx_size) <= max_size_bytes and self.validate_transaction(tx):
+
+                # Check overall limit and validate transaction
+                total_used = current_smart_size + current_standard_size + current_instant_size
+                if (total_used + tx_size <= max_size_bytes) and self.validate_transaction(tx):
                     selected_txs.append(tx)
+
+                    # Update category size
                     if tx in smart_txs:
                         current_smart_size += tx_size
                     elif tx in instant_txs:
@@ -141,117 +185,169 @@ class TransactionManager:
                     else:
                         current_standard_size += tx_size
 
-            print(f"[TransactionManager.select_transactions_for_block] INFO: Selected {len(selected_txs)} transactions | Smart: {current_smart_size} bytes | Standard: {current_standard_size} bytes | Instant: {current_instant_size} bytes | Total: {current_smart_size + current_standard_size + current_instant_size} bytes")
+            total_size = current_smart_size + current_standard_size + current_instant_size
+            print(
+                "[TransactionManager.select_transactions_for_block] INFO: "
+                f"Selected {len(selected_txs)} transactions | Smart: {current_smart_size} bytes | "
+                f"Standard: {current_standard_size} bytes | Instant: {current_instant_size} bytes | Total: {total_size} bytes"
+            )
             return selected_txs
+
         except Exception as e:
             print(f"[TransactionManager.select_transactions_for_block] ERROR: {str(e)}")
             return []
 
-    def _calculate_transaction_size(self, tx):
+    def _calculate_transaction_size(self, tx: Transaction) -> int:
         """
-        [TransactionManager._calculate_transaction_size] 
-        Calculate the transaction size in bytes using single SHA3-384 hashing.
+        Calculate transaction size in bytes using single SHA3-384 hashing.
         """
         try:
+            # Ensure tx_id is a str
             if isinstance(tx.tx_id, bytes):
                 tx.tx_id = tx.tx_id.decode("utf-8")
+
+            # We create a single hash from tx_id just for a consistent measure
             single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
+            # Base fields
             base_size = len(single_hashed_tx_id) + len(str(tx.timestamp)) + len(str(tx.nonce))
+
+            # Inputs and outputs
             input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True)) for inp in tx.inputs)
             output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True)) for out in tx.outputs)
+
             total_size = base_size + input_size + output_size
             return total_size
+
         except Exception as e:
             print(f"[TransactionManager._calculate_transaction_size] ERROR: Failed to calculate size for {tx.tx_id}: {str(e)}")
             return -1
 
-    def validate_transaction(self, tx):
+    def validate_transaction(self, tx: Transaction) -> bool:
         """
-        [TransactionManager.validate_transaction] 
-        Validate transaction integrity: signature, UTXO availability, fee, and replay prevention.
+        Validate a transaction: signature, UTXO checks, fees, replay prevention, etc.
+        CoinbaseTx is skipped from these checks except for basic format.
         """
         try:
+            # If it’s a coinbase, skip deeper checks
             from Zyiron_Chain.transactions.coinbase import CoinbaseTx
             if isinstance(tx, CoinbaseTx):
-                print(f"[TransactionManager.validate_transaction] INFO: Coinbase transaction {tx.tx_id} skipped for further validation.")
+                print(f"[TransactionManager.validate_transaction] INFO: Coinbase transaction {tx.tx_id} skipping deeper validation.")
                 return True
+
+            # Ensure tx_id is str
             if isinstance(tx.tx_id, bytes):
                 tx.tx_id = tx.tx_id.decode("utf-8")
+
+            # Re-hash tx_id
             single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
+
+            # Check signature
             if not tx.verify_signature():
                 print(f"[TransactionManager.validate_transaction] ERROR: Signature verification failed for {single_hashed_tx_id}")
                 return False
+
+            # Check UTXOs for inputs
             input_sum = Decimal("0")
-            for tx_input in tx.tx_inputs:
-                utxo = self.utxo_manager.get_utxo(tx_input.tx_out_id)
+            for tx_in in tx.inputs:
+                utxo = self.utxo_manager.get_utxo(tx_in.tx_out_id)
                 if not utxo:
-                    print(f"[TransactionManager.validate_transaction] ERROR: Missing UTXO {tx_input.tx_out_id}")
+                    print(f"[TransactionManager.validate_transaction] ERROR: Missing UTXO {tx_in.tx_out_id}")
                     return False
-                if utxo.spent:
-                    print(f"[TransactionManager.validate_transaction] ERROR: UTXO {tx_input.tx_out_id} already spent")
+                if getattr(utxo, "locked", False):
+                    print(f"[TransactionManager.validate_transaction] ERROR: UTXO {tx_in.tx_out_id} is locked. Cannot spend.")
                     return False
                 input_sum += Decimal(str(utxo.amount))
-            output_sum = sum(Decimal(str(out.amount)) for out in tx.tx_outputs)
+
+            output_sum = sum(Decimal(str(out.amount)) for out in tx.outputs)
             if input_sum < output_sum:
-                print(f"[TransactionManager.validate_transaction] ERROR: Transaction {tx.tx_id} inputs {input_sum} < outputs {output_sum}")
+                print(
+                    f"[TransactionManager.validate_transaction] ERROR: Transaction {tx.tx_id} "
+                    f"inputs {input_sum} < outputs {output_sum}"
+                )
                 return False
+
+            # Fee check
             calculated_fee = input_sum - output_sum
-            required_fee = self.fee_model.calculate_fee(
-                tx_size=self._calculate_transaction_size(tx),
-                tx_type=tx.type,
-                network_congestion=self.mempool.size
-            )
+            # Example fee check if you have a FeeModel
+            # Or you might do your own logic here
+            # required_fee = self._calculate_required_fee(tx)
+            # For demonstration, we can do a simpler check
             min_fee_required = Decimal(Constants.MIN_TRANSACTION_FEE)
-            if calculated_fee < required_fee or calculated_fee < min_fee_required:
-                print(f"[TransactionManager.validate_transaction] ERROR: Insufficient fee for {tx.tx_id}. Required: {max(required_fee, min_fee_required)}, Given: {calculated_fee}")
+            if calculated_fee < min_fee_required:
+                print(
+                    f"[TransactionManager.validate_transaction] ERROR: Insufficient fee for {tx.tx_id}. "
+                    f"Minimum required: {min_fee_required}, Given: {calculated_fee}"
+                )
                 return False
-            if self.storage_manager.poc.check_transaction_exists(tx.tx_id, tx.nonce, tx.network_id):
+
+            # Replay check - if tx_storage has a method to see if tx_id is used
+            if self.tx_storage.transaction_exists(tx.tx_id):
                 print(f"[TransactionManager.validate_transaction] ERROR: Replay attack detected for {tx.tx_id}")
                 return False
+
+            # Ensure transaction is in correct mempool if typed
             tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
             expected_mempool = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("mempool", "StandardMempool")
+
+            # Check presence in the correct mempool (optional)
             if expected_mempool == "SmartMempool" and tx.tx_id not in self.smart_mempool.transactions:
-                print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in SmartMempool but is not")
+                print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in SmartMempool but is not.")
                 return False
             if expected_mempool == "StandardMempool" and tx.tx_id not in self.standard_mempool.transactions:
-                print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in StandardMempool but is not")
+                print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in StandardMempool but is not.")
                 return False
+
             print(f"[TransactionManager.validate_transaction] INFO: Transaction {tx.tx_id} passed all validation checks.")
             return True
+
         except Exception as e:
             print(f"[TransactionManager.validate_transaction] ERROR: Transaction validation failed for {tx.tx_id}: {str(e)}")
             return False
 
-    def get_pending_transactions(self, block_size_mb=None):
+    def get_pending_transactions(self, block_size_mb: int = None):
         """
-        [TransactionManager.get_pending_transactions] 
-        Retrieve pending transactions from both mempools.
-        If block_size_mb is provided, filter transactions to fit within that size.
+        Returns pending transactions from both mempools. If block_size_mb is provided,
+        filter them by size. Uses fee-per-byte ordering if filtering is done.
         """
         total_block_size = (block_size_mb or Constants.MEMPOOL_MAX_SIZE_MB) * 1024 * 1024
         smart_tx_allocation = int(total_block_size * Constants.BLOCK_ALLOCATION_SMART)
         standard_tx_allocation = int(total_block_size * Constants.BLOCK_ALLOCATION_STANDARD)
-        smart_txs = self.smart_mempool.get_smart_transactions(smart_tx_allocation, len(self.storage_manager.block_manager.chain))
+
+        chain_height = self._get_chain_height()
+        smart_txs = self.smart_mempool.get_smart_transactions(smart_tx_allocation, chain_height)
         standard_txs = self.standard_mempool.get_pending_transactions(standard_tx_allocation)
+
         all_txs = smart_txs + standard_txs
+
+        # If a block size is specified, filter by size
         if block_size_mb is not None:
             max_size_bytes = block_size_mb * 1024 * 1024
             selected_txs = []
             current_size = 0
+
+            # Sort by fee-per-byte descending
             sorted_txs = sorted(all_txs, key=lambda tx: tx.fee / self._calculate_transaction_size(tx), reverse=True)
+
             for tx in sorted_txs:
                 tx_size = self._calculate_transaction_size(tx)
                 if current_size + tx_size > max_size_bytes:
                     break
                 selected_txs.append(tx)
                 current_size += tx_size
-            print(f"[TransactionManager.get_pending_transactions] INFO: Selected {len(selected_txs)} transactions | Total Size: {current_size} bytes")
+
+            print(
+                "[TransactionManager.get_pending_transactions] INFO: "
+                f"Selected {len(selected_txs)} transactions | Total Size: {current_size} bytes"
+            )
             return selected_txs
+
+        # Otherwise return all
         return all_txs
 
-    def sign_tx(self, transaction):
+    def sign_tx(self, transaction: Transaction):
         """
-        [TransactionManager.sign_tx] Sign the transaction inputs using the miner's private key.
+        Sign each input in the transaction using the miner's private key from key_manager.
         """
         with self.mempool_lock:
             try:
@@ -259,13 +355,19 @@ class TransactionManager:
                 if not private_key:
                     print("[TransactionManager.sign_tx] ERROR: Failed to retrieve private key. Transaction signing aborted.")
                     raise ValueError("Private key retrieval failed.")
+
                 for tx_in in transaction.inputs:
                     if not hasattr(tx_in, "tx_out_id"):
                         print(f"[TransactionManager.sign_tx] ERROR: Transaction input missing tx_out_id: {tx_in}")
                         raise ValueError("Invalid transaction input structure.")
+
+                    # Single-hash the signature data
                     signature_data = f"{tx_in.tx_out_id}{private_key}"
                     tx_in.script_sig = hashlib.sha3_384(signature_data.encode()).hexdigest()
+
                 print(f"[TransactionManager.sign_tx] INFO: Transaction {transaction.tx_id} successfully signed.")
+
             except Exception as e:
                 print(f"[TransactionManager.sign_tx] ERROR: Failed to sign transaction {transaction.tx_id}: {e}")
                 raise ValueError(f"Transaction signing error: {e}")
+

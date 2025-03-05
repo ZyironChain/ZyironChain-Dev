@@ -2,221 +2,228 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-
-# transactions/utxo_manager.py
-import logging
 from decimal import Decimal
 from typing import Dict, Optional
-from Zyiron_Chain.transactions.txout import TransactionOut
+import json
 
-logging.basicConfig(level=logging.INFO)
-
-import logging
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.txout import TransactionOut
-from Zyiron_Chain.database.lmdatabase import LMDBManager
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
-    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
-    from Zyiron_Chain.transactions.fees import FundsAllocator
+from Zyiron_Chain.utils.hashing import Hashing
 
 class UTXOManager:
-    """Manages Unspent Transaction Outputs (UTXOs) with peer-specific LMDB storage."""
+    """
+    Manages Unspent Transaction Outputs (UTXOs) using a provided StorageManager.
+    The StorageManager should expose an attribute 'utxo_db' for UTXO storage.
+    Detailed print statements are used for step-by-step tracing.
+    """
 
-    def __init__(self, peer_id: str):
+    def __init__(self, storage_manager):
         """
-        Initialize the UTXO Manager with a peer-specific LMDB database.
-
-        :param peer_id: Unique identifier for the peer.
+        Initialize the UTXOManager with a StorageManager instance.
+        
+        :param storage_manager: An instance of StorageManager that provides 'utxo_db'.
         """
-        self.peer_id = peer_id
-        self.lmdb = LMDBManager(f"utxo_{peer_id}.lmdb")  # ✅ Each peer has its own LMDB storage
-        self._cache = {}  # ✅ Local cache for fast access
+        self.storage_manager = storage_manager
+        self._cache: Dict[str, Dict] = {}  # Local cache for fast access
+        print(f"[UTXOManager INFO] Initialized UTXOManager using provided StorageManager.")
 
     def register_utxo(self, tx_out: TransactionOut):
         """
-        Register a new UTXO in both the cache and LMDB.
-        Prevents duplicate registration to maintain consistency.
-
-        :param tx_out: The UTXO (TransactionOut) object to register.
+        Register a new UTXO in both the local cache and the storage manager's utxo_db.
+        Skips registration if the UTXO already exists.
+        
+        :param tx_out: The TransactionOut object representing the UTXO.
         """
         if not isinstance(tx_out, TransactionOut):
-            raise TypeError("[ERROR] Invalid UTXO type. Expected TransactionOut instance.")
-
-        # ✅ Check if UTXO already exists in cache or LMDB before registering
-        if tx_out.tx_out_id in self._cache or self.lmdb.get(tx_out.tx_out_id):
-            logging.warning(f"[WARN] UTXO {tx_out.tx_out_id} already exists in peer {self.peer_id}. Skipping registration.")
+            print(f"[UTXOManager ERROR] Invalid UTXO type. Expected TransactionOut instance, got {type(tx_out)}.")
+            raise TypeError("Invalid UTXO type. Expected TransactionOut instance.")
+        
+        if tx_out.tx_out_id in self._cache or self.storage_manager.utxo_db.get(tx_out.tx_out_id):
+            print(f"[UTXOManager WARN] UTXO {tx_out.tx_out_id} already exists. Skipping registration.")
             return
 
         utxo_data = tx_out.to_dict()
-        self._cache[tx_out.tx_out_id] = utxo_data  # ✅ Store in local cache
-        self.lmdb.put(tx_out.tx_out_id, utxo_data)  # ✅ Store in LMDB
+        self._cache[tx_out.tx_out_id] = utxo_data
+        self.storage_manager.utxo_db.put(tx_out.tx_out_id, utxo_data)
+        print(f"[UTXOManager INFO] Registered UTXO: {tx_out.tx_out_id} | Amount: {tx_out.amount} | Locked: {tx_out.locked}")
 
-        logging.info(f"[UTXO MANAGER] ✅ Peer {self.peer_id} registered UTXO: {tx_out.tx_out_id} | Amount: {tx_out.amount} | Locked: {tx_out.locked}")
-
-    def get_utxo(self, tx_out_id: str) -> TransactionOut:
+    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
         """
-        Retrieve a UTXO from the cache or LMDB storage.
-
-        :param tx_out_id: The transaction output ID.
-        :return: A TransactionOut instance or None if not found.
+        Retrieve a UTXO from the local cache or from the storage manager's utxo_db.
+        
+        :param tx_out_id: The UTXO identifier.
+        :return: A TransactionOut instance if found, else None.
         """
         if tx_out_id in self._cache:
+            print(f"[UTXOManager INFO] Retrieved UTXO {tx_out_id} from local cache.")
             return TransactionOut.from_dict(self._cache[tx_out_id])
-
-        utxo_data = self.lmdb.get(tx_out_id)
+        
+        utxo_data = self.storage_manager.utxo_db.get(tx_out_id)
         if not utxo_data:
-            logging.warning(f"[WARNING] UTXO {tx_out_id} not found in peer {self.peer_id}'s LMDB.")
-            return None  # ✅ Return None explicitly if not found
+            print(f"[UTXOManager WARN] UTXO {tx_out_id} not found in storage.")
+            return None
 
-        self._cache[tx_out_id] = utxo_data  # ✅ Store in cache for future lookups
+        self._cache[tx_out_id] = utxo_data
+        print(f"[UTXOManager INFO] Retrieved UTXO {tx_out_id} from storage and cached it.")
         return TransactionOut.from_dict(utxo_data)
 
     def delete_utxo(self, tx_out_id: str):
         """
-        Delete a UTXO from LMDB and remove it from the cache.
-
-        :param tx_out_id: The transaction output ID to delete.
+        Delete a UTXO from both the local cache and the storage manager's utxo_db.
+        
+        :param tx_out_id: The UTXO identifier to delete.
         """
         if tx_out_id in self._cache:
             del self._cache[tx_out_id]
+            print(f"[UTXOManager INFO] Removed UTXO {tx_out_id} from local cache.")
+        
+        self.storage_manager.utxo_db.delete(tx_out_id)
+        print(f"[UTXOManager INFO] Deleted UTXO {tx_out_id} from storage.")
 
-        self.lmdb.delete(tx_out_id)  # ✅ Remove from LMDB
-        logging.info(f"[UTXO MANAGER] ❌ UTXO {tx_out_id} deleted from peer {self.peer_id}'s LMDB.")
-
-    def convert_to_standard_transaction(self, tx_id, new_payment_type=None):
+    def convert_to_standard_transaction(self, tx_id: str, new_payment_type: Optional[str] = None) -> Optional[str]:
         """
-        Convert a confirmed transaction into a Standard transaction by default.
-        If sent again with a special payment type (Instant, Smart), update accordingly.
-
-        :param tx_id: The transaction ID to convert.
-        :param new_payment_type: Optional new payment type (e.g., "INSTANT", "SMART") if being sent again.
-        :return: Updated transaction type.
+        Convert a confirmed transaction's UTXO data to a STANDARD type.
+        Optionally update to a new payment type if provided (except 'COINBASE').
+        
+        :param tx_id: The transaction ID whose UTXO data is to be updated.
+        :param new_payment_type: Optional new payment type (e.g., "INSTANT", "SMART").
+        :return: The updated transaction type or None if conversion fails.
         """
-        with self.lock:
-            # ✅ Retrieve transaction UTXO from LMDB
-            utxo_data = self.lmdb.get(tx_id)
-            if not utxo_data:
-                logging.warning(f"[WARN] UTXO for transaction {tx_id} not found in LMDB. Cannot convert.")
-                return None
-
-            # ✅ Validate transaction type using Constants
-            valid_types = list(Constants.TRANSACTION_MEMPOOL_MAP.keys())
-            original_type = utxo_data.get("transaction_type", "STANDARD")
-
-            if original_type not in valid_types:
-                logging.warning(f"[WARN] Unknown transaction type {original_type} for {tx_id}. Defaulting to STANDARD.")
-                original_type = "STANDARD"
-
-            # ✅ Always convert confirmed transactions to STANDARD first
-            utxo_data["transaction_type"] = "STANDARD"
-
-            # ✅ If the transaction is being sent again with a special payment type, update it dynamically
-            if new_payment_type in valid_types and new_payment_type != "COINBASE":
-                utxo_data["transaction_type"] = new_payment_type
-                logging.info(f"[INFO] Transaction {tx_id} reclassified as {new_payment_type} for new transfer.")
-
-            # ✅ Update UTXO in LMDB
-            self.lmdb.put(tx_id, utxo_data)
-            logging.info(f"[INFO] Transaction {tx_id} converted from {original_type} to {utxo_data['transaction_type']}.")
-
+        utxo_data = self.storage_manager.utxo_db.get(tx_id)
+        if not utxo_data:
+            print(f"[UTXOManager WARN] UTXO for transaction {tx_id} not found in storage. Cannot convert.")
+            return None
+        
+        valid_types = list(Constants.TRANSACTION_MEMPOOL_MAP.keys())
+        original_type = utxo_data.get("transaction_type", "STANDARD")
+        if original_type not in valid_types:
+            print(f"[UTXOManager WARN] Unknown transaction type '{original_type}' for {tx_id}. Defaulting to STANDARD.")
+            original_type = "STANDARD"
+        
+        # Always convert confirmed transactions to STANDARD first
+        utxo_data["transaction_type"] = "STANDARD"
+        
+        if new_payment_type in valid_types and new_payment_type != "COINBASE":
+            utxo_data["transaction_type"] = new_payment_type
+            print(f"[UTXOManager INFO] Reclassified transaction {tx_id} as {new_payment_type} for re-transfer.")
+        
+        self.storage_manager.utxo_db.put(tx_id, utxo_data)
+        print(f"[UTXOManager INFO] Converted transaction {tx_id} from {original_type} to {utxo_data['transaction_type']}.")
         return utxo_data["transaction_type"]
 
     def update_from_block(self, block: Dict):
-        """Update UTXO set from block transactions, ensuring proper validation."""
+        """
+        Update the UTXO set from a block's transactions.
+        
+        :param block: Dictionary representing the block (must contain a 'transactions' key).
+        """
         if not isinstance(block, dict) or "transactions" not in block:
-            logging.error("[ERROR] Invalid block format. Must contain 'transactions' key.")
+            print("[UTXOManager ERROR] Invalid block format. 'transactions' key missing.")
             return
 
-        # ✅ Process coinbase transaction first (ensure it's valid)
+        # Process coinbase transaction first
         coinbase = block["transactions"][0]
         if "outputs" in coinbase:
             for output in coinbase["outputs"]:
                 tx_out = TransactionOut.from_dict(output)
                 self.register_utxo(tx_out)
-
-        # ✅ Process regular transactions
+                print(f"[UTXOManager INFO] Processed coinbase UTXO: {tx_out.tx_out_id}")
+        
+        # Process regular transactions
         for tx in block["transactions"][1:]:
-            # ✅ Validate transaction structure
             if "outputs" not in tx or "inputs" not in tx:
-                logging.warning(f"[WARNING] Skipping malformed transaction: {tx}")
+                print(f"[UTXOManager WARN] Skipping malformed transaction during UTXO update: {tx}")
                 continue
-
-            # ✅ Add new UTXO outputs
+            
             for output in tx["outputs"]:
                 tx_out = TransactionOut.from_dict(output)
                 self.register_utxo(tx_out)
-
-            # ✅ Remove spent UTXOs from LMDB
+                print(f"[UTXOManager INFO] Registered UTXO from transaction: {tx_out.tx_out_id}")
+            
             for tx_input in tx["inputs"]:
                 self.consume_utxo(tx_input["tx_out_id"])
+                print(f"[UTXOManager INFO] Consumed UTXO from transaction input: {tx_input['tx_out_id']}")
 
     def consume_utxo(self, tx_out_id: str):
-        """Mark UTXO as spent and remove it from LMDB storage ONLY if it exists."""
+        """
+        Mark a UTXO as spent by removing it from storage and cache.
+        
+        :param tx_out_id: The UTXO identifier to consume.
+        """
         utxo = self.get_utxo(tx_out_id)
         if not utxo:
-            logging.warning(f"[WARNING] Attempted to consume non-existent UTXO {tx_out_id}")
-            return  # ✅ Prevent removing an already non-existent UTXO
-
-        # ✅ Remove from cache and LMDB
+            print(f"[UTXOManager WARN] Attempted to consume non-existent UTXO {tx_out_id}.")
+            return
+        
         if tx_out_id in self._cache:
             del self._cache[tx_out_id]
-
-        self.lmdb.delete(tx_out_id)  # ✅ Use LMDB for decentralized storage
-        logging.info(f"[UTXO MANAGER] ❌ Consumed UTXO: {tx_out_id} from LMDB.")
+            print(f"[UTXOManager INFO] Removed UTXO {tx_out_id} from cache during consumption.")
+        
+        self.storage_manager.utxo_db.delete(tx_out_id)
+        print(f"[UTXOManager INFO] Consumed UTXO {tx_out_id} from storage.")
 
     def lock_utxo(self, tx_out_id: str):
-        """Lock UTXO for transaction processing, ensuring LMDB consistency."""
+        """
+        Lock a UTXO for transaction processing.
+        
+        :param tx_out_id: The UTXO identifier to lock.
+        """
+        if not hasattr(self, "lock"):
+            from threading import Lock
+            self.lock = Lock()
+        
         with self.lock:
             utxo = self.get_utxo(tx_out_id)
             if not utxo:
-                logging.warning(f"[WARNING] Cannot lock non-existent UTXO: {tx_out_id}")
+                print(f"[UTXOManager WARN] Cannot lock non-existent UTXO: {tx_out_id}")
                 return
-
             if utxo.locked:
-                logging.warning(f"[WARNING] UTXO {tx_out_id} is already locked.")
+                print(f"[UTXOManager WARN] UTXO {tx_out_id} is already locked.")
                 return
-
             utxo.locked = True
-            self.lmdb.put(tx_out_id, utxo.to_dict())  # ✅ Ensure LMDB updates the lock status
-            logging.info(f"[UTXO MANAGER] 🔒 Locked UTXO: {tx_out_id}")
+            self.storage_manager.utxo_db.put(tx_out_id, utxo.to_dict())
+            print(f"[UTXOManager INFO] Locked UTXO: {tx_out_id}")
 
     def unlock_utxo(self, tx_out_id: str):
-        """Unlock UTXO after transaction processing, ensuring LMDB consistency."""
+        """
+        Unlock a UTXO after transaction processing.
+        
+        :param tx_out_id: The UTXO identifier to unlock.
+        """
+        if not hasattr(self, "lock"):
+            from threading import Lock
+            self.lock = Lock()
+        
         with self.lock:
             utxo = self.get_utxo(tx_out_id)
             if not utxo:
-                logging.warning(f"[WARNING] Cannot unlock non-existent UTXO: {tx_out_id}")
+                print(f"[UTXOManager WARN] Cannot unlock non-existent UTXO: {tx_out_id}")
                 return
-
             if not utxo.locked:
-                logging.warning(f"[WARNING] UTXO {tx_out_id} is already unlocked.")
+                print(f"[UTXOManager WARN] UTXO {tx_out_id} is already unlocked.")
                 return
-
             utxo.locked = False
-            self.lmdb.put(tx_out_id, utxo.to_dict())  # ✅ Ensure LMDB updates the lock status
-            logging.info(f"[UTXO MANAGER] 🔓 Unlocked UTXO: {tx_out_id}")
+            self.storage_manager.utxo_db.put(tx_out_id, utxo.to_dict())
+            print(f"[UTXOManager INFO] Unlocked UTXO: {tx_out_id}")
 
     def validate_utxo(self, tx_out_id: str, amount: Decimal) -> bool:
-        """Validate UTXO for transaction spending while ensuring no negative fee calculation."""
+        """
+        Validate that a UTXO exists, is unlocked, and has sufficient balance.
+        
+        :param tx_out_id: The UTXO identifier.
+        :param amount: The required amount.
+        :return: True if valid, False otherwise.
+        """
         utxo = self.get_utxo(tx_out_id)
-
-        # ✅ Ensure UTXO exists, is unlocked, and has enough balance
         if not utxo:
-            logging.error(f"[ERROR] UTXO {tx_out_id} does not exist.")
+            print(f"[UTXOManager ERROR] UTXO {tx_out_id} does not exist.")
             return False
-
         if utxo.locked:
-            logging.error(f"[ERROR] UTXO {tx_out_id} is locked. Cannot be spent.")
+            print(f"[UTXOManager ERROR] UTXO {tx_out_id} is locked and cannot be spent.")
             return False
-
-        # ✅ Ensure the amount is never greater than UTXO balance
         utxo_amount = Decimal(str(utxo.amount))
         if utxo_amount < amount:
-            logging.error(f"[ERROR] UTXO {tx_out_id} has insufficient balance. Required: {amount}, Available: {utxo.amount}")
+            print(f"[UTXOManager ERROR] UTXO {tx_out_id} has insufficient balance. Required: {amount}, Available: {utxo.amount}")
             return False
-
-        logging.info(f"[UTXO MANAGER] ✅ UTXO {tx_out_id} is valid for spending: Required {amount}, Available {utxo.amount}")
+        print(f"[UTXOManager INFO] UTXO {tx_out_id} validated for spending: Required {amount}, Available {utxo.amount}")
         return True

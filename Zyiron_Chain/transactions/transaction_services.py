@@ -12,7 +12,7 @@ from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.blockchain.utils.hashing import Hashing
+from Zyiron_Chain.utils.hashing import Hashing
 import time
 
 

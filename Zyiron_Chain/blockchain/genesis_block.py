@@ -1,3 +1,14 @@
+#!/usr/bin/env python3
+"""
+GenesisBlockManager Class
+
+- Manages the creation, mining, and validation of the Genesis block.
+- Processes all data as bytes using single SHA3-384 hashing.
+- Uses constants from Constants.
+- Sends the mined Genesis block to the correct storage databases.
+- Provides detailed print statements for debugging.
+"""
+
 import sys
 import os
 import json
@@ -5,24 +16,27 @@ import time
 import hashlib
 from decimal import Decimal
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.append(project_root)
 
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 
+
 class GenesisBlockManager:
     """
-    Manages the creation, mining, ensuring, and validation of the Genesis block.
+    Manages the creation, mining, and validation of the Genesis block.
     
     - Processes all data as bytes.
     - Uses only single SHA3-384 hashing via Hashing.hash().
-    - Utilizes constants from Constants.
+    - Utilizes Constants for defaults.
     - Provides detailed print statements for debugging.
-    - Optionally uses a predefined genesis hash via GENESIS_HASH.
+    - Sends the Genesis block to the correct storage modules.
     """
-    GENESIS_HASH = None  # Set this to a valid hash (hex string) to bypass mining, if desired.
+    GENESIS_HASH = None  # Optionally set a predefined genesis hash (hex string) to bypass mining
 
     def __init__(self, storage_manager, key_manager, chain, block_manager):
         self.storage_manager = storage_manager
@@ -30,29 +44,31 @@ class GenesisBlockManager:
         self.chain = chain
         self.block_manager = block_manager
         self.network = Constants.NETWORK
+        print(f"[GenesisBlockManager.__init__] Initialized for network: {self.network}")
 
-    def create_and_mine_genesis_block(self):
+    def create_and_mine_genesis_block(self) -> Block:
         """
         Creates and mines the Genesis block using single SHA3-384 hashing.
-        - Processes all data as bytes.
-        - Ensures the hash meets Constants.GENESIS_TARGET.
+        - Uses a Coinbase transaction.
+        - Mines until the computed hash is lower than Constants.GENESIS_TARGET.
         - Returns the mined Genesis block.
         """
         try:
-            print("[GenesisBlockManager.create_and_mine_genesis_block] INFO: Starting Genesis Block mining...")
-            
+            print("[GenesisBlockManager.create_and_mine_genesis_block] INFO: Starting Genesis block mining...")
+
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             if not miner_address:
                 raise ValueError("[GenesisBlockManager.create_and_mine_genesis_block] ERROR: Failed to retrieve miner address for Genesis block.")
 
-            # Create Coinbase Transaction
+            # Create Coinbase Transaction for block reward
             coinbase_tx = CoinbaseTx(
                 block_height=0,
                 miner_address=miner_address,
                 reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
             )
             coinbase_tx.fee = Decimal("0")
-            
+            print(f"[GenesisBlockManager.create_and_mine_genesis_block] INFO: Coinbase transaction created for miner: {miner_address}")
+
             # Initialize Genesis Block
             genesis_block = Block(
                 index=0,
@@ -63,16 +79,16 @@ class GenesisBlockManager:
                 difficulty=Constants.GENESIS_TARGET,
                 miner_address=miner_address
             )
-            print(f"[GenesisBlockManager.create_and_mine_genesis_block] INFO: Genesis Block initialized. Starting nonce: {genesis_block.header.nonce}")
-            
+            print(f"[GenesisBlockManager.create_and_mine_genesis_block] INFO: Genesis Block initialized with nonce: {genesis_block.nonce}")
+
             start_time = time.time()
             last_update = start_time
 
+            # Mine the genesis block by incrementing the nonce until hash meets target
             while True:
-                # Increment nonce and recompute hash using single hashing (data in bytes)
-                genesis_block.header.nonce += 1
+                genesis_block.nonce += 1
                 computed_hash = Hashing.hash(genesis_block.calculate_hash().encode()).hex()
-                
+                # Check if the computed hash is less than the target (as integer)
                 if int(computed_hash, 16) < Constants.GENESIS_TARGET:
                     genesis_block.hash = computed_hash
                     break
@@ -80,7 +96,7 @@ class GenesisBlockManager:
                 current_time = time.time()
                 if current_time - last_update >= 2:
                     elapsed = int(current_time - start_time)
-                    print(f"[GenesisBlockManager.create_and_mine_genesis_block] LIVE: Nonce: {genesis_block.header.nonce}, Elapsed Time: {elapsed}s")
+                    print(f"[GenesisBlockManager.create_and_mine_genesis_block] LIVE: Nonce: {genesis_block.nonce}, Elapsed Time: {elapsed}s")
                     last_update = current_time
 
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Genesis Block mined with hash: {genesis_block.hash}")
@@ -94,8 +110,8 @@ class GenesisBlockManager:
         """
         Ensures the Genesis block exists in storage.
         - If a valid Genesis block exists, it is loaded.
-        - If not, a new Genesis block is created (or a predefined GENESIS_HASH is used if set),
-          mined, and stored.
+        - If not, a new Genesis block is created (or a predefined GENESIS_HASH is used),
+          mined, and stored in the correct databases.
         """
         try:
             stored_blocks = self.storage_manager.get_all_blocks()
@@ -106,25 +122,26 @@ class GenesisBlockManager:
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis block header is not a dictionary.")
                 if header.get("index", -1) != 0 or header.get("previous_hash") != Constants.ZERO_HASH:
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Corrupted Genesis block found in storage.")
-                
+
                 genesis_block = Block.from_dict(genesis_data)
+                # Ensure the genesis block hash is a string
                 if not isinstance(genesis_block.hash, str):
                     genesis_block.hash = Hashing.hash(genesis_block.calculate_hash().encode()).hex()
+                # For our purposes, we check that the hash starts with a target pattern (e.g. "0000")
                 if not genesis_block.hash.startswith("0000"):
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis block hash does not meet difficulty requirement.")
-                
+
                 print(f"[GenesisBlockManager.ensure_genesis_block] SUCCESS: Genesis block loaded from storage with hash: {genesis_block.hash}")
                 self.chain.append(genesis_block)
                 self.block_manager.chain.append(genesis_block)
                 return
 
-            # If a GENESIS_HASH is predefined, you might choose to create a Genesis block using that value.
             if self.GENESIS_HASH is not None:
                 print("[GenesisBlockManager.ensure_genesis_block] INFO: Using predefined GENESIS_HASH.")
                 genesis_block = Block(
                     index=0,
                     previous_hash=Constants.ZERO_HASH,
-                    transactions=[],  # You may choose to leave transactions empty or add a coinbase tx.
+                    transactions=[],  # Optionally, add a coinbase transaction here if desired
                     timestamp=int(time.time()),
                     nonce=0,
                     difficulty=Constants.GENESIS_TARGET,
@@ -134,6 +151,7 @@ class GenesisBlockManager:
             else:
                 genesis_block = self.create_and_mine_genesis_block()
 
+            # Store the genesis block using the new storage manager
             self.storage_manager.store_block(genesis_block, Constants.GENESIS_TARGET)
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)

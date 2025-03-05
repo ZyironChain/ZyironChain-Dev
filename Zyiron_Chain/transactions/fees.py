@@ -6,7 +6,6 @@ from decimal import Decimal, getcontext
 getcontext().prec = 18
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 from Zyiron_Chain.blockchain.constants import Constants
-import logging
 
 # Use minimal print statements for progress/errors (instead of logging)
 # Here we assume that "print" statements are our final output mechanism.

@@ -4,15 +4,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 from decimal import Decimal, getcontext
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
-from Zyiron_Chain.blockchain.utils.standardmempool import StandardMempool
+from Zyiron_Chain.keys.key_manager import KeyManager
+from Zyiron_Chain.mempool.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-
+import hashlib
 # Set high precision for financial calculations
 getcontext().prec = 18
 
