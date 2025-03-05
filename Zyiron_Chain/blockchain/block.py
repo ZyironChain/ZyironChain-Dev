@@ -35,6 +35,10 @@ def get_coinbase_tx():
     from Zyiron_Chain.transactions.coinbase import CoinbaseTx
     return CoinbaseTx
 
+from Zyiron_Chain.utils.deserializer import Deserializer
+
+
+
 class Block:
     """
     A single Block in the blockchain, containing:
@@ -108,6 +112,13 @@ class Block:
             "difficulty": self.difficulty,
             "miner_address": self.miner_address
         }
+
+
+    @classmethod
+    def from_bytes(cls, block_bytes):
+        """Deserialize a block from bytes."""
+        data = Deserializer().deserialize(block_bytes)
+        return cls.from_dict(data)
 
     def calculate_hash(self) -> str:
         """

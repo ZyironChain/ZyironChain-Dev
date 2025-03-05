@@ -24,6 +24,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 
 class GenesisBlockManager:
@@ -106,17 +107,20 @@ class GenesisBlockManager:
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] ERROR: Genesis block mining failed: {e}")
             raise
 
+
+
     def ensure_genesis_block(self):
         """
         Ensures the Genesis block exists in storage.
         - If a valid Genesis block exists, it is loaded.
         - If not, a new Genesis block is created (or a predefined GENESIS_HASH is used),
-          mined, and stored in the correct databases.
+        mined, and stored in the correct databases.
         """
         try:
             stored_blocks = self.storage_manager.get_all_blocks()
             if stored_blocks:
-                genesis_data = stored_blocks[0]
+                genesis_data = Deserializer().deserialize(stored_blocks[0])  # 🔹 Auto-deserialize data
+
                 header = genesis_data.get("header", {})
                 if not isinstance(header, dict):
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis block header is not a dictionary.")
@@ -124,10 +128,12 @@ class GenesisBlockManager:
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Corrupted Genesis block found in storage.")
 
                 genesis_block = Block.from_dict(genesis_data)
-                # Ensure the genesis block hash is a string
+
+                # Ensure the genesis block hash is correctly formatted
                 if not isinstance(genesis_block.hash, str):
                     genesis_block.hash = Hashing.hash(genesis_block.calculate_hash().encode()).hex()
-                # For our purposes, we check that the hash starts with a target pattern (e.g. "0000")
+
+                # Validate difficulty target by checking hash pattern (e.g., must start with "0000")
                 if not genesis_block.hash.startswith("0000"):
                     raise ValueError("[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis block hash does not meet difficulty requirement.")
 
@@ -136,12 +142,13 @@ class GenesisBlockManager:
                 self.block_manager.chain.append(genesis_block)
                 return
 
+            # If GENESIS_HASH is predefined, use it instead of mining
             if self.GENESIS_HASH is not None:
                 print("[GenesisBlockManager.ensure_genesis_block] INFO: Using predefined GENESIS_HASH.")
                 genesis_block = Block(
                     index=0,
                     previous_hash=Constants.ZERO_HASH,
-                    transactions=[],  # Optionally, add a coinbase transaction here if desired
+                    transactions=[],  # Optionally, add a coinbase transaction if desired
                     timestamp=int(time.time()),
                     nonce=0,
                     difficulty=Constants.GENESIS_TARGET,
@@ -162,6 +169,7 @@ class GenesisBlockManager:
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Purging corrupted chain data...")
             self.storage_manager.purge_chain()
             raise
+
 
     def validate_genesis_block(self, genesis_block) -> bool:
         """

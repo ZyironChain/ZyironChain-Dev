@@ -3,6 +3,7 @@ import hashlib
 from decimal import Decimal
 from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class CoinbaseTx:
     """
@@ -121,3 +122,14 @@ class CoinbaseTx:
         Identify this as a coinbase transaction.
         """
         return True
+
+
+    @classmethod
+    def from_dict(cls, data: Dict):
+        """Deserialize a CoinbaseTx from a dictionary."""
+        deserialized_data = Deserializer().deserialize(data)
+        return cls(
+            block_height=deserialized_data["block_height"],
+            miner_address=deserialized_data["miner_address"],
+            reward=Decimal(deserialized_data["reward"])
+        )

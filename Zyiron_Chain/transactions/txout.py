@@ -9,6 +9,8 @@ from decimal import Decimal
 from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.utils.deserializer import Deserializer
+
 
 class TransactionOut:
     """Represents a transaction output (UTXO)"""
@@ -99,3 +101,14 @@ class TransactionOut:
         locked = data.get("locked", False)
         print(f"[TransactionOut from_dict INFO] Parsed TransactionOut from dict with script_pub_key: {script_pub_key}")
         return cls(script_pub_key=script_pub_key, amount=amount, locked=locked)
+
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "TransactionOut":
+        """Deserialize a TransactionOut from a dictionary."""
+        deserialized_data = Deserializer().deserialize(data)
+        return cls(
+            script_pub_key=deserialized_data["script_pub_key"],
+            amount=Decimal(str(deserialized_data["amount"])),
+            locked=deserialized_data.get("locked", False)
+        )

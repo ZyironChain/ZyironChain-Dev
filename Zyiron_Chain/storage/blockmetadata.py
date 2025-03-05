@@ -15,7 +15,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
-
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class BlockMetadata:
     """
@@ -45,6 +45,13 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.__init__] ERROR: Initialization failed: {e}")
             raise
+
+    def get_block_metadata(self, block_hash):
+        """Retrieve block metadata and deserialize if needed."""
+        data = self.block_metadata_db.get(block_hash.encode("utf-8"))
+        return Deserializer().deserialize(data) if data else None
+
+
 
     def _initialize_block_data_file(self):
         """Initialize the block.data file with the correct magic number."""

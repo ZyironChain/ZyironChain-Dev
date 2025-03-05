@@ -1,42 +1,22 @@
 import sys
 import os
-
-
-# Add the project root directory to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-
-
-
-
 import json
-
 from decimal import Decimal
 import time
 from threading import Lock
 from Zyiron_Chain.transactions.fees import FeeModel
-
-import logging
-
-# Remove all existing handlers (prevents log conflicts across modules)
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-# Set up clean logging for this module
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-
-log = logging.getLogger(__name__)  # Each module gets its own logger
-
-log.info(f"{__name__} logger initialized.")
-
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
-# Ensure this is at the very top of your script, before any other code
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 import hashlib
+from Zyiron_Chain.utils.deserializer import Deserializer
+import sys
+import os
+
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
+
 class StandardMempool:
     def __init__(self, poc, max_size_mb=None):
         """
@@ -48,10 +28,10 @@ class StandardMempool:
         self.poc = poc
         self.lock = Lock()
         
-        # ✅ Use LMDB for transaction persistence, and fetch the correct DB path using Constants.get_db_path()
+        # Use LMDB for transaction persistence, and fetch the correct DB path using Constants.get_db_path()
         self.lmdb = LMDBManager(Constants.get_db_path("mempool"))
 
-        # ✅ Allow size override while maintaining Constants default
+        # Allow size override while maintaining Constants default
         self.max_size_mb = max_size_mb if max_size_mb is not None else Constants.MEMPOOL_MAX_SIZE_MB
         self.max_size_bytes = self.max_size_mb * 1024 * 1024  # Convert MB to bytes
         
@@ -60,10 +40,10 @@ class StandardMempool:
         self.expiry_time = Constants.MEMPOOL_TRANSACTION_EXPIRY
         self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
-        # ✅ Load existing transactions from LMDB on initialization
+        # Load existing transactions from LMDB on initialization
         self._load_pending_transactions()
 
-        logging.info(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_mb} MB")
+        print(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_mb} MB")
 
     def _load_pending_transactions(self):
         """Load pending transactions from LMDB into memory, ensuring double SHA3-384 hash compatibility."""
@@ -71,26 +51,21 @@ class StandardMempool:
             stored_txs = self.lmdb.get_all_transactions()
             self.current_size_bytes = sum(tx["size"] for tx in stored_txs)
 
-            # ✅ Ensure transaction IDs use double SHA3-384 hashing
+            # Ensure transaction IDs use double SHA3-384 hashing
             for tx in stored_txs:
                 tx["tx_id"] = hashlib.sha3_384(tx["tx_id"].encode()).hexdigest()
 
-
-            logging.info(f"[MEMPOOL] Loaded {len(stored_txs)} pending transactions from LMDB.")
-
+            print(f"[MEMPOOL] Loaded {len(stored_txs)} pending transactions from LMDB.")
 
     def __len__(self):
         """Returns the number of transactions in the LMDB-backed Standard Mempool."""
         try:
-            # ✅ Fetch all transaction keys in LMDB under the "mempool:" prefix
+            # Fetch all transaction keys in LMDB under the "mempool:" prefix
             transaction_keys = self.lmdb.get_keys_by_prefix("mempool:")
             return len(transaction_keys)
         except Exception as e:
-            logging.error(f"[ERROR] Failed to count transactions in mempool: {e}")
+            print(f"[ERROR] Failed to count transactions in mempool: {e}")
             return 0  # Return 0 if an error occurs
-
-
-
 
     def add_transaction(self, transaction, smart_contract, fee_model):
         """
@@ -102,31 +77,31 @@ class StandardMempool:
         :return: True if the transaction was added, False otherwise.
         """
         try:
-            # ✅ Ensure `tx_id` is a string before encoding
+            # Ensure `tx_id` is a string before encoding
             if isinstance(transaction.tx_id, bytes):
                 transaction.tx_id = transaction.tx_id.decode("utf-8")
 
-            # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+            # Hash transaction ID using only **single SHA3-384 hashing**
             single_hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
 
-            # 🚫 Reject Smart Transactions
+            # Reject Smart Transactions
             if single_hashed_tx_id.startswith("S-"):
-                logging.error(f"[ERROR] ❌ Smart Transactions (S-) are not allowed in Standard Mempool. Rejected: {single_hashed_tx_id}")
+                print(f"[ERROR] ❌ Smart Transactions (S-) are not allowed in Standard Mempool. Rejected: {single_hashed_tx_id}")
                 return False
 
-            # 🚫 Validate transaction structure
+            # Validate transaction structure
             if not transaction.inputs or not transaction.outputs:
-                logging.error(f"[ERROR] ❌ Invalid Transaction {single_hashed_tx_id}: Must have at least one input and one output.")
+                print(f"[ERROR] ❌ Invalid Transaction {single_hashed_tx_id}: Must have at least one input and one output.")
                 return False
 
-            # 🚫 Ensure all transaction inputs exist in LMDB UTXO set
+            # Ensure all transaction inputs exist in LMDB UTXO set
             if not self.validate_transaction_inputs(transaction):
-                logging.warning(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} rejected: Missing valid UTXO inputs.")
+                print(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} rejected: Missing valid UTXO inputs.")
                 return False
 
             transaction_size = transaction.size
 
-            # ✅ Calculate the minimum required fee using Constants
+            # Calculate the minimum required fee using Constants
             min_fee_required = fee_model.calculate_fee(
                 payment_type="Standard",
                 amount=sum(out.amount for out in transaction.outputs),
@@ -134,17 +109,17 @@ class StandardMempool:
                 block_size=Constants.MAX_BLOCK_SIZE_BYTES
             )
 
-            # 🚫 Check for insufficient fees
+            # Check for insufficient fees
             if transaction.fee < min_fee_required:
-                logging.error(f"[ERROR] ❌ Transaction {single_hashed_tx_id} rejected due to insufficient fee. Required: {min_fee_required}, Provided: {transaction.fee}")
+                print(f"[ERROR] ❌ Transaction {single_hashed_tx_id} rejected due to insufficient fee. Required: {min_fee_required}, Provided: {transaction.fee}")
                 return False
 
-            # 🚫 Check if Mempool is full before adding
+            # Check if Mempool is full before adding
             if self.current_size_bytes + transaction_size > self.max_size_bytes:
-                logging.info("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
+                print("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
                 self.evict_transactions(transaction_size)
 
-            # ✅ Register transaction in Dispute Resolution Contract
+            # Register transaction in Dispute Resolution Contract
             try:
                 smart_contract.register_transaction(
                     transaction_id=single_hashed_tx_id,
@@ -155,15 +130,15 @@ class StandardMempool:
                     amount=transaction.amount,
                     fee=transaction.fee
                 )
-                logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} registered in smart contract.")
+                print(f"[INFO] ✅ Transaction {single_hashed_tx_id} registered in smart contract.")
             except KeyError as e:
-                logging.error(f"[ERROR] ❌ Missing transaction field during registration: {e}")
+                print(f"[ERROR] ❌ Missing transaction field during registration: {e}")
                 return False
             except Exception as e:
-                logging.error(f"[ERROR] ❌ Failed to register transaction in smart contract: {e}")
+                print(f"[ERROR] ❌ Failed to register transaction in smart contract: {e}")
                 return False
 
-            # ✅ Add transaction to LMDB-backed Mempool
+            # Add transaction to LMDB-backed Mempool
             with self.lock:
                 self.lmdb.put(f"mempool:{single_hashed_tx_id}", json.dumps({
                     "tx_id": single_hashed_tx_id,
@@ -178,15 +153,12 @@ class StandardMempool:
 
                 self.current_size_bytes += transaction_size
 
-            logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} successfully added to LMDB-backed Standard Mempool.")
+            print(f"[INFO] ✅ Transaction {single_hashed_tx_id} successfully added to LMDB-backed Standard Mempool.")
             return True
 
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
+            print(f"[ERROR] ❌ Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
             return False
-
-
-
 
     def allocate_block_space(self, block_size_mb, current_block_height):
         """
@@ -198,35 +170,28 @@ class StandardMempool:
         """
         block_size_bytes = block_size_mb * 1024 * 1024  # Convert MB to bytes
 
-        # ✅ Dynamically allocate space based on Constants
+        # Dynamically allocate space based on Constants
         instant_allocation = int(block_size_bytes * Constants.INSTANT_PAYMENT_ALLOCATION)
         standard_allocation = int(block_size_bytes * Constants.STANDARD_TRANSACTION_ALLOCATION)
         smart_allocation = int(block_size_bytes * Constants.BLOCK_ALLOCATION_SMART)
 
-        # ✅ Fetch transactions dynamically using `Constants.TRANSACTION_MEMPOOL_MAP`
+        # Fetch transactions dynamically using `Constants.TRANSACTION_MEMPOOL_MAP`
         instant_txs = self.get_pending_transactions(block_size_mb, transaction_type="INSTANT")
         standard_txs = self.get_pending_transactions(block_size_mb, transaction_type="STANDARD")
         smart_txs = self.smart_mempool.get_smart_transactions(block_size_mb, current_block_height)
 
-        # ✅ Calculate allocated space
+        # Calculate allocated space
         total_instant = sum(tx.size for tx in instant_txs)
         total_standard = sum(tx.size for tx in standard_txs)
         total_smart = sum(tx.size for tx in smart_txs)
 
-        # ✅ Dynamic reallocation of unused space
+        # Dynamic reallocation of unused space
         remaining_space = max(0, block_size_bytes - (total_instant + total_standard + total_smart))
         if remaining_space > 0:
             overflow_txs = self.reallocate_space(remaining_space, current_block_height)
             return instant_txs + standard_txs + smart_txs + overflow_txs
 
         return instant_txs + standard_txs + smart_txs
-
-
-
-
-
-
-
 
     def get_pending_transactions(self, block_size_mb: float, transaction_type: str = "STANDARD") -> list:
         """
@@ -238,32 +203,31 @@ class StandardMempool:
         """
         block_size_bytes = block_size_mb * 1024 * 1024  # Convert MB to bytes
 
-        # ✅ Use Constants for dynamic space allocation
+        # Use Constants for dynamic space allocation
         allocation = (
             int(block_size_bytes * Constants.INSTANT_PAYMENT_ALLOCATION)
             if transaction_type == "INSTANT"
             else int(block_size_bytes * Constants.STANDARD_TRANSACTION_ALLOCATION)
         )
 
-        # ✅ Fetch transaction prefixes dynamically
+        # Fetch transaction prefixes dynamically
         transaction_prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(transaction_type, {}).get("prefixes", [])
 
         with self.lock:
-            # ✅ Filter transactions dynamically based on prefix mappings
+            # Filter transactions dynamically based on prefix mappings
             filtered_txs = [
                 tx for tx in self.lmdb.get_all_transactions()
                 if any(tx["tx_id"].startswith(prefix) for prefix in transaction_prefixes)
             ]
 
-            # ✅ Ensure transactions use double SHA3-384 hash format
+            # Ensure transactions use double SHA3-384 hash format
             for tx in filtered_txs:
                 tx["tx_id"] = hashlib.sha3_384(tx["tx_id"].encode()).hexdigest()
 
-
-            # ✅ Sort transactions by highest fee-per-byte first
+            # Sort transactions by highest fee-per-byte first
             sorted_txs = sorted(filtered_txs, key=lambda x: x["fee_per_byte"], reverse=True)
 
-            # ✅ Select transactions that fit within allocated space
+            # Select transactions that fit within allocated space
             selected_txs = []
             current_size = 0
             for tx_data in sorted_txs:
@@ -271,16 +235,12 @@ class StandardMempool:
                 if current_size + tx_size > allocation:
                     break
 
-                # ✅ Ensure the transaction meets the minimum fee requirement
+                # Ensure the transaction meets the minimum fee requirement
                 if tx_data["fee_per_byte"] >= Constants.MIN_TRANSACTION_FEE:
                     selected_txs.append(tx_data)
                     current_size += tx_size
 
             return selected_txs
-
-
-
-
 
     def restore_transactions(self, transactions):
         """
@@ -290,18 +250,18 @@ class StandardMempool:
         """
         with self.lock:
             for tx in transactions:
-                # ✅ Ensure the transaction meets minimum fee requirements
+                # Ensure the transaction meets minimum fee requirements
                 if tx.fee < Constants.MIN_TRANSACTION_FEE:
-                    logging.warning(f"[WARN] Skipping restore for {tx.tx_id} - Below minimum fee requirement.")
+                    print(f"[WARN] Skipping restore for {tx.tx_id} - Below minimum fee requirement.")
                     continue
 
-                # ✅ Ensure the mempool has enough space before adding the transaction
+                # Ensure the mempool has enough space before adding the transaction
                 if self.current_size_bytes + tx.size > Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024:
-                    logging.warning(f"[WARN] Skipping restore for {tx.tx_id} - Not enough space in mempool.")
+                    print(f"[WARN] Skipping restore for {tx.tx_id} - Not enough space in mempool.")
                     continue  # Skip transaction if mempool is full
 
                 if tx.tx_id not in self.transactions:
-                    # ✅ Prevent division by zero error
+                    # Prevent division by zero error
                     fee_per_byte = tx.fee / tx.size if tx.size > 0 else 0
 
                     self.transactions[tx.tx_id] = {
@@ -311,8 +271,7 @@ class StandardMempool:
                         "status": "Pending"
                     }
                     self.current_size_bytes += tx.size
-                    logging.info(f"[MEMPOOL] Restored transaction {tx.tx_id} after failed mining attempt.")
-
+                    print(f"[MEMPOOL] Restored transaction {tx.tx_id} after failed mining attempt.")
 
     def evict_transactions(self, size_needed):
         """
@@ -321,10 +280,10 @@ class StandardMempool:
         :param size_needed: The size of the new transaction that needs space in bytes.
         """
         with self.lock:
-            # ✅ Dynamically adjust max mempool size from Constants
+            # Dynamically adjust max mempool size from Constants
             max_mempool_size_bytes = Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024
 
-            # ✅ Sort transactions by lowest fee-per-byte (lowest priority first)
+            # Sort transactions by lowest fee-per-byte (lowest priority first)
             sorted_txs = sorted(
                 self.transactions.items(),
                 key=lambda item: item[1]["fee_per_byte"]
@@ -333,15 +292,14 @@ class StandardMempool:
             while self.current_size_bytes + size_needed > max_mempool_size_bytes and sorted_txs:
                 tx_id, tx_data = sorted_txs.pop(0)
 
-                # ✅ Ensure we don’t evict high-fee transactions unnecessarily
+                # Ensure we don’t evict high-fee transactions unnecessarily
                 if tx_data["fee_per_byte"] >= Constants.MIN_TRANSACTION_FEE:
-                    logging.warning(f"[WARN] Skipping eviction of high-fee transaction {tx_id}.")
+                    print(f"[WARN] Skipping eviction of high-fee transaction {tx_id}.")
                     continue  # Skip if transaction has a decent fee
 
                 self.remove_transaction(tx_id)
                 self.current_size_bytes -= tx_data["transaction"].size
-                logging.info(f"[INFO] Evicted transaction {tx_id} to free space.")
-
+                print(f"[INFO] Evicted transaction {tx_id} to free space.")
 
     def track_confirmation(self, transaction_id):
         """
@@ -352,24 +310,22 @@ class StandardMempool:
         with self.lock:
             transaction = self.transactions.get(transaction_id)
             if not transaction:
-                logging.error(f"[ERROR] Transaction {transaction_id} not found in mempool.")
+                print(f"[ERROR] Transaction {transaction_id} not found in mempool.")
                 return
 
             confirmations = transaction.get("confirmations", 0)
             tx_type = transaction["transaction"].type.name if transaction["transaction"].type else "STANDARD"
 
-            # ✅ Dynamically determine required confirmations from Constants
+            # Dynamically determine required confirmations from Constants
             required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.upper(), Constants.TRANSACTION_CONFIRMATIONS["STANDARD"])
 
-            # ✅ Check if the transaction is still pending or confirmed
+            # Check if the transaction is still pending or confirmed
             if confirmations < required_confirmations:
                 transaction["confirmations"] += 1  # Simulate confirmation tracking
-                logging.info(f"[INFO] Transaction {transaction_id} pending ({transaction['confirmations']}/{required_confirmations} confirmations).")
+                print(f"[INFO] Transaction {transaction_id} pending ({transaction['confirmations']}/{required_confirmations} confirmations).")
             else:
                 transaction["status"] = "Confirmed"
-                logging.info(f"[INFO] Transaction {transaction_id} has been fully confirmed.")
-
-
+                print(f"[INFO] Transaction {transaction_id} has been fully confirmed.")
 
     def promote_child_to_parent(self, parent_id):
         """
@@ -381,110 +337,104 @@ class StandardMempool:
         with self.lock:
             parent_transaction = self.transactions.get(parent_id)
             if not parent_transaction:
-                logging.error(f"[ERROR] Parent transaction {parent_id} not found in mempool.")
+                print(f"[ERROR] Parent transaction {parent_id} not found in mempool.")
                 return None
 
             if parent_transaction["status"] != "Confirmed":
-                logging.warning(f"[WARN] Parent transaction {parent_id} is not confirmed yet.")
+                print(f"[WARN] Parent transaction {parent_id} is not confirmed yet.")
                 return None
 
-            # ✅ Ensure children exist before promoting
+            # Ensure children exist before promoting
             if not parent_transaction["children"]:
-                logging.info(f"[INFO] No children available to promote for parent {parent_id}.")
+                print(f"[INFO] No children available to promote for parent {parent_id}.")
                 return None
 
-            # ✅ Sort children by timestamp to promote the **oldest** child
+            # Sort children by timestamp to promote the **oldest** child
             sorted_children = sorted(
                 parent_transaction["children"],
                 key=lambda tx_id: self.transactions.get(tx_id, {}).get("timestamp", float('inf'))
             )
 
             if not sorted_children:
-                logging.warning(f"[WARN] No valid children found for promotion under parent {parent_id}.")
+                print(f"[WARN] No valid children found for promotion under parent {parent_id}.")
                 return None
 
             new_parent_id = sorted_children[0]  # Promote the oldest child
 
-            # ✅ Update the new parent transaction status
+            # Update the new parent transaction status
             if new_parent_id in self.transactions:
                 self.transactions[new_parent_id]["parent_id"] = None
                 self.transactions[new_parent_id]["status"] = "Pending"
 
-            # ✅ Remove reference from the old parent
+            # Remove reference from the old parent
             parent_transaction["children"].remove(new_parent_id)
 
-            logging.info(f"[INFO] ✅ Promoted transaction {new_parent_id} as the new parent of the chain.")
+            print(f"[INFO] ✅ Promoted transaction {new_parent_id} as the new parent of the chain.")
             return new_parent_id
-
 
     def cleanup_expired_transactions(self):
         """
         Remove transactions that have been in the mempool beyond the timeout or expiry time.
         """
         current_time = time.time()
-        mempool_expiry = Constants.MEMPOOL_TRANSACTION_EXPIRY  # ✅ Use dynamic expiration from Constants
+        mempool_expiry = Constants.MEMPOOL_TRANSACTION_EXPIRY  # Use dynamic expiration from Constants
 
         with self.lock:
             expired_transactions = []
 
-            for tx_hash, data in list(self.transactions.items()):  # ✅ Convert to list for safe iteration
-                tx_timestamp = data.get("timestamp", 0)  # ✅ Ensure timestamp exists, default to 0
-
-                # ✅ Compute transaction age safely
+            for tx_hash, data in list(self.transactions.items()):
+                tx_timestamp = data.get("timestamp", 0)  # Ensure timestamp exists, default to 0
                 tx_age = current_time - tx_timestamp if tx_timestamp else float('inf')
 
                 if tx_age > mempool_expiry:
                     expired_transactions.append(tx_hash)
 
-            # ✅ Remove expired transactions and log their removal
+            # Remove expired transactions and print their removal
             for tx_hash in expired_transactions:
                 self.remove_transaction(tx_hash)
-                logging.info(f"[MEMPOOL] ❌ Removed expired transaction {tx_hash} (Exceeded {mempool_expiry}s).")
+                print(f"[MEMPOOL] ❌ Removed expired transaction {tx_hash} (Exceeded {mempool_expiry}s).")
 
-        logging.info(f"[MEMPOOL] ✅ Cleanup complete: {len(expired_transactions)} transactions removed.")
+        print(f"[MEMPOOL] ✅ Cleanup complete: {len(expired_transactions)} transactions removed.")
 
-
-    def remove_transaction(self, tx_id, smart_contract):
+    def remove_transaction(self, tx_id, smart_contract=None):
         """
         Remove a transaction from the mempool and update the smart contract.
 
         :param tx_id: Transaction ID to remove.
-        :param smart_contract: Instance of DisputeResolutionContract.
+        :param smart_contract: Instance of a contract that may need to be notified (e.g., refund).
         """
         with self.lock:
             try:
-                # ✅ Ensure `tx_id` is a string before encoding
+                # Ensure `tx_id` is a string before encoding
                 if isinstance(tx_id, bytes):
                     tx_id = tx_id.decode("utf-8")
 
-                # ✅ Hash transaction ID using only **single SHA3-384 hashing**
+                # Single SHA3-384 hashing of transaction ID
                 single_hashed_tx_id = hashlib.sha3_384(tx_id.encode()).hexdigest()
 
-                # ✅ Fetch transaction from LMDB
+                # Fetch transaction from LMDB
                 transaction_data = self.lmdb.get(f"mempool:{single_hashed_tx_id}")
                 if not transaction_data:
-                    logging.warning(f"[MEMPOOL] ⚠️ Attempted to remove non-existent transaction {single_hashed_tx_id}.")
+                    print(f"[MEMPOOL][WARN] ⚠️ Attempted to remove non-existent transaction {single_hashed_tx_id}.")
                     return
 
                 transaction = json.loads(transaction_data)
 
-                # ✅ Remove transaction from LMDB
+                # Remove transaction from LMDB
                 self.lmdb.delete(f"mempool:{single_hashed_tx_id}")
 
-                # ✅ Notify smart contract
+                # Notify smart contract if provided
                 if smart_contract:
                     try:
                         smart_contract.refund_transaction(single_hashed_tx_id)
-                        logging.info(f"[MEMPOOL] 🔄 Transaction {single_hashed_tx_id} refunded in smart contract.")
+                        print(f"[MEMPOOL][INFO] 🔄 Transaction {single_hashed_tx_id} refunded in smart contract.")
                     except Exception as e:
-                        logging.error(f"[MEMPOOL] ❌ Failed to refund transaction {single_hashed_tx_id} in smart contract: {e}")
+                        print(f"[MEMPOOL][ERROR] ❌ Failed to refund transaction {single_hashed_tx_id} in smart contract: {e}")
 
-                logging.info(f"[MEMPOOL] ✅ Transaction {single_hashed_tx_id} successfully removed.")
+                print(f"[MEMPOOL][INFO] ✅ Transaction {single_hashed_tx_id} successfully removed.")
 
             except Exception as e:
-                logging.error(f"[MEMPOOL] ❌ Unexpected error while removing transaction {tx_id}: {str(e)}")
-
-
+                print(f"[MEMPOOL][ERROR] ❌ Unexpected error while removing transaction {tx_id}: {str(e)}")
 
     def recommend_fees(self, block_size, payment_type):
         """
@@ -495,42 +445,40 @@ class StandardMempool:
         :return: Recommended fee-per-byte and congestion level.
         """
         with self.lock:
-            # ✅ Validate payment type using Constants
             if payment_type not in Constants.TRANSACTION_MEMPOOL_MAP:
-                logging.error(f"[MEMPOOL] ❌ Invalid payment type: {payment_type}. Defaulting to 'STANDARD'.")
+                print(f"[MEMPOOL][ERROR] ❌ Invalid payment type: {payment_type}. Defaulting to 'STANDARD'.")
                 payment_type = "STANDARD"
 
-            # ✅ Calculate total size of all transactions in mempool
+            # Calculate total size of all transactions in mempool
             total_size = sum(
                 tx["transaction"].size for tx in self.transactions.values()
                 if hasattr(tx["transaction"], "size") and isinstance(tx["transaction"].size, (int, float))
             )
 
-            # ✅ Prevent division by zero if no transactions are in the mempool
+            # If no transactions, return minimum recommended fee
             if total_size == 0:
-                logging.info("[MEMPOOL] 🏦 No transactions in mempool. Returning minimum recommended fee.")
+                print("[MEMPOOL][INFO] 🏦 No transactions in mempool. Returning minimum recommended fee.")
                 return {
                     "congestion_level": "LOW",
                     "recommended_fee_per_byte": Constants.MIN_TRANSACTION_FEE
                 }
 
-            # ✅ Determine congestion level dynamically
+            # Determine congestion level
             congestion_level = self.fee_model.get_congestion_level(block_size, payment_type, total_size)
 
-            # ✅ Ensure the fee list is valid before using max()
+            # Gather fee_per_byte from mempool
             fee_per_byte_list = [
                 tx["fee_per_byte"] for tx in self.transactions.values()
                 if isinstance(tx.get("fee_per_byte"), (int, float))
             ]
 
             if not fee_per_byte_list:
-                logging.warning("[MEMPOOL] ⚠️ No transactions with valid fee_per_byte found. Using minimum transaction fee.")
+                print("[MEMPOOL][WARN] ⚠️ No transactions with valid fee_per_byte found. Using minimum transaction fee.")
                 return {
                     "congestion_level": congestion_level,
                     "recommended_fee_per_byte": Constants.MIN_TRANSACTION_FEE
                 }
 
-            # ✅ Sort fee list only if it contains multiple elements
             if len(fee_per_byte_list) > 1:
                 fee_per_byte_list.sort()
 
@@ -538,19 +486,14 @@ class StandardMempool:
                 block_size, payment_type, total_size, max(fee_per_byte_list)
             )
 
-            # ✅ Prevent division by zero and ensure a reasonable fee-per-byte recommendation
-            recommended_fee_per_byte = (
-                recommended_fee / total_size if total_size > 0 else Constants.MIN_TRANSACTION_FEE
-            )
+            recommended_fee_per_byte = recommended_fee / total_size if total_size > 0 else Constants.MIN_TRANSACTION_FEE
 
-            logging.info(f"[MEMPOOL] 💰 Recommended Fee for {payment_type}: {recommended_fee_per_byte:.8f} (Congestion: {congestion_level})")
+            print(f"[MEMPOOL][INFO] 💰 Recommended Fee for {payment_type}: {recommended_fee_per_byte:.8f} (Congestion: {congestion_level})")
 
             return {
                 "congestion_level": congestion_level,
                 "recommended_fee_per_byte": recommended_fee_per_byte
             }
-
-
 
     def get_total_size(self):
         """
@@ -559,118 +502,101 @@ class StandardMempool:
         """
         with self.lock:
             try:
-                # ✅ Filter valid transactions that have a size attribute
                 valid_transactions = [
                     tx["transaction"].size for tx in self.transactions.values()
                     if hasattr(tx["transaction"], "size") and isinstance(tx["transaction"].size, (int, float))
                 ]
-
-                # ✅ Calculate total size safely
                 total_size = sum(valid_transactions) if valid_transactions else 0
-
-                # ✅ Log the current mempool size
-                logging.info(f"[MEMPOOL] 📦 Current Mempool Size: {total_size} bytes (Max: {Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024} bytes)")
-
+                print(f"[MEMPOOL][INFO] 📦 Current Mempool Size: {total_size} bytes "
+                      f"(Max: {Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024} bytes)")
                 return total_size
 
             except Exception as e:
-                logging.error(f"[ERROR] ❌ Failed to calculate mempool size: {e}")
-                return 0  # ✅ Return 0 if an error occurs
-
+                print(f"[ERROR] ❌ Failed to calculate mempool size: {e}")
+                return 0
 
     def trigger_dispute(self, tx_id, smart_contract):
         """
         Trigger a dispute for a transaction.
         """
         with self.lock:
-            # ✅ Ensure the transaction exists
+            # Ensure the transaction exists
             transaction = self.transactions.get(tx_id)
             if not transaction:
-                logging.error(f"[ERROR] ❌ Transaction {tx_id} not found in the mempool. Cannot trigger dispute.")
-                return False  # ✅ Return False to indicate failure
+                print(f"[ERROR] ❌ Transaction {tx_id} not found in the mempool. Cannot trigger dispute.")
+                return False
 
-            # ✅ Prevent redundant dispute triggers
             if transaction.get("status") == "Dispute":
-                logging.warning(f"[WARN] ⚠️ Dispute already triggered for transaction {tx_id}. Skipping.")
+                print(f"[WARN] ⚠️ Dispute already triggered for transaction {tx_id}. Skipping.")
                 return False
 
             try:
-                # ✅ Ensure the dispute is within allowed time (Dynamic TTL)
                 current_time = time.time()
                 tx_age = current_time - transaction["timestamp"]
                 if tx_age > Constants.DISPUTE_RESOLUTION_TTL:
-                    logging.warning(f"[WARN] ⏳ Transaction {tx_id} exceeded dispute time limit ({Constants.DISPUTE_RESOLUTION_TTL}s). Skipping.")
+                    print(f"[WARN] ⏳ Transaction {tx_id} exceeded dispute time limit "
+                          f"({Constants.DISPUTE_RESOLUTION_TTL}s). Skipping.")
                     return False
 
-                # ✅ Trigger dispute in smart contract
                 dispute_data = smart_contract.trigger_dispute(tx_id)
-
-                # ✅ Update transaction status after triggering a dispute
                 self.transactions[tx_id]["status"] = "Dispute"
-
-                logging.info(f"[INFO] ⚖️ Dispute successfully triggered for transaction {tx_id}: {dispute_data}")
-                return True  # ✅ Return True to indicate success
+                print(f"[INFO] ⚖️ Dispute successfully triggered for transaction {tx_id}: {dispute_data}")
+                return True
 
             except Exception as e:
-                logging.error(f"[ERROR] ❌ Failed to trigger dispute for transaction {tx_id}: {e}")
-                return False  # ✅ Return False if an error occurs
-
-
-
-
-
+                print(f"[ERROR] ❌ Failed to trigger dispute for transaction {tx_id}: {e}")
+                return False
 
     def rebroadcast_transaction(self, tx_id, smart_contract):
         """
         Rebroadcast a transaction with an increased fee.
 
         :param tx_id: The transaction ID to rebroadcast.
-        :param smart_contract: Instance of the DisputeResolutionContract.
+        :param smart_contract: Instance of the DisputeResolutionContract or similar.
         :return: True if the transaction was rebroadcasted, False otherwise.
         """
         with self.lock:
             try:
-                # ✅ Ensure `tx_id` is a string before encoding
                 if isinstance(tx_id, bytes):
                     tx_id = tx_id.decode("utf-8")
 
-                # ✅ Hash transaction ID using only **single SHA3-384 hashing**
                 single_hashed_tx_id = hashlib.sha3_384(tx_id.encode()).hexdigest()
-
-                # ✅ Fetch transaction from LMDB
                 transaction_data = self.lmdb.get(f"mempool:{single_hashed_tx_id}")
                 if not transaction_data:
-                    logging.error(f"[ERROR] ❌ Transaction {single_hashed_tx_id} not found in the mempool. Cannot rebroadcast.")
+                    print(f"[ERROR] ❌ Transaction {single_hashed_tx_id} not found in the mempool. Cannot rebroadcast.")
                     return False
 
                 transaction = json.loads(transaction_data)
-
-                # ✅ Prevent rebroadcasting if transaction is already confirmed
                 if transaction.get("status") == "Confirmed":
-                    logging.warning(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} is already confirmed. Rebroadcasting skipped.")
+                    print(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} is already confirmed. Rebroadcasting skipped.")
                     return False
 
-                # ✅ Fetch dynamic increment factor from Constants
                 increment_factor = Constants.REBROADCAST_FEE_INCREASE
                 if increment_factor <= 1.0:
-                    logging.error(f"[ERROR] ❌ Invalid increment factor {increment_factor} for transaction {single_hashed_tx_id}. Must be > 1.0.")
+                    print(f"[ERROR] ❌ Invalid increment factor {increment_factor} for transaction {single_hashed_tx_id}. Must be > 1.0.")
                     return False
 
-                # ✅ Increase the transaction fee dynamically
                 old_fee = transaction.get("fee", 0)
                 new_fee = old_fee * increment_factor
                 transaction["fee"] = new_fee
 
-                # ✅ Update transaction in LMDB
                 self.lmdb.put(f"mempool:{single_hashed_tx_id}", json.dumps(transaction))
-
-                # ✅ Call smart contract to rebroadcast transaction
                 smart_contract.rebroadcast_transaction(single_hashed_tx_id, new_fee)
 
-                logging.info(f"[INFO] ✅ Transaction {single_hashed_tx_id} rebroadcasted with new fee: {new_fee:.8f} (Old Fee: {old_fee:.8f})")
-                return True  # ✅ Success
+                print(f"[INFO] ✅ Transaction {single_hashed_tx_id} rebroadcasted with new fee: {new_fee:.8f} "
+                      f"(Old Fee: {old_fee:.8f})")
+                return True
 
             except Exception as e:
-                logging.error(f"[ERROR] ❌ Failed to rebroadcast transaction {tx_id}: {e}")
-                return False  # ✅ Failure
+                print(f"[ERROR] ❌ Failed to rebroadcast transaction {tx_id}: {e}")
+                return False
+            
+
+
+
+
+    def get_transaction(self, tx_id: str):
+        """Retrieve and deserialize a Standard Transaction from the mempool."""
+        data = self.lmdb.get(f"mempool:{tx_id}")
+        return Deserializer().deserialize(data) if data else None
 

@@ -8,11 +8,14 @@ import threading
 from decimal import Decimal
 from typing import Optional, Dict
 
+# Adjust system path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class UTXOStorage:
     """
@@ -23,16 +26,16 @@ class UTXOStorage:
       - Store individual UTXOs with proper type conversion and standardized precision.
       - Retrieve UTXOs from storage with caching.
       - Export all UTXOs for indexing.
-      
-    All operations use data in bytes, reference Constants for configuration, and use single SHA3‑384 hashing where needed.
+    
+    All operations use data in bytes and rely on Constants for configuration.
     Detailed print statements are provided for each operation and error condition.
     """
-    
+
     def __init__(self, utxo_db: LMDBManager, utxo_history_db: LMDBManager, utxo_manager):
         try:
             self.utxo_db = utxo_db
             self.utxo_history_db = utxo_history_db
-            self.utxo_manager = utxo_manager  # Provides get_all_utxos()
+            self.utxo_manager = utxo_manager  # Expects utxo_manager to have methods like get_all_utxos()
             self._cache: Dict[str, dict] = {}
             self._db_lock = threading.Lock()
             print("[UTXOStorage.__init__] SUCCESS: UTXOStorage initialized successfully.")
@@ -56,6 +59,7 @@ class UTXOStorage:
                             print(f"[UTXOStorage.update_utxos] ERROR: Transaction {tx.tx_id} is malformed. Skipping update.")
                             continue
 
+                        # Remove spent UTXOs
                         for inp in tx.inputs:
                             key = f"utxo:{inp.tx_out_id}".encode("utf-8")
                             if utxo_txn.get(key):
@@ -64,6 +68,7 @@ class UTXOStorage:
                             else:
                                 print(f"[UTXOStorage.update_utxos] WARNING: Tried to remove non-existent UTXO {inp.tx_out_id}.")
 
+                        # Add new UTXOs for each output
                         for idx, output in enumerate(tx.outputs):
                             utxo_id = f"{tx.tx_id}:{idx}"
                             utxo_entry = {
@@ -109,11 +114,11 @@ class UTXOStorage:
                 "locked": locked,
                 "block_index": block_index
             }
-            utxo_db = self._get_database("utxo")
             key = tx_out_id.encode("utf-8")
-            if utxo_db.get(key):
+            existing = self.utxo_db.get(key)
+            if existing:
                 print(f"[UTXOStorage.store_utxo] WARNING: UTXO {tx_out_id} exists. Replacing entry.")
-            utxo_db.put(key, json.dumps(utxo_entry).encode("utf-8"), replace=True)
+            self.utxo_db.put(key, json.dumps(utxo_entry).encode("utf-8"), replace=True)
             print(f"[UTXOStorage.store_utxo] SUCCESS: Stored UTXO {utxo_id}.")
             return True
         except (KeyError, TypeError, ValueError, Decimal.InvalidOperation) as e:
@@ -129,18 +134,27 @@ class UTXOStorage:
             if tx_out_id in self._cache:
                 print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from cache.")
                 return TransactionOut.from_dict(self._cache[tx_out_id])
-            utxo_db = self._get_database("utxo")
-            data = utxo_db.get(tx_out_id.encode("utf-8"))
+            key = tx_out_id.encode("utf-8")
+            data = self.utxo_db.get(key)
             if not data:
                 print(f"[UTXOStorage.get_utxo] WARNING: UTXO {tx_out_id} not found.")
                 return None
             utxo_entry = json.loads(data.decode("utf-8"))
             self._cache[tx_out_id] = utxo_entry
-            print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from LMDB.")
+            print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from storage and cached it.")
             return TransactionOut.from_dict(utxo_entry)
         except Exception as e:
             print(f"[UTXOStorage.get_utxo] ERROR: UTXO retrieval failed for {tx_out_id}: {e}")
             return None
+
+
+
+    def get_utxo(self, tx_out_id):
+        """Retrieve UTXO data and deserialize if necessary."""
+        data = self.utxo_db.get(tx_out_id.encode("utf-8"))
+        return Deserializer().deserialize(data) if data else None
+
+
 
     def export_utxos(self) -> None:
         """
@@ -164,6 +178,25 @@ class UTXOStorage:
             print(f"[UTXOStorage.export_utxos] SUCCESS: Exported {len(all_utxos)} UTXOs.")
         except Exception as e:
             print(f"[UTXOStorage.export_utxos] ERROR: Failed to export UTXOs: {e}")
+
+    def validate_utxo(self, tx_out_id: str, amount: Decimal) -> bool:
+        """
+        Validate that a UTXO exists, is unlocked, and has sufficient balance.
+        """
+        utxo = self.get_utxo(tx_out_id)
+        if not utxo:
+            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} does not exist.")
+            return False
+        if utxo.locked:
+            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} is locked and cannot be spent.")
+            return False
+        utxo_amount = Decimal(str(utxo.amount))
+        if utxo_amount < amount:
+            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} has insufficient balance. Required: {amount}, Available: {utxo.amount}")
+            return False
+        print(f"[UTXOStorage.validate_utxo] INFO: UTXO {tx_out_id} validated for spending: Required {amount}, Available {utxo.amount}")
+        return True
+
 
     def _get_database(self, db_key: str) -> LMDBManager:
         """

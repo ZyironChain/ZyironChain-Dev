@@ -24,6 +24,7 @@ from Zyiron_Chain.smartpay.smartpay import SmartTransaction
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 
 from Zyiron_Chain.network.peerconstant import PeerConstants
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class SmartMempool:
     """Manages the Smart Mempool with dynamic transaction prioritization."""
@@ -209,3 +210,12 @@ class SmartMempool:
                 current_size += tx_data["transaction"].size
 
             return selected_txs
+
+
+
+
+
+    def get_transaction(self, tx_id: str):
+        """Retrieve and deserialize a Smart Transaction from the mempool."""
+        data = self.lmdb.get(tx_id)
+        return Deserializer().deserialize(data) if data else None

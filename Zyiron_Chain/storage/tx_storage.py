@@ -15,6 +15,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.tx import Transaction
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class TxStorage:
     """
@@ -38,6 +39,15 @@ class TxStorage:
         except Exception as e:
             print(f"[TxStorage.__init__] ERROR: Failed to initialize TxStorage: {e}")
             raise
+
+
+
+
+    def get_transaction(self, tx_id):
+        """Retrieve transaction data and deserialize it if necessary."""
+        data = self.txindex_db.get(tx_id.encode("utf-8"))
+        return Deserializer().deserialize(data) if data else None
+
 
     def store_transaction(self, tx_id: str, block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int) -> None:
         """

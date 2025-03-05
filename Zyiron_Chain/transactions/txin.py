@@ -6,6 +6,7 @@ from typing import Dict
 from decimal import Decimal
 from hashlib import sha3_384
 from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class TransactionIn:
     """
@@ -96,3 +97,14 @@ class TransactionIn:
 
         print(f"[TransactionIn VALIDATION INFO] Validation successful for tx_out_id={self.tx_out_id}")
         return True
+
+
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "TransactionIn":
+        """Deserialize a TransactionIn from a dictionary."""
+        deserialized_data = Deserializer().deserialize(data)
+        return cls(
+            tx_out_id=deserialized_data["tx_out_id"],
+            script_sig=deserialized_data["script_sig"]
+        )

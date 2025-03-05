@@ -12,6 +12,8 @@ from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.transactions.transactiontype import TransactionType
+from Zyiron_Chain.utils.deserializer import Deserializer
+
 import hashlib
 # Set high precision for financial calculations
 getcontext().prec = 18
@@ -36,6 +38,14 @@ class SendZYC:
         self.coin_unit = Constants.COIN
         self.lock = __import__("threading").Lock()
         print(f"[SendZYC] Initialized for network {self.network.upper()} with coin unit {self.coin_unit}")
+
+
+    def get_transaction_data(self, tx_id):
+        """Retrieve and deserialize transaction data."""
+        data = self.mempool.get_transaction(tx_id)
+        return Deserializer().deserialize(data) if data else None
+    
+
 
     def prepare_tx_in(self, required_amount):
         with self.lock:
@@ -168,3 +178,5 @@ class SendZYC:
             except Exception as e:
                 print(f"[ERROR] Failed to sign transaction {transaction.tx_id}: {e}")
                 raise ValueError(f"Transaction signing error: {e}")
+
+

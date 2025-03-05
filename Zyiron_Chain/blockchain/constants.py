@@ -119,6 +119,9 @@ class Constants:
     }
     MIN_BLOCK_SIZE_BYTES, MAX_BLOCK_SIZE_BYTES = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
 
+    MAX_TIME_DRIFT = 7200
+
+
     # 🔹 **Hashing & Security**
     ZERO_HASH = "0" * 96  # 📌 **SHA3-384 produces 96-character hex hashes**
     # 🔹 **SHA3-384 Hash & Difficulty Target Settings**

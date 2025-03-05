@@ -14,7 +14,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
-
+from Zyiron_Chain.utils.deserializer import Deserializer
 class WholeBlockData:
     """
     WholeBlockData stores and retrieves the entire blockchain data.
@@ -73,6 +73,14 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to initialize block storage: {e}")
             raise
+
+
+    def get_block(self, block_id):
+        """Retrieve and deserialize block data if necessary."""
+        data = self.block_db.get(block_id.encode("utf-8"))
+        return Deserializer().deserialize(data) if data else None
+
+
 
     def create_block_data_file(self, block: Block):
         """

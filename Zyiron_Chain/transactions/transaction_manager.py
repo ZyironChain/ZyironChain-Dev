@@ -22,27 +22,29 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
+from Zyiron_Chain.utils.deserializer import Deserializer
+
 class TransactionManager:
     """
     Manages transaction creation, validation, and mempool operations
-    under the new file structure. All data is processed as bytes, and
-    single SHA3-384 hashing is used.
+    under the new file structure. All data is processed as bytes,
+    and single SHA3-384 hashing is used.
     """
 
     def __init__(
         self,
         block_storage,     # For retrieving block data if needed
-        block_metadata,    # For retrieving block heights, metadata
+        block_metadata,    # For retrieving block headers / ordering
         tx_storage,        # For checking transaction existence, storing TX data
         utxo_manager: UTXOManager,
         key_manager
     ):
         """
-        :param block_storage: The module handling full block storage (WholeBlockData).
-        :param block_metadata: The module handling block metadata (BlockMetadata).
-        :param tx_storage: The module for transaction indexing (TxStorage).
+        :param block_storage: Module handling full block storage (WholeBlockData).
+        :param block_metadata: Module handling block metadata (BlockMetadata).
+        :param tx_storage: Module for transaction indexing (TxStorage).
         :param utxo_manager: UTXOManager instance for UTXO lookups.
-        :param key_manager: KeyManager for retrieving private/public keys.
+        :param key_manager: KeyManager for retrieving keys.
         """
         self.block_storage = block_storage
         self.block_metadata = block_metadata
@@ -70,14 +72,21 @@ class TransactionManager:
               f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | "
               f"Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}%")
 
+
+
+    def get_transaction(self, tx_id):
+        """Retrieve transaction data and deserialize if necessary."""
+        data = self.tx_storage.get_transaction(tx_id)
+        return Deserializer().deserialize(data) if data else None
+
+
+
     @property
     def mempool(self):
-        """
-        Returns the currently active mempool (Standard or Smart).
-        """
+        """Return the active mempool."""
         return self._mempool
 
-    def set_mempool(self, mempool_type: str = "standard"):
+    def set_mempool(self, mempool_type="standard"):
         """
         Switch between Standard and Smart mempools.
         :param mempool_type: "standard" or "smart"
@@ -91,6 +100,7 @@ class TransactionManager:
         else:
             raise ValueError(f"[TransactionManager.set_mempool] Invalid mempool type: {mempool_type}")
 
+
     def store_transaction_in_mempool(self, transaction: Transaction) -> bool:
         """
         Validates the transaction's type & network prefix, then adds it
@@ -100,10 +110,7 @@ class TransactionManager:
             # Re-hash the tx_id to confirm it starts with the correct prefix
             hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
             if not hashed_tx_id.startswith(Constants.ADDRESS_PREFIX):
-                print(
-                    f"[TransactionManager.store_transaction_in_mempool] ERROR: Transaction {transaction.tx_id} has invalid address prefix for {self.network}. "
-                    f"Expected: {Constants.ADDRESS_PREFIX}"
-                )
+                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Transaction {transaction.tx_id} has invalid address prefix for {self.network}. Expected: {Constants.ADDRESS_PREFIX}")
                 return False
 
             tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
@@ -112,8 +119,6 @@ class TransactionManager:
                 return False
 
             mempool_type = self.transaction_mempool_map.get(tx_type.name, {}).get("mempool", "StandardMempool")
-
-            # We retrieve the current chain height from block_metadata or other place
             chain_height = self._get_chain_height()
 
             if mempool_type == "SmartMempool":
@@ -123,15 +128,15 @@ class TransactionManager:
 
             if success:
                 print(f"[TransactionManager.store_transaction_in_mempool] INFO: Transaction {hashed_tx_id} stored in {mempool_type}.")
-                # If needed, store the TX in tx_storage or do further routing
-                # e.g., self.tx_storage.store_transaction(transaction)
+                # Optionally, store the transaction in tx_storage here:
+                # self.tx_storage.store_transaction(transaction.to_dict())
                 return True
             else:
                 print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Failed to store transaction {hashed_tx_id} in {mempool_type}.")
                 return False
 
         except Exception as e:
-            print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
+            print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Unexpected error storing transaction {transaction.tx_id}: {e}")
             return False
 
     def select_transactions_for_block(self, max_block_size_mb: int = 10):
@@ -195,8 +200,31 @@ class TransactionManager:
 
         except Exception as e:
             print(f"[TransactionManager.select_transactions_for_block] ERROR: {str(e)}")
-            return []
 
+
+
+            return []
+        
+
+
+    def _get_chain_height(self) -> int:
+        """
+        Retrieve the current blockchain height using block metadata.
+        """
+        try:
+            headers = self.block_metadata.get_all_block_headers()
+            if headers:
+                height = max(header["index"] for header in headers)
+                print(f"[TransactionManager._get_chain_height] Current chain height: {height}")
+                return height
+            else:
+                print("[TransactionManager._get_chain_height] No block headers found; returning 0.")
+                return 0
+        except Exception as e:
+            print(f"[TransactionManager._get_chain_height] ERROR: Unable to retrieve chain height: {e}")
+
+
+            return 0
     def _calculate_transaction_size(self, tx: Transaction) -> int:
         """
         Calculate transaction size in bytes using single SHA3-384 hashing.

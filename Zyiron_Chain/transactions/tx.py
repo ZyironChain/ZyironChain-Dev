@@ -18,6 +18,7 @@ from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.fees import FeeModel
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 
 class Transaction:
@@ -245,3 +246,9 @@ class Transaction:
             print(f"[TRANSACTION store_utxo SUCCESS] UTXOs for transaction {self.tx_id} stored in UTXOStorage.")
         except Exception as e:
             print(f"[TRANSACTION store_utxo ERROR] Could not store UTXOs for transaction {self.tx_id}: {e}")
+
+    @classmethod
+    def from_bytes(cls, tx_data):
+        """Deserialize a transaction from bytes."""
+        data = Deserializer().deserialize(tx_data)
+        return cls.from_dict(data)

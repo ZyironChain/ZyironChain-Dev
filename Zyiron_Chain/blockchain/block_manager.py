@@ -32,7 +32,7 @@ from Zyiron_Chain. storage.tx_storage import TxStorage
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
-
+from Zyiron_Chain.utils.deserializer import Deserializer
 
 class BlockManager:
     def __init__(
@@ -299,3 +299,11 @@ class BlockManager:
             return self.chain[-1]
         print("[BlockManager.get_latest_block] WARNING: In-memory chain is empty.")
         return None
+
+
+
+
+    def get_latest_block(self):
+        """Retrieve and deserialize the latest block from storage."""
+        data = self.block_storage.get_latest_block()
+        return Deserializer().deserialize(data) if data else None
