@@ -1,18 +1,15 @@
+import sys
+import os
 from Zyiron_Chain.transactions.transactiontype import TransactionType
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
-    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
-    from Zyiron_Chain.transactions.fees import FundsAllocator
-
-from Zyiron_Chain.blockchain.constants import Constants  # ✅ Import Constants directly
+from Zyiron_Chain.blockchain.constants import Constants
 
 class PaymentTypeManager:
-    """Manages transaction type configurations dynamically using Constants"""
+    """Manages transaction type configurations dynamically using Constants.
+    Uses single-hashing conventions for transaction IDs.
+    """
 
     def __init__(self):
-        # The TYPE_CONFIG is dynamically populated using Constants
+        # Dynamically populate type configuration with descriptions.
         self.TYPE_CONFIG = {
             TransactionType.STANDARD: {
                 "description": "Standard peer-to-peer transactions"
@@ -27,16 +24,27 @@ class PaymentTypeManager:
                 "description": "Block reward transactions"
             }
         }
+        print("[PaymentTypeManager.__init__] Initialized with TYPE_CONFIG:", self.TYPE_CONFIG)
 
     def get_transaction_type(self, tx_id: str) -> TransactionType:
-        """Determine transaction type based on ID prefix using Constants"""
+        """
+        Determine transaction type based on the transaction ID prefix using Constants.
+        Assumes that transaction IDs are generated with single SHA3-384 hashing.
+        
+        :param tx_id: The transaction ID (expected to be a 96-character hex string).
+        :return: The corresponding TransactionType.
+        """
         if not tx_id:
-            return TransactionType.STANDARD  # Default to STANDARD
+            print("[PaymentTypeManager.get_transaction_type] No transaction ID provided; defaulting to STANDARD.")
+            return TransactionType.STANDARD  # Default to STANDARD if tx_id is empty
 
-        # Dynamically check the prefixes using Constants
+        # Check each type's defined prefixes from Constants
         for tx_type, config in self.TYPE_CONFIG.items():
             prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("prefixes", [])
-            if any(tx_id.startswith(prefix) for prefix in prefixes):
-                return tx_type
+            for prefix in prefixes:
+                if tx_id.startswith(prefix):
+                    print(f"[PaymentTypeManager.get_transaction_type] Transaction ID '{tx_id}' matched prefix '{prefix}' for type '{tx_type.name}'.")
+                    return tx_type
 
-        return TransactionType.STANDARD  # Default to STANDARD if no match
+        print(f"[PaymentTypeManager.get_transaction_type] No matching prefix found for transaction ID '{tx_id}'; defaulting to STANDARD.")
+        return TransactionType.STANDARD

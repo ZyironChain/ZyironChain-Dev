@@ -1,22 +1,11 @@
-from enum import Enum
-from decimal import Decimal
-
 from enum import Enum, auto
-from decimal import Decimal
-from typing import Dict, Optional
-
-from enum import Enum, auto
-from Zyiron_Chain.blockchain.constants import Constants
 from typing import TYPE_CHECKING
+from Zyiron_Chain.blockchain.constants import Constants
 
 if TYPE_CHECKING:
-    # These imports will only be available during type-checking (e.g., for linters, IDEs, or mypy)
+    # These imports are only for type-checking purposes.
     from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
     from Zyiron_Chain.transactions.fees import FundsAllocator
-
-
-
-from enum import Enum, auto
 
 class TransactionType(Enum):
     """Defines all supported transaction types."""
@@ -25,15 +14,17 @@ class TransactionType(Enum):
     INSTANT = auto()   # Instant settlement transactions
     COINBASE = auto()  # Block reward transactions
 
-    @property
-    def name(self):
-        """Return the name of the transaction type."""
+    def get_name(self) -> str:
+        """Return the transaction type name in uppercase."""
         return self.name.upper()
 
     @classmethod
-    def from_str(cls, value: str):
+    def from_str(cls, value: str) -> "TransactionType":
         """Convert a string to a TransactionType Enum."""
         try:
-            return cls[value.upper()]
+            result = cls[value.upper()]
+            print(f"[TransactionType.from_str] INFO: Converted '{value}' to TransactionType '{result.get_name()}'.")
+            return result
         except KeyError:
+            print(f"[TransactionType.from_str] ERROR: Invalid transaction type '{value}'. Allowed types: {[t.name for t in cls]}.")
             raise ValueError(f"[ERROR] Invalid transaction type: {value}.")

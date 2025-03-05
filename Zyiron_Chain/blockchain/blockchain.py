@@ -2,73 +2,66 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+import json
+import hashlib
+import time
+import math
+from decimal import Decimal
+import threading
 
+from Zyiron_Chain.utils.key_manager import KeyManager
 from Zyiron_Chain.blockchain.transaction_manager import TransactionManager
 from Zyiron_Chain.blockchain.storage_manager import StorageManager
 from Zyiron_Chain.blockchain.miner import Miner
 from Zyiron_Chain.database.poc import PoC
-import hashlib
-from decimal import Decimal
-import time
-from Zyiron_Chain.transactions.Blockchain_transaction import  TransactionFactory
+from Zyiron_Chain.transactions.Blockchain_transaction import TransactionFactory
 from Zyiron_Chain.transactions.transaction_services import TransactionService
 from Zyiron_Chain.transactions.fees import FeeModel, FundsAllocator
 from Zyiron_Chain.blockchain.block import Block
-from decimal import Decimal
-import time
-import logging
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.tx import Transaction
-
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx 
-from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
-from Zyiron_Chain.blockchain.utils.hashing import Hashing 
+from Zyiron_Chain.utils.hashing import Hashing
 
-import threading
-
-
-
+# =============================================================================
+# Blockchain Class
+# =============================================================================
 class Blockchain:
-    GENESIS_TARGET = Constants.GENESIS_TARGET
-    ZERO_HASH = Constants.ZERO_HASH
+
 
     def __init__(self, storage_manager, transaction_manager, key_manager):
-        logging.info("[DEBUG] Initializing Blockchain...")
+        print("[Blockchain.__init__] START: Initializing Blockchain...")
 
-        # ✅ Network Configuration with Validation
+        # Network Configuration with Validation
         self.network = Constants.NETWORK.lower()
         if self.network not in ('mainnet', 'testnet'):
-            raise ValueError(f"Invalid network configured: {self.network}. Must be 'mainnet' or 'testnet'")
+            raise ValueError(f"[Blockchain.__init__] ERROR: Invalid network configured: {self.network}. Must be 'mainnet' or 'testnet'")
+        print(f"[Blockchain.__init__] INFO: Initializing on {self.network.upper()} network")
 
-        logging.info(f"🔹 Initializing on {self.network.upper()} network")
-
-        # ✅ Validate Network-Specific Miner Keys
+        # Validate Miner Keys
         if not key_manager.validate_miner_key(self.network):
             help_option = 4 if self.network == 'mainnet' else 3
             raise RuntimeError(
-                f"Miner key missing for {self.network.upper()}\n"
+                f"[Blockchain.__init__] ERROR: Miner key missing for {self.network.upper()}\n"
                 "Generate keys using:\n"
                 "python -m Zyiron_Chain.accounts.key_manager\n"
                 f"Then choose '{help_option}. Add new batch of keys to {self.network}'"
             )
 
-        # ✅ Core Blockchain Components
+        # Core Components
         self.address_prefix = Constants.ADDRESS_PREFIX
         self.version = Constants.VERSION
         self.storage_manager = storage_manager
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.chain = []
-        self.constants = Constants  # ✅ Ensures access to updated constants
+        self.constants = Constants  # Access to updated constants
 
-        # ✅ Validate Miner Keys Before Proceeding
-        if not self.key_manager.validate_miner_key(self.network):  # ✅ Now passing network parameter
-            raise RuntimeError("[ERROR] Invalid miner keys for network")
+        print(f"[Blockchain.__init__] INFO: Miner keys validated for {self.network.upper()}.")
 
-        # ✅ Block Manager Initialization
+        # Block Manager Initialization
         try:
             from Zyiron_Chain.blockchain.block_manager import BlockManager
             self.block_manager = BlockManager(
@@ -76,17 +69,18 @@ class Blockchain:
                 storage_manager=self.storage_manager,
                 transaction_manager=self.transaction_manager
             )
+            print("[Blockchain.__init__] INFO: BlockManager initialized successfully.")
         except Exception as e:
-            logging.error(f"[ERROR] BlockManager init failed: {str(e)}")
+            print(f"[Blockchain.__init__] ERROR: BlockManager init failed: {e}")
             raise
 
-        # ✅ Initialize Fee Model with Updated Constants
+        # Initialize Fee Model with Updated Constants
         self.fee_model = FeeModel(
             max_supply=Decimal(Constants.MAX_SUPPLY),
             base_fee_rate=Decimal(Constants.MIN_TRANSACTION_FEE)
         )
 
-        # ✅ Miner Initialization with Hashing Integration
+        # Miner Initialization with Hashing Integration
         self.miner = Miner(
             self.block_manager,
             self.transaction_manager,
@@ -94,527 +88,288 @@ class Blockchain:
             self.key_manager
         )
 
-        # ✅ Load Blockchain Data or Create a New Chain
+        # Load Blockchain Data (if any)
         try:
             stored_blocks = self.storage_manager.get_all_blocks()
             if stored_blocks:
                 self._load_chain_from_storage()
         except Exception as e:
-            logging.error(f"[ERROR] Chain reset: {str(e)}")
+            print(f"[Blockchain.__init__] ERROR: Chain loading error: {e}")
             self.storage_manager.purge_chain()
 
-        # ✅ Ensure Genesis Block Exists
-        self._ensure_genesis_block()
-
-        logging.info(f"✅ Blockchain v{self.version} successfully initialized on {self.network.upper()}")
-
-
-
+        # NOTE: Genesis block creation has been moved to its own module.
+        # (Thus, we no longer call _ensure_genesis_block() here.)
+        print(f"[Blockchain.__init__] SUCCESS: Blockchain v{self.version} successfully initialized on {self.network.upper()}.")
 
     def validate_new_block(self, new_block: Block, prev_block: Block = None) -> bool:
         """
         Validate a new block before adding it to the chain.
+        Checks:
+         - Proof-of-Work (hash and difficulty).
+         - Previous hash linkage.
+         - Transaction confirmations (using single SHA3-384 hashing).
         """
         # Verify Proof-of-Work
         if not new_block.hash or int(new_block.hash, 16) >= new_block.header.difficulty:
-            logging.error(f"❌ Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
+            print(f"[Blockchain.validate_new_block] ERROR: Invalid Proof-of-Work for block {new_block.index}. Block hash: {new_block.hash}")
             return False
 
         # Validate previous hash linkage if a previous block is provided
         if prev_block and new_block.previous_hash != prev_block.hash:
-            logging.error(f"❌ Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
+            print(f"[Blockchain.validate_new_block] ERROR: Block {new_block.index} has invalid previous hash. Expected: {prev_block.hash}, Found: {new_block.previous_hash}")
             return False
 
-        # Skip transaction validation for the genesis block
+        # Skip transaction confirmation check for genesis block (index 0)
         if new_block.index == 0:
-            logging.info("✅ Skipping transaction confirmations check for the genesis block.")
+            print("[Blockchain.validate_new_block] INFO: Skipping transaction confirmation check for Genesis block.")
             return True
 
         # Validate transactions in the block
         for tx in new_block.transactions:
             try:
-                # Ensure `tx_id` is a string before encoding
                 if isinstance(tx.tx_id, bytes):
                     tx.tx_id = tx.tx_id.decode("utf-8")
-
-                # Apply **only single hashing** to transaction ID
-                single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
-
-                # Determine transaction type and required confirmations
+                # Apply only single SHA3-384 hashing
+                single_hashed_tx_id = Hashing.hash(tx.tx_id.encode()).hex()
                 tx_type = PaymentTypeManager().get_transaction_type(single_hashed_tx_id)
                 required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
                     tx_type.name, Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
                 )
-
-                # Fetch confirmations from storage
                 confirmations = self.storage_manager.get_transaction_confirmations(single_hashed_tx_id)
-
                 if confirmations is None:
-                    logging.error(f"❌ Transaction {single_hashed_tx_id} confirmations could not be retrieved.")
+                    print(f"[Blockchain.validate_new_block] ERROR: Confirmations for transaction {single_hashed_tx_id} could not be retrieved.")
                     return False
-
                 if confirmations < required_confirmations:
-                    logging.error(
-                        f"❌ Transaction {single_hashed_tx_id} does not meet required confirmations "
-                        f"({required_confirmations}, Confirmations: {confirmations})"
-                    )
+                    print(f"[Blockchain.validate_new_block] ERROR: Transaction {single_hashed_tx_id} does not meet required confirmations ({required_confirmations}, Confirmations: {confirmations}).")
                     return False
-
             except Exception as e:
-                logging.error(f"❌ Error validating transaction {tx.tx_id} in block {new_block.index}: {str(e)}")
+                print(f"[Blockchain.validate_new_block] ERROR: Error validating transaction {tx.tx_id} in block {new_block.index}: {e}")
                 return False
 
         return True
 
-
-
-
-
-
-
     def _load_chain_from_storage(self):
-        """Load blockchain from storage, using block.data offsets for full deserialization"""
+        """
+        Load blockchain from storage using block.data offsets for full deserialization.
+        Blocks are sorted by index and loaded sequentially.
+        """
         try:
-            # ✅ Step 1: Get all block metadata from LMDB
             stored_blocks_metadata = self.storage_manager.get_all_blocks()
-
             if not stored_blocks_metadata:
-                logging.info("[INFO] No existing blocks found in storage")
+                print("[Blockchain._load_chain_from_storage] INFO: No existing blocks found in storage.")
                 return
 
-            # ✅ Step 2: Sort blocks by index to maintain chain order
             sorted_blocks = sorted(stored_blocks_metadata, key=lambda b: b["header"]["index"])
-            
-            # ✅ Step 3: Load blocks sequentially using their stored offsets
             for block_metadata in sorted_blocks:
                 try:
-                    # Ensure metadata contains data_offset
                     data_offset = block_metadata.get("data_offset")
                     if data_offset is None:
-                        logging.warning(f"[STORAGE WARNING] Skipping block {block_metadata.get('hash')} due to missing data_offset.")
-                        continue  # ✅ Skip this block, do NOT raise an exception
+                        print(f"[Blockchain._load_chain_from_storage] WARNING: Skipping block {block_metadata.get('hash')} due to missing data_offset.")
+                        continue
 
-                    # Load the full block from `block.data`
                     block = self.storage_manager.get_block_from_data_file(data_offset)
                     if block is None:
-                        logging.warning(f"[STORAGE WARNING] Skipping block {block_metadata.get('hash')} due to load failure.")
-                        continue  # ✅ Skip this block, do NOT raise an exception
+                        print(f"[Blockchain._load_chain_from_storage] WARNING: Skipping block {block_metadata.get('hash')} due to load failure.")
+                        continue
 
-                    # Ensure block transactions are valid
-                    if not all(isinstance(tx, (dict, Transaction)) for tx in block.transactions):
-                        logging.warning(f"[STORAGE WARNING] Block {block.index} contains invalid transaction format. Skipping block.")
-                        continue  # ✅ Skip this block, do NOT raise an exception
-
-                    # ✅ Step 4: Convert transactions to `Transaction` objects
+                    # Convert transactions if necessary
                     processed_transactions = []
                     for tx_data in block.transactions:
                         try:
+                            from Zyiron_Chain.transactions.tx import Transaction
+                            from Zyiron_Chain.transactions.coinbase import CoinbaseTx
                             if isinstance(tx_data, Transaction):
-                                processed_transactions.append(tx_data)  # ✅ Already a Transaction object
+                                processed_transactions.append(tx_data)
                             elif isinstance(tx_data, dict):
                                 if tx_data.get("type") == "COINBASE":
                                     processed_transactions.append(CoinbaseTx.from_dict(tx_data))
                                 else:
                                     processed_transactions.append(Transaction.from_dict(tx_data))
                             else:
-                                logging.warning(f"[TRANSACTION WARNING] Skipping invalid transaction in Block {block.index}.")
+                                print(f"[Blockchain._load_chain_from_storage] WARNING: Skipping invalid transaction in Block {block.index}.")
                         except Exception as e:
-                            logging.error(f"[TRANSACTION ERROR] ❌ Failed to parse transaction in Block {block.index}: {str(e)}")
-
-                    # ✅ Step 5: Attach processed transactions to the block
+                            print(f"[Blockchain._load_chain_from_storage] ERROR: Failed to parse transaction in Block {block.index}: {e}")
                     block.transactions = processed_transactions
 
-                    # ✅ Step 6: Ensure no duplicate blocks are added
                     if block.hash not in [b.hash for b in self.chain]:
                         self.chain.append(block)
-                        logging.info(f"[INFO] ✅ Loaded block {block.index} from storage")
+                        self.block_manager.chain.append(block)
+                        print(f"[Blockchain._load_chain_from_storage] INFO: Loaded block {block.index} from storage.")
                     else:
-                        logging.warning(f"[STORAGE WARNING] Block {block.index} is already in memory. Skipping duplicate.")
+                        print(f"[Blockchain._load_chain_from_storage] WARNING: Block {block.index} is already in memory. Skipping duplicate.")
 
                 except Exception as e:
-                    logging.error(f"[ERROR] Failed to load block {block_metadata.get('hash')}: {str(e)}")
-                    continue  # ✅ Instead of raising, just skip the failed block
+                    print(f"[Blockchain._load_chain_from_storage] ERROR: Failed to load block {block_metadata.get('hash')}: {e}")
+                    continue
 
-            logging.info(f"[INFO] ✅ Successfully loaded {len(self.chain)} blocks from storage")
-
-        except Exception as e:
-            logging.error(f"[ERROR] ❌ Chain loading failed: {str(e)}")
-            # ✅ Fix: Instead of purging chain, just log an error
-
-
-
-            # In your Blockchain class
-    def _create_and_mine_genesis_block(self):
-        """
-        Creates and mines the Genesis block.
-        - Uses SHA3-384 hashing to find a valid block hash.
-        - Ensures the hash meets `Constants.GENESIS_TARGET`.
-        - Only stores the block if the mined hash is valid.
-        """
-        try:
-            logging.info("[INFO] ⛏️ Mining Genesis Block... (Optimized)")
-
-            miner_address = self.key_manager.get_default_public_key(self.network, "miner")
-            if not miner_address:
-                raise ValueError("[ERROR] ❌ Failed to retrieve miner address for Genesis block.")
-
-            # ✅ Create Coinbase Transaction
-            coinbase_tx = CoinbaseTx(
-                block_height=0,
-                miner_address=miner_address,
-                reward=Decimal(Constants.INITIAL_COINBASE_REWARD)
-            )
-            coinbase_tx.fee = Decimal("0")
-
-            # ✅ Initialize Genesis Block
-            genesis_block = Block(
-                index=0,
-                previous_hash=Constants.ZERO_HASH,
-                transactions=[coinbase_tx],
-                timestamp=int(time.time()),
-                nonce=0,
-                difficulty=Constants.GENESIS_TARGET,
-                miner_address=miner_address
-            )
-
-            start_time = time.time()
-            last_update = start_time
-
-            # ✅ Start Mining Process (Ensure it keeps going until difficulty is met)
-            while True:
-                # Increment nonce and recompute hash
-                genesis_block.header.nonce += 1
-                computed_hash = hashlib.sha3_384(genesis_block.calculate_hash().encode()).hexdigest()
-
-                # ✅ Ensure hash meets Genesis difficulty target
-                if int(computed_hash, 16) < Constants.GENESIS_TARGET:
-                    genesis_block.hash = computed_hash  # ✅ Store valid hash
-                    break  # ✅ Exit loop when a valid hash is found
-
-                # ✅ Log progress every 2 seconds
-                current_time = time.time()
-                if current_time - last_update >= 2:
-                    elapsed = int(current_time - start_time)
-                    logging.info(f"[LIVE] ⏳ Genesis Block Mining | Nonce: {genesis_block.header.nonce}, Time: {elapsed}s")
-                    last_update = current_time
-
-            logging.info(f"[INFO] ✅ Genesis Block Mined Successfully! Hash: {genesis_block.hash}")
-            return genesis_block
+            print(f"[Blockchain._load_chain_from_storage] SUCCESS: Loaded {len(self.chain)} blocks from storage.")
 
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Genesis block mining failed: {str(e)}")
-            raise
-
-
-
-    def _ensure_genesis_block(self):
-        """
-        Ensures the Genesis block exists, validating it against storage.
-        If missing or corrupted, a new Genesis block is created, mined, validated,
-        and stored exactly once.
-        """
-        try:
-            # ✅ Check if the Genesis block already exists in storage
-            stored_blocks = self.storage_manager.get_all_blocks()
-
-            if stored_blocks:
-                # ✅ Confirm the first block is indeed the Genesis block
-                genesis_data = stored_blocks[0]
-                header = genesis_data.get("header", {})
-
-                if not isinstance(header, dict):
-                    raise ValueError("[ERROR] ❌ Genesis block header is not a dictionary.")
-
-                if header.get("index", -1) != 0 or header.get("previous_hash") != Constants.ZERO_HASH:
-                    raise ValueError("[ERROR] ❌ Corrupted Genesis block found in storage (index != 0 or wrong prev_hash).")
-
-                # ✅ Rebuild the block object from stored data
-                genesis_block = Block.from_dict(genesis_data)
-
-                # ✅ Fix: Ensure hash is stored as a string, not a hashlib object
-                if not isinstance(genesis_block.hash, str):
-                    genesis_block.hash = hashlib.sha3_384(genesis_block.calculate_hash().encode()).hexdigest()
-
-                # ✅ Ensure leading zeros check instead of expected hash mismatch
-                if not genesis_block.hash.startswith("0000"):
-                    raise ValueError("[ERROR] ❌ Genesis block hash does not meet difficulty requirement.")
-
-                logging.info(f"✅ Genesis block successfully loaded from storage with hash: {genesis_block.hash}")
-                self.chain.append(genesis_block)
-                self.block_manager.chain.append(genesis_block)
-                return  # ✅ Exit early to prevent unnecessary mining
-
-            # ✅ Step 4: If missing, mine and store a new Genesis block
-            genesis_block = self._create_and_mine_genesis_block()
-
-            # ✅ Store the Genesis block exactly as mined
-            self.storage_manager.store_block(genesis_block, Constants.GENESIS_TARGET)
-            self.chain.append(genesis_block)
-            self.block_manager.chain.append(genesis_block)
-
-            logging.info(f"✅ Successfully initialized new Genesis Block with hash: {genesis_block.hash}")
-
-        except Exception as e:
-            logging.error(f"[ERROR] ❌ Genesis initialization failed: {str(e)}")
-            logging.info("⚡ Purging corrupted chain data...")
-            self.storage_manager.purge_chain()
-        raise
-
-
-
-
+            print(f"[Blockchain._load_chain_from_storage] ERROR: Chain loading failed: {e}")
 
     def add_block(self, new_block):
-        """Add validated block to both chain and storage."""
+        """
+        Adds a validated block to the blockchain:
+        - Verifies the block hash using single SHA3-384 hashing.
+        - Validates transactions and block structure.
+        - Stores the block across storage layers and updates the blockchain state.
+        """
         try:
-            # ✅ Ensure block hash is correctly computed using SHA3-384 (NO double hashing)
-            computed_hash = hashlib.sha3_384(new_block.calculate_hash().encode()).hexdigest()
-
+            # Compute expected hash using single SHA3-384
+            computed_hash = Hashing.hash(new_block.calculate_hash().encode()).hex()
             if not new_block.hash or computed_hash != new_block.hash:
-                raise ValueError(
-                    f"❌ [ERROR] Block {new_block.index} has an invalid hash. Expected: {computed_hash}, Found: {new_block.hash}"
-                )
-
+                raise ValueError(f"[Blockchain.add_block] ERROR: Block {new_block.index} has an invalid hash. Expected: {computed_hash}, Found: {new_block.hash}")
             if int(new_block.hash, 16) >= new_block.header.difficulty:
-                raise ValueError(f"❌ [ERROR] Block {new_block.index} does not meet Proof-of-Work difficulty target.")
+                raise ValueError(f"[Blockchain.add_block] ERROR: Block {new_block.index} does not meet the Proof-of-Work difficulty target.")
 
-            # ✅ Append the block to in-memory chain
+            # Append block to the in-memory chain (both Blockchain and BlockManager references)
             self.chain.append(new_block)
             self.block_manager.chain.append(new_block)
-
-            # ✅ Store the block in the storage
+            # Store block using the storage manager
             self.storage_manager.store_block(new_block, new_block.header.difficulty)
+            print(f"[Blockchain.add_block] SUCCESS: Block {new_block.index} added. [Hash: {new_block.hash[:12]}...]")
 
-            # ✅ Confirm all transactions according to updated confirmation rules
+            # Confirm each transaction in the block
             for tx in new_block.transactions:
                 try:
-                    # ✅ Ensure transaction ID is a string before encoding
                     if isinstance(tx.tx_id, bytes):
                         tx.tx_id = tx.tx_id.decode("utf-8")
-
-                    # ✅ Apply **only single hashing** to transaction ID
-                    single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
-
-                    # ✅ Retrieve transaction type safely
+                    # Hash the transaction ID using single SHA3-384
+                    single_hashed_tx_id = Hashing.hash(tx.tx_id.encode()).hex()
                     tx_type = PaymentTypeManager().get_transaction_type(single_hashed_tx_id)
                     if not tx_type:
-                        logging.warning(f"⚠️ [WARN] Skipping confirmation for transaction {single_hashed_tx_id} (Unknown Type).")
+                        print(f"[Blockchain.add_block] WARNING: Skipping confirmation for transaction {single_hashed_tx_id} (Unknown Type).")
                         continue
-
-                    # ✅ Fetch required confirmations dynamically from Constants
                     required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
                         tx_type.name.upper(), Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
                     )
-
-                    # ✅ Ensure transaction exists before confirming
-                    if not self.storage_manager.get_transaction(single_hashed_tx_id):
-                        logging.warning(f"⚠️ [WARN] Transaction {single_hashed_tx_id} not found in storage. Skipping confirmation.")
-                        continue
-
+                    confirmations = self.storage_manager.get_transaction_confirmations(single_hashed_tx_id)
+                    if confirmations is None:
+                        print(f"[Blockchain.add_block] ERROR: Could not retrieve confirmations for transaction {single_hashed_tx_id}.")
+                        return False
+                    if confirmations < required_confirmations:
+                        print(f"[Blockchain.add_block] ERROR: Transaction {single_hashed_tx_id} does not meet required confirmations ({required_confirmations}, Found: {confirmations}).")
+                        return False
                     self.storage_manager.confirm_transaction(single_hashed_tx_id, required_confirmations)
-
                 except Exception as tx_error:
-                    logging.error(f"❌ [ERROR] Failed to confirm transaction {single_hashed_tx_id}: {str(tx_error)}")
-                    continue  # Proceed to the next transaction even if one fails
+                    print(f"[Blockchain.add_block] ERROR: Failed to confirm transaction {tx.tx_id}: {tx_error}")
+                    continue
 
-            # ✅ Verify that the block was properly stored
+            # Verify that the block was properly stored
             stored_block = self.storage_manager.get_block(new_block.hash)
             if not stored_block or stored_block.hash != new_block.hash:
-                raise RuntimeError(f"❌ [ERROR] Block storage verification failed for Block {new_block.index}")
-
-            logging.info(f"✅ [INFO] Successfully added Block {new_block.index} [Hash: {new_block.hash[:12]}...]")
+                raise RuntimeError(f"[Blockchain.add_block] ERROR: Block storage verification failed for Block {new_block.index}")
 
         except Exception as e:
-            logging.error(f"❌ [ERROR] Block addition failed: {str(e)}")
-
-            # ✅ Remove invalid block from the chain to prevent corruption
+            print(f"[Blockchain.add_block] ERROR: Block addition failed: {e}")
             if self.chain and self.chain[-1] == new_block:
                 self.chain.pop()
-
             if self.block_manager.chain and self.block_manager.chain[-1] == new_block:
                 self.block_manager.chain.pop()
-
             raise
 
 
-
-    def _validate_genesis_block(self, genesis_block):
-        """
-        Validate the Genesis block:
-        - Ensures the hash meets the difficulty target.
-        - Ensures index is 0 and previous hash is Constants.ZERO_HASH.
-        - Ensures stored hash is properly formatted before comparison.
-        """
-        try:
-            # ✅ Check Index and Previous Hash
-            if genesis_block.index != 0:
-                raise ValueError(f"[ERROR] ❌ Genesis block index must be 0, found {genesis_block.index}.")
-            if genesis_block.previous_hash != Constants.ZERO_HASH:
-                raise ValueError("[ERROR] ❌ Genesis block has an invalid previous hash.")
-
-            # ✅ Ensure Genesis block hash is a valid hexadecimal string
-            if not isinstance(genesis_block.hash, str) or not all(c in "0123456789abcdefABCDEF" for c in genesis_block.hash):
-                raise ValueError("[ERROR] ❌ Genesis block hash is not a valid hex string.")
-
-            # ✅ Ensure hash meets difficulty target
-            if int(genesis_block.hash, 16) >= genesis_block.difficulty:
-                raise ValueError(
-                    f"[ERROR] ❌ Genesis block hash does not meet difficulty target.\n"
-                    f"Expected Target: {hex(genesis_block.difficulty)}\n"
-                    f"Found: {genesis_block.hash}"
-                )
-
-            logging.info("[INFO] ✅ Genesis block validated successfully.")
-            return True
-
-        except Exception as e:
-            logging.error(f"[ERROR] ❌ Genesis block validation failed: {e}")
-            return False
-
-
-
-
     def _validate_block_structure(self, block: Block) -> bool:
-        """Validate critical block fields ensuring integrity and SHA3-384 hashing compliance."""
+        """
+        Validate critical block fields ensuring integrity and SHA3-384 hashing compliance.
+        """
         try:
-            # ✅ Ensure block hash is correctly computed using double SHA3-384
-            computed_hash = hashlib.sha3_384(block.calculate_hash().encode()).hexdigest()
-
-
-            # ✅ Validate essential block fields
+            computed_hash = Hashing.hash(block.calculate_hash().encode()).hex()
             valid_structure = all([
                 hasattr(block, 'index'),
                 hasattr(block.header, 'previous_hash'),
                 hasattr(block.header, 'merkle_root'),
                 hasattr(block.header, 'timestamp'),
-                block.hash == computed_hash  # Ensure stored hash matches computed hash
+                block.hash == computed_hash
             ])
-
             if not valid_structure:
-                logging.error(f"[ERROR] ❌ Block {block.index} structure validation failed.")
+                print(f"[Blockchain._validate_block_structure] ERROR: Block {block.index} structure validation failed.")
                 return False
-
-            logging.info(f"[INFO] ✅ Block {block.index} passed structure validation.")
+            print(f"[Blockchain._validate_block_structure] INFO: Block {block.index} passed structure validation.")
             return True
-
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Block structure validation encountered an exception: {str(e)}")
+            print(f"[Blockchain._validate_block_structure] ERROR: Exception during block structure validation: {e}")
             return False
 
-
-
     def _create_coinbase(self, block_height: int) -> CoinbaseTx:
-        """Create a properly formatted coinbase transaction with double SHA3-384 hashed transaction ID."""
+        """
+        Create a properly formatted coinbase transaction using single SHA3-384 hashing.
+        """
         try:
-            # ✅ Validate block height
             if block_height < 0:
-                raise ValueError("[ERROR] Block height must be a non-negative integer.")
-
-            # ✅ Get miner address from KeyManager
+                raise ValueError("[Blockchain._create_coinbase] ERROR: Block height must be non-negative.")
             miner_address = self.key_manager.get_default_public_key(Constants.NETWORK, "miner")
             if not miner_address:
-                raise ValueError("[ERROR] Failed to retrieve miner address.")
-
-            # ✅ Use reward value from Constants
+                raise ValueError("[Blockchain._create_coinbase] ERROR: Failed to retrieve miner address.")
             reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
             if reward <= 0:
-                raise ValueError("[ERROR] Coinbase reward must be greater than zero.")
-
-            # ✅ Construct the coinbase transaction
+                raise ValueError("[Blockchain._create_coinbase] ERROR: Coinbase reward must be greater than zero.")
             coinbase_tx = CoinbaseTx(
                 block_height=block_height,
                 miner_address=miner_address,
                 reward=reward
             )
-
-            # ✅ Ensure coinbase transaction fee is set to zero
             coinbase_tx.fee = Decimal("0")
-
-            # ✅ Apply double SHA3-384 hashing to transaction ID and convert to hex string
-            coinbase_tx.tx_id = hashlib.sha3_384(coinbase_tx.calculate_hash().encode()).hexdigest()
-
-            logging.info(f"[INFO] ✅ Successfully created Coinbase transaction for block {block_height}: {coinbase_tx.tx_id}")
-
+            # Use single hashing for transaction ID
+            coinbase_tx.tx_id = Hashing.hash(coinbase_tx.calculate_hash().encode()).hex()
+            print(f"[Blockchain._create_coinbase] SUCCESS: Created Coinbase transaction for block {block_height}: {coinbase_tx.tx_id}")
             return coinbase_tx
-
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Coinbase creation failed: {str(e)}")
+            print(f"[Blockchain._create_coinbase] ERROR: Coinbase creation failed: {e}")
             raise
-
-
 
     def _validate_coinbase(self, tx):
         """
-        Ensure the coinbase transaction follows protocol rules:
-        - No inputs.
-        - Exactly one output.
-        - Transaction type is "COINBASE".
-        - Fee is zero.
-        - Transaction ID uses double SHA3-384 hashing.
+        Validate that the coinbase transaction adheres to protocol:
+         - No inputs, one output, type is "COINBASE", fee is zero.
+         - Transaction ID is correctly hashed using single SHA3-384.
         """
-        from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx  # Lazy import
-
+        from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
         try:
-            # ✅ Verify basic Coinbase structure
             if not (len(tx.inputs) == 0 and len(tx.outputs) == 1 and tx.type == "COINBASE" and tx.fee == Decimal(0)):
-                logging.error(f"[ERROR] ❌ Invalid Coinbase transaction format: {tx.tx_id}")
+                print(f"[Blockchain._validate_coinbase] ERROR: Invalid Coinbase format for transaction {tx.tx_id}")
                 return False
-
-            # ✅ Ensure transaction ID is double SHA3-384 hashed
-            expected_tx_id = hashlib.sha3_384(tx.calculate_hash().encode()).hexdigest()
-
+            expected_tx_id = Hashing.hash(tx.calculate_hash().encode()).hex()
             if tx.tx_id != expected_tx_id:
-                logging.error(f"[ERROR] ❌ Coinbase transaction ID mismatch! Expected: {expected_tx_id}, Found: {tx.tx_id}")
+                print(f"[Blockchain._validate_coinbase] ERROR: Coinbase transaction ID mismatch! Expected: {expected_tx_id}, Found: {tx.tx_id}")
                 return False
-
-            logging.info(f"[INFO] ✅ Coinbase transaction {tx.tx_id} validated successfully.")
+            print(f"[Blockchain._validate_coinbase] SUCCESS: Coinbase transaction {tx.tx_id} validated.")
             return True
-
         except Exception as e:
-            logging.error(f"[ERROR] ❌ Failed to validate Coinbase transaction: {str(e)}")
+            print(f"[Blockchain._validate_coinbase] ERROR: Coinbase validation failed: {e}")
             return False
 
+    def ensure_consistency(self, block):
+        """
+        Ensure blockchain consistency before adding a new block.
+        Retrieves the latest block from storage to validate proper linking.
+        """
+        if not isinstance(block, Block):
+            raise ValueError("[ERROR] ❌ Invalid block: Block must be an instance of `Block`.")
 
+        if not hasattr(block, "hash") or not hasattr(block, "merkle_root"):
+            raise ValueError("[ERROR] ❌ Block is missing required attributes (hash, merkle_root).")
 
+        # ✅ Fetch the last stored block dynamically from StorageManager
+        last_block = self.storage_manager.get_latest_block()
 
+        if last_block:
+            # ✅ Ensure previous block hash matches
+            if block.previous_hash != last_block.hash:
+                raise ValueError(
+                    f"[ERROR] ❌ Previous hash mismatch: Expected {last_block.hash}, Got {block.previous_hash}"
+                )
 
-if __name__ == "__main__":
-    logging.info("=== Starting Blockchain ===")
-    
-    try:
-        key_manager = KeyManager()
-        
-        if not key_manager.validate_miner_key("mainnet"):
-            raise RuntimeError(
-                "Miner key missing in KeyManager.\n"
-                "First generate keys using:\n"
-                "python -m Zyiron_Chain.accounts.key_manager\n"
-                "Then choose '4. Add new batch of keys to mainnet'"
-            )
+            # ✅ Ensure block index increments properly
+            if block.index != last_block.index + 1:
+                raise ValueError(
+                    f"[ERROR] ❌ Block index mismatch: Expected {last_block.index + 1}, Got {block.index}"
+                )
 
-        # ✅ Debug: Print Storage & Transaction Manager Before Blockchain Initialization
-        poc_instance = PoC()
-        storage_manager = StorageManager(poc_instance)
-        transaction_manager = TransactionManager(storage_manager, key_manager, poc_instance)
+        else:
+            # ✅ Ensure Genesis block starts at index 0
+            if block.index != 0:
+                raise ValueError("[ERROR] ❌ First block must have index 0 (Genesis Block).")
+            logging.warning("[WARNING] 🚀 No previous blocks found. Initializing Genesis Block.")
 
-        logging.info(f"[DEBUG] Creating Blockchain instance with {storage_manager}, {transaction_manager}")
-
-        # ✅ FIX: Ensure `blockchain` instance is created properly
-        blockchain = Blockchain(
-            storage_manager=storage_manager,
-            transaction_manager=transaction_manager,
-            key_manager=key_manager
-        )
-
-        logging.info("[DEBUG] Blockchain instance created successfully.")
-
-        # ✅ Start Mining
-        miner = blockchain.miner
-        miner.mining_loop(network="mainnet")
-
-        logging.info("=== Blockchain Operational ===")
-        
-    except Exception as e:
-        logging.error(f"[FATAL ERROR] Initialization Failed: {str(e)}")  
-
-
+        logging.info(f"[INFO] ✅ Block {block.index} passed consistency checks.")

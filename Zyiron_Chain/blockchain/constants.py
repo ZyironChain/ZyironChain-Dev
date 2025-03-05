@@ -166,9 +166,12 @@ class Constants:
     # 🔹 **Testnet Faucet**
     ENABLE_FAUCET = True if NETWORK == "testnet" else False
 
-    # 🔹 **Database Configuration**
-    # 🔹 **Database Configuration**
+
 # 🔹 **Database Configuration**
+    # Define the maximum block data file size before a new one is created (512 MB)
+    BLOCK_DATA_FILE_SIZE_MB = 512  # ✅ Ensures block.data files roll over at 512 MB
+
+    # Network Database Configuration
     NETWORK_DATABASES = {
         "mainnet": {
             "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
@@ -210,7 +213,9 @@ class Constants:
             "flag": "REGNET"  # ✅ Ensures correct network identification
         }
     }
-    DATABASES = NETWORK_DATABASES[NETWORK]  # ✅ Assigns the correct database set
+
+    # Assign the correct database set based on the selected network
+    DATABASES = NETWORK_DATABASES[NETWORK]
 
     @staticmethod
     def get_db_path(db_name: str) -> str:

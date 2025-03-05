@@ -1,172 +1,129 @@
 import sys
 import os
+import json
+import hashlib
+import time
+import math
+from decimal import Decimal
+from threading import Lock
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-
-
-
-
-
-import hashlib
-import time
-import json
-from typing import Optional, List, Union
-
-
-from Zyiron_Chain.transactions.transaction_services import TransactionType
-import logging
-import time
-import json
-from typing import List, Dict, Union
-from decimal import Decimal
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.blockchain.blockheader import BlockHeader
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
-from Zyiron_Chain. transactions.fees import FeeModel
-from Zyiron_Chain.blockchain.helper import get_poc, get_transaction, get_coinbase_tx, get_block_header
-from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
-PoC = get_poc()
-Transaction = get_transaction()
-CoinbaseTx = get_coinbase_tx()
+from Zyiron_Chain.utils.key_manager import KeyManager
+from Zyiron_Chain.utils.hashing import Hashing
 
+def get_transaction():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import Transaction
+    return Transaction
 
-# Ensure this is at the very top of your script, before any other code
-import hashlib
-import time
-from decimal import Decimal
-import logging
+def get_coinbase_tx():
+    """Lazy import to prevent circular dependencies"""
+    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    return CoinbaseTx
 
-# Remove all existing handlers (prevents log conflicts across modules)
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-# Set up clean logging for this module
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-
-log = logging.getLogger(__name__)  # Each module gets its own logger
-
-log.info(f"{__name__} logger initialized.")
-
-import time
-import logging
-from decimal import Decimal
-from Zyiron_Chain.blockchain.blockheader import BlockHeader
-from Zyiron_Chain.transactions.tx import Transaction
-from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
-from Zyiron_Chain.blockchain.utils.hashing import Hashing  # ✅ Use new hashing module
-from Zyiron_Chain.blockchain.constants import Constants
-
+# =============================================================================
+# Combined Block class (merging Block and BlockHeader)
+# =============================================================================
 class Block:
-    def __init__(
-        self,
-        index,
-        previous_hash,
-        transactions,
-        timestamp=None,
-        nonce=0,
-        difficulty=None,
-        miner_address=None
-    ):
+    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0, difficulty=None, miner_address=None):
+        """
+        Initialize a Block with header fields merged into this class.
+        
+        - All header fields are stored directly in the Block.
+        - Data is processed as bytes; single SHA3-384 hashing is used.
+        - Constants are used for defaults.
+        """
         self.index = index
         self.previous_hash = previous_hash
         self.transactions = transactions
         self.miner_address = miner_address
         self.difficulty = difficulty or Constants.GENESIS_TARGET
-        self.nonce = nonce  # Ensure nonce is initialized
-        self._merkle_root = None
+        self.nonce = nonce
         self.timestamp = int(timestamp or time.time())
+        self.version = Constants.VERSION
+        
+        print(f"[Block.__init__] INIT: Creating Block {self.index} with previous_hash: {self.previous_hash}.")
 
-        # (1) Compute the Merkle root before creating the block header
-        # so that the BlockHeader has the final, correct merkle_root.
-        computed_merkle = self._compute_merkle_root()
+        # Compute Merkle root using single hashing (all in bytes)
+        self.merkle_root = self._compute_merkle_root()
+        print(f"[Block.__init__] INFO: Computed Merkle root: {self.merkle_root}.")
 
-        # (2) Initialize header with the computed merkle_root
-        self.header = BlockHeader(
-            version=Constants.VERSION,
-            index=self.index,
-            previous_hash=self.previous_hash,
-            merkle_root=computed_merkle,  # Use the computed Merkle root
-            timestamp=self.timestamp,
-            nonce=self.nonce,  # Pass nonce to the header
-            difficulty=self.difficulty,
-            miner_address=self.miner_address
-        )
-
-        # (3) Calculate the overall block hash (double SHA3-384)
+        # Calculate overall block hash using our single hashing method
         self.hash = self.calculate_hash()
-
-
+        print(f"[Block.__init__] SUCCESS: Block {self.index} hash computed as: {self.hash}.")
 
     def calculate_hash(self):
-        """Calculate the block's SHA3-384 hash and return it as a hex string."""
-        header_string = (
-            f"{self.header.version}{self.header.index}{self.header.previous_hash}"
-            f"{self.header.merkle_root}{self.header.timestamp}"
-            f"{self.header.nonce}{self.header.difficulty}"
-            f"{self.header.miner_address}"
-        ).encode()
-
-        return hashlib.sha3_384(header_string).hexdigest()  # ✅ Ensuring hex output
-
-
-    def _adjust_difficulty(self):
-        """Ensure difficulty respects network limits"""
-        return max(min(self.difficulty, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
-
-    @property
-    def merkle_root(self):
         """
-        Lazily computed Merkle root property, but we already set it
-        in the constructor as well. This will recompute only if needed.
+        Calculate the block's hash using single SHA3-384 hashing.
+        All header fields are concatenated as strings and encoded as bytes.
+        Returns the hash as a hex string.
         """
-        if self._merkle_root is None:
-            self._merkle_root = self._compute_merkle_root()
-        return self._merkle_root
+        header_str = (
+            f"{self.version}{self.index}{self.previous_hash}"
+            f"{self.merkle_root}{self.timestamp}{self.nonce}"
+            f"{self.difficulty}{self.miner_address}"
+        )
+        header_bytes = header_str.encode()
+        # Use our Hashing.hash() which returns bytes, then convert to hex for output.
+        block_hash = Hashing.hash(header_bytes).hex()
+        print(f"[Block.calculate_hash] INFO: Calculated hash from header bytes: {block_hash}.")
+        return block_hash
 
     def _compute_merkle_root(self):
-        """Compute the Merkle root using double SHA3-384."""
+        """
+        Compute the Merkle root for the block's transactions using single SHA3-384 hashing.
+        - If no transactions exist, returns the hash of Constants.ZERO_HASH.
+        - Each transaction is serialized (via to_dict if available) and hashed.
+        """
         if not self.transactions:
-            return hashlib.sha3_384(Constants.ZERO_HASH.encode()).hexdigest()
-
+            zero_hash = Hashing.hash(Constants.ZERO_HASH.encode()).hex()
+            print(f"[Block._compute_merkle_root] WARNING: No transactions found. Using ZERO_HASH: {zero_hash}.")
+            return zero_hash
 
         tx_hashes = []
         for tx in self.transactions:
-            if not hasattr(tx, 'tx_id') or not isinstance(tx.tx_id, str):
-                raise ValueError("Invalid transaction format for hashing")
-        tx_hashes.append(hashlib.sha3_384(tx.tx_id.encode()).hexdigest())
+            try:
+                to_serialize = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                tx_serialized = json.dumps(to_serialize, sort_keys=True).encode()
+                # Use single SHA3-384 hashing; returns bytes.
+                tx_hash = Hashing.hash(tx_serialized)
+                tx_hashes.append(tx_hash)
+            except Exception as e:
+                print(f"[Block._compute_merkle_root] ERROR: Failed to serialize transaction. Exception: {e}.")
+                raise e
 
-
+        # Build the Merkle tree pairwise
         while len(tx_hashes) > 1:
             if len(tx_hashes) % 2 != 0:
                 tx_hashes.append(tx_hashes[-1])
-
             new_level = []
             for i in range(0, len(tx_hashes), 2):
-                combined = tx_hashes[i] + tx_hashes[i + 1]
-            new_level.append(hashlib.sha3_384(combined.encode()).hexdigest())
-
+                combined = tx_hashes[i] + tx_hashes[i + 1]  # both are bytes
+                new_hash = Hashing.hash(combined)
+                new_level.append(new_hash)
             tx_hashes = new_level
 
-        return tx_hashes[0]
+        merkle_root = tx_hashes[0].hex()
+        return merkle_root
 
     def store_block(self):
         """
-        Use PoC to store the block and ensure proper routing.
-        If you're also storing blocks via your miner or chain,
-        be careful not to double-store the same block.
+        Store the block using PoC (Proof-of-Concept) module.
+        Ensures proper routing of block storage.
         """
-        from Zyiron_Chain.database.poc import PoC  # ✅ Prevent circular import
+        from Zyiron_Chain.database.poc import PoC  # Prevent circular import
         poc = PoC()
-        difficulty = poc.block_manager.calculate_difficulty(self.index)  # Dynamically determine difficulty
+        difficulty = poc.block_manager.calculate_difficulty(self.index)
         poc.store_block(self, difficulty)
+        print(f"[Block.store_block] SUCCESS: Block {self.index} stored with difficulty {hex(difficulty)}.")
 
     def to_dict(self):
-        """Convert Block into a serializable dictionary."""
+        """
+        Convert the Block into a serializable dictionary.
+        """
         return {
             "index": self.index,
             "previous_hash": self.previous_hash,
@@ -176,93 +133,94 @@ class Block:
             "difficulty": self.difficulty,
             "miner_address": self.miner_address,
             "hash": self.hash,
-            "merkle_root": self.merkle_root,  # The final computed merkle root
-            "header": self.header.to_dict()
+            "merkle_root": self.merkle_root,
+            "version": self.version
         }
 
     def _serialize_transaction(self, tx):
-        """Validate and serialize transaction data"""
+        """
+        Validate and serialize a transaction.
+        """
+        from Zyiron_Chain.transactions.tx import Transaction
+        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
         if not isinstance(tx, (Transaction, CoinbaseTx)):
             raise TypeError(f"Invalid transaction type: {type(tx)}")
         return tx.to_dict()
 
     @classmethod
     def from_dict(cls, data: dict):
-        """Deserialization with enhanced validation"""
+        """
+        Deserialize a Block from a dictionary with enhanced validation.
+        """
         try:
-            # Validate header structure
-            header_data = data['header']
-            required_header_fields = ['index', 'previous_hash', 'timestamp', 'nonce']
-            if any(f not in header_data for f in required_header_fields):
-                missing = [f for f in required_header_fields if f not in header_data]
-                raise ValueError(f"Missing header fields: {missing}")
+            required_fields = ["index", "previous_hash", "timestamp", "nonce"]
+            for field in required_fields:
+                if field not in data:
+                    raise ValueError(f"Missing required field: {field}")
 
-            # Process transactions
             transactions = []
-            for idx, tx_data in enumerate(data.get('transactions', [])):
+            for idx, tx_data in enumerate(data.get("transactions", [])):
                 if not isinstance(tx_data, dict):
-                    raise TypeError(f"Transaction {idx} must be dict, got {type(tx_data)}")
-
-                tx_type = tx_data.get('type')
-                try:
-                    if tx_type == 'COINBASE':
-                        transactions.append(CoinbaseTx.from_dict(tx_data))
-                    else:
-                        transactions.append(Transaction.from_dict(tx_data))
-                except Exception as e:
-                    raise ValueError(f"Invalid transaction {idx}: {str(e)}") from e
+                    raise TypeError(f"Transaction {idx} must be a dict, got {type(tx_data)}")
+                tx_type = tx_data.get("type")
+                if tx_type == "COINBASE":
+                    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+                    transactions.append(CoinbaseTx.from_dict(tx_data))
+                else:
+                    from Zyiron_Chain.transactions.tx import Transaction
+                    transactions.append(Transaction.from_dict(tx_data))
 
             return cls(
-                index=header_data['index'],
-                previous_hash=header_data['previous_hash'],
+                index=data["index"],
+                previous_hash=data["previous_hash"],
                 transactions=transactions,
-                timestamp=header_data['timestamp'],
-                nonce=header_data['nonce'],
-                difficulty=header_data.get('difficulty', Constants.GENESIS_TARGET),
-                miner_address=data.get('miner_address')
+                timestamp=data["timestamp"],
+                nonce=data["nonce"],
+                difficulty=data.get("difficulty", Constants.GENESIS_TARGET),
+                miner_address=data.get("miner_address")
             )
         except KeyError as e:
             raise ValueError(f"Missing required field: {str(e)}") from e
 
     @property
-    def is_coinbase(self, tx_index=0) -> bool:
-        """Check if a transaction is coinbase at the specified index."""
-        if not self.transactions:
-            return False
-        return isinstance(self.transactions[tx_index], CoinbaseTx)
+    def is_coinbase(self) -> bool:
+        """
+        Check if the first transaction is a coinbase transaction.
+        """
+        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+        return bool(self.transactions) and isinstance(self.transactions[0], CoinbaseTx)
 
     def validate_transactions(self, fee_model, mempool, block_size):
         """
-        Validate all transactions in the block, ensuring:
-        - Inputs exist and are unspent.
-        - Fee calculations match expectations.
-        - Transactions are not tampered with.
+        Validate all transactions in the block.
+        - Checks input/output totals against fees.
+        - Ensures each transaction meets required fee thresholds.
         """
         payment_type_manager = PaymentTypeManager()
-
         for tx in self.transactions:
             tx_type = payment_type_manager.get_transaction_type(tx.tx_id)
-
             if not tx_type:
-                logging.error(f"[ERROR] ❌ Invalid transaction type for transaction: {tx.tx_id}")
+                print(f"[Block.validate_transactions] ERROR: Invalid transaction type for transaction: {tx.tx_id}.")
                 return False
 
             input_total = sum(inp.amount for inp in tx.inputs if hasattr(inp, "amount"))
             output_total = sum(out.amount for out in tx.outputs if hasattr(out, "amount"))
-
-            # ✅ Ensure fee meets the minimum required fee or calculated fee, whichever is greater
             required_fee = fee_model.calculate_fee(block_size, tx_type.name, mempool.get_total_size(), tx.size)
             min_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
-            required_fee = max(required_fee, min_fee)  # ✅ Enforce minimum transaction fee
-
+            required_fee = max(required_fee, min_fee)
             actual_fee = input_total - output_total
 
             if actual_fee < required_fee:
-                logging.error(
-                    f"[ERROR] ❌ Transaction {tx.tx_id} does not meet the required fees. "
-                    f"Required: {required_fee}, Given: {actual_fee}"
-                )
+                print(f"[Block.validate_transactions] ERROR: Transaction {tx.tx_id} does not meet required fees. Required: {required_fee}, Given: {actual_fee}.")
                 return False
 
-        logging.info("[INFO] ✅ All transactions validated successfully.")
+        print("[Block.validate_transactions] SUCCESS: All transactions validated successfully.")
         return True
+
+    def __repr__(self):
+        return (
+            f"Block(index={self.index}, previous_hash={self.previous_hash[:10]}..., "
+            f"merkle_root={self.merkle_root[:10]}..., nonce={self.nonce}, "
+            f"timestamp={self.timestamp}, difficulty={hex(self.difficulty)}, "
+            f"miner_address={self.miner_address})"
+        )

@@ -1,85 +1,25 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-
-
-
-
 import time
 import hashlib
-from decimal import Decimal
-from typing import Dict
-from Zyiron_Chain.blockchain.constants import Constants
-
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-import time
-import hashlib
-from decimal import Decimal
-from typing import Dict
-from Zyiron_Chain.blockchain.constants import Constants
-
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-import time
-import hashlib
-from decimal import Decimal
-from typing import Dict
-from Zyiron_Chain.blockchain.constants import Constants
-
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-import time
-import hashlib
-from decimal import Decimal
-from typing import Dict
-from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.blockchain.utils.hashing import Hashing
-
-
-import hashlib
-from decimal import Decimal
-import time
-from typing import Dict
-
-
-import time
-from decimal import Decimal
-from typing import Dict
-import hashlib
-from Zyiron_Chain.blockchain.constants import Constants
-
-
-import hashlib
-import time
 from decimal import Decimal
 from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
 
 class CoinbaseTx:
-    """Represents a block reward (coinbase) transaction"""
+    """
+    Represents a block reward (coinbase) transaction.
+    Uses single SHA3-384 hashing and all amounts are handled as bytes (via encoding when needed).
+    Detailed print statements are used instead of logging.
+    """
 
     def __init__(self, block_height: int, miner_address: str, reward: Decimal = None):
-        """
-        Initializes a Coinbase transaction.
-
-        :param block_height: The height of the block.
-        :param miner_address: The recipient miner's address.
-        :param reward: The reward amount (defaults to a dynamically calculated reward based on halving).
-        """
+        print(f"[CoinbaseTx.__init__] Initializing CoinbaseTx for block {block_height}.")
         self.block_height = block_height
         self.miner_address = miner_address
+        # Calculate reward dynamically based on halving intervals
         self.reward = reward if reward is not None else self._calculate_reward(block_height)
-        self.timestamp = time.time()
+        self.timestamp = int(time.time())
         self.tx_id = self._generate_tx_id(block_height, self.timestamp)
-        self.inputs = []  # Coinbase transactions have no inputs
+        self.inputs = []  # Coinbase transactions have no inputs.
         self.outputs = [{
             "address": miner_address,
             "amount": float(self.reward),
@@ -88,8 +28,7 @@ class CoinbaseTx:
         self.type = "COINBASE"
         self.fee = Decimal("0")
         self.hash = self.calculate_hash()
-
-        # Compute estimated transaction size
+        # Estimate transaction size (as string length)
         temp_data = {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
@@ -102,28 +41,45 @@ class CoinbaseTx:
             "hash": self.hash,
         }
         self.size = len(str(temp_data))
+        print(f"[CoinbaseTx.__init__] CoinbaseTx initialized with tx_id: {self.tx_id}")
 
     def _calculate_reward(self, block_height: int) -> Decimal:
-        """Dynamically calculate the block reward based on halving intervals."""
+        """
+        Dynamically calculate the block reward based on halving intervals.
+        Uses constants from Constants.
+        """
         halvings = block_height // Constants.BLOCKCHAIN_HALVING_BLOCK_HEIGHT
         reward = Decimal(Constants.INITIAL_COINBASE_REWARD) / (2 ** halvings)
-        return max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
+        calculated_reward = max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
+        print(f"[CoinbaseTx._calculate_reward] Calculated reward for block {block_height}: {calculated_reward}")
+        return calculated_reward
 
-    def _generate_tx_id(self, block_height: int, timestamp: float) -> str:
-        """Generate a unique transaction ID using SHA3-384 single hashing."""
+    def _generate_tx_id(self, block_height: int, timestamp: int) -> str:
+        """
+        Generate a unique transaction ID using single SHA3-384 hashing.
+        Uses a prefix from Constants if available.
+        """
         prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get("COINBASE", {}).get("prefixes", [])
         prefix = prefixes[0] if prefixes else "COINBASE-"
         tx_data = f"{prefix}{block_height}-{timestamp}-{self.miner_address}-{self.reward}"
-        return hashlib.sha3_384(tx_data.encode()).hexdigest()  # ✅ Single hash
+        tx_id = hashlib.sha3_384(tx_data.encode()).hexdigest()
+        print(f"[CoinbaseTx._generate_tx_id] Generated tx_id: {tx_id}")
+        return tx_id
 
     def calculate_hash(self) -> str:
-        """Calculate the SHA3-384 hash of the transaction (single hash)."""
+        """
+        Calculate the SHA3-384 hash of the transaction using single hashing.
+        """
         output = self.outputs[0]
         tx_data = f"{self.tx_id}{self.timestamp}{output['address']}{Decimal(output['amount'])}"
-        return hashlib.sha3_384(tx_data.encode()).hexdigest()  # ✅ Single hash
+        calculated_hash = hashlib.sha3_384(tx_data.encode()).hexdigest()
+        print(f"[CoinbaseTx.calculate_hash] Calculated hash: {calculated_hash}")
+        return calculated_hash
 
     def to_dict(self) -> Dict:
-        """Serialize the CoinbaseTx to a dictionary."""
+        """
+        Serialize the CoinbaseTx to a dictionary.
+        """
         return {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
@@ -132,16 +88,18 @@ class CoinbaseTx:
             "inputs": self.inputs,
             "outputs": self.outputs,
             "timestamp": self.timestamp,
-            "type": self.type,  # Original field
-            "tx_type": self.type,  # New field required by the serializer
-            "fee": str(self.fee),  # Ensure fee is present
+            "type": self.type,
+            "tx_type": self.type,  # For serializer compatibility
+            "fee": str(self.fee),
             "hash": self.hash,
             "size": self.size
         }
 
     @classmethod
     def from_dict(cls, data: Dict):
-        """Deserialize a CoinbaseTx from a dictionary."""
+        """
+        Deserialize a CoinbaseTx from a dictionary.
+        """
         obj = cls(
             block_height=data["block_height"],
             miner_address=data["miner_address"],
@@ -154,9 +112,12 @@ class CoinbaseTx:
         obj.type = data.get("type", "COINBASE")
         obj.hash = data.get("hash", obj.calculate_hash())
         obj.size = data.get("size", len(str(data)))
+        print(f"[CoinbaseTx.from_dict] Deserialized CoinbaseTx with tx_id: {obj.tx_id}")
         return obj
 
     @property
     def is_coinbase(self) -> bool:
-        """Return True to identify this as a coinbase transaction."""
+        """
+        Identify this as a coinbase transaction.
+        """
         return True
