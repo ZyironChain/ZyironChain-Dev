@@ -36,8 +36,8 @@ class TransactionManager:
         block_storage,     # For retrieving block data if needed
         block_metadata,    # For retrieving block headers / ordering
         tx_storage,        # For checking transaction existence, storing TX data
-        utxo_manager: UTXOManager,
-        key_manager
+        utxo_manager: UTXOManager,  # UTXOManager instance for UTXO lookups
+        key_manager        # KeyManager for retrieving keys
     ):
         """
         :param block_storage: Module handling full block storage (WholeBlockData).
@@ -51,6 +51,7 @@ class TransactionManager:
         self.tx_storage = tx_storage
         self.utxo_manager = utxo_manager
         self.key_manager = key_manager
+        utxo_manager=utxo_manager,  # Add this line
 
         self.network = Constants.NETWORK
         self.version = Constants.VERSION

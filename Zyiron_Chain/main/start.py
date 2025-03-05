@@ -81,7 +81,8 @@ class Start:
         detailed_print(f"Initializing UTXOManager with peer id '{peer_constants.PEER_USER_ID}'...")
         # UTXOManager now takes only the storage_manager as its parameter.
         from Zyiron_Chain.storage.utxostorage import UTXOStorage  # ensure correct import
-        utxo_manager = UTXOManager(utxo_db)  # Updated: UTXOManager now only expects the LMDBManager
+        # Create UTXOManager
+        utxo_manager = UTXOManager(utxo_db)
 
         # Now initialize UTXOStorage with the required parameters.
         self.utxo_storage = UTXOStorage(
@@ -91,12 +92,13 @@ class Start:
         )
         detailed_print("UTXOStorage initialized successfully.")
 
-        # 3. Initialize TransactionManager without utxo_storage parameter
+        # 3. Initialize TransactionManager with utxo_manager
         detailed_print("Initializing TransactionManager...")
         self.transaction_manager = TransactionManager(
             block_storage=self.block_storage,
             block_metadata=self.block_metadata,
             tx_storage=self.tx_storage,
+            utxo_manager=utxo_manager,  # Pass the utxo_manager instance
             key_manager=self.key_manager
         )
         # 4. Initialize the Blockchain
