@@ -706,79 +706,66 @@ class BlockMetadata:
         Retrieve all stored blocks from the blocks.data file and LMDB as a list of dictionaries.
         """
         try:
-            print("[BlockMetadata.get_all_blocks] Retrieving all blocks from storage...")
+            print("[BlockMetadata.get_all_blocks] INFO: Retrieving all blocks from storage...")
             blocks = []
 
-            # Step 1: Load blocks from the blocks.data file
             if not os.path.exists(self.current_block_file):
                 print(f"[BlockMetadata.get_all_blocks] ERROR: blocks.data file not found at {self.current_block_file}.")
                 return []
 
             with open(self.current_block_file, "rb") as f:
-                # Read the magic number to verify the file
-                magic_number = f.read(4)
-                if magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
-                    print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid magic number in blocks.data file. Expected {hex(Constants.MAGIC_NUMBER)}.")
-                    return []
-
-                # Read blocks sequentially
                 while True:
-                    # Read the block size (4 bytes)
-                    block_size_bytes = f.read(4)
-                    if not block_size_bytes:
+                    # Read magic number for each block
+                    magic_number = f.read(4)
+                    if not magic_number:
                         break  # End of file
 
-                    block_size = struct.unpack(">I", block_size_bytes)[0]
-                    if block_size <= 0:
-                        print("[BlockMetadata.get_all_blocks] ERROR: Invalid block size in blocks.data file.")
-                        return []
+                    if magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
+                        print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid magic number {magic_number.hex()} at offset {f.tell()}. Expected {hex(Constants.MAGIC_NUMBER)}")
+                        break
 
-                    # Read the block data
+                    # Read block size
+                    block_size_bytes = f.read(4)
+                    if not block_size_bytes:
+                        print("[BlockMetadata.get_all_blocks] ERROR: Incomplete block size.")
+                        break
+
+                    block_size = struct.unpack(">I", block_size_bytes)[0]
+                    if block_size <= 0 or block_size > Constants.MAX_BLOCK_SIZE_BYTES:
+                        print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid block size {block_size}.")
+                        break
+
+                    # Read block data
                     block_data = f.read(block_size)
                     if len(block_data) != block_size:
-                        print("[BlockMetadata.get_all_blocks] ERROR: Incomplete block data in blocks.data file.")
-                        return []
+                        print(f"[BlockMetadata.get_all_blocks] ERROR: Incomplete block data. Expected {block_size}, got {len(block_data)}.")
+                        break
 
-                    # Deserialize the block
+                    # Deserialize block
                     try:
                         block_dict = json.loads(block_data.decode("utf-8"))
-                        if not isinstance(block_dict, dict):
-                            print(f"[BlockMetadata.get_all_blocks] WARNING: Invalid block data format: {block_dict}")
-                            continue
-
-                        # Validate required fields
-                        required_fields = ["index", "hash", "header", "transactions"]
-                        if not all(field in block_dict for field in required_fields):
-                            print(f"[BlockMetadata.get_all_blocks] WARNING: Block missing required fields: {block_dict}")
-                            continue
-
-                        # Ensure the block hash is valid
-                        if not isinstance(block_dict["hash"], str):
-                            print(f"[BlockMetadata.get_all_blocks] WARNING: Invalid block hash format: {block_dict['hash']}")
-                            block_dict["hash"] = block_dict["header"].get("merkle_root", Constants.ZERO_HASH)
-
                         blocks.append(block_dict)
                     except json.JSONDecodeError as e:
                         print(f"[BlockMetadata.get_all_blocks] ERROR: Failed to decode block data: {e}")
                         continue
 
-            # Step 2: Sort blocks by index
+            # Sort and validate chain continuity
             blocks.sort(key=lambda b: b["header"]["index"])
-
-            # Step 3: Validate chain continuity
             prev_hash = Constants.ZERO_HASH
             for block in blocks:
+                current_hash = block["hash"]
                 if block["header"]["previous_hash"] != prev_hash:
-                    print(f"[BlockMetadata.get_all_blocks] ERROR: Chain discontinuity at block {block['header']['index']}")
+                    print(f"[BlockMetadata.get_all_blocks] ERROR: Chain discontinuity at block {block['header']['index']}. Prev hash {block['header']['previous_hash']} vs expected {prev_hash}")
                     return []
-                prev_hash = block["hash"]
+                prev_hash = current_hash
 
-            print(f"[BlockMetadata.get_all_blocks] INFO: Retrieved {len(blocks)} valid blocks from storage.")
+            print(f"[BlockMetadata.get_all_blocks] INFO: Retrieved {len(blocks)} valid blocks.")
             return blocks
 
         except Exception as e:
             print(f"[BlockMetadata.get_all_blocks] ERROR: Failed to retrieve blocks: {e}")
             return []
+
 
     def _block_to_storage_format(self, block: Block) -> Dict:
         """
