@@ -434,7 +434,7 @@ class BlockMetadata:
                 print(f"[BlockMetadata.get_block_from_data_file] INFO: Block size read as {block_size} bytes.")
 
                 # Validate block size
-                if block_size > Constants.MAX_BLOCK_SIZE_BYTES or block_size <= 0:
+                if block_size > file_size - offset or block_size <= 0:
                     print(f"[BlockMetadata.get_block_from_data_file] ERROR: Invalid block size {block_size} at offset {offset}.")
                     return None
 
@@ -451,6 +451,7 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.get_block_from_data_file] ERROR: Failed to retrieve block from file: {e}")
             return None
+
 
 
     def get_latest_block(self) -> Optional[Block]:
@@ -816,6 +817,78 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata._store_block_metadata] ERROR: Failed to store block metadata: {e}")
 
+
+
+
+
+    def get_block_by_tx_id(self, tx_id: str):
+        """
+        Retrieve a block using a transaction ID from the txindex database.
+
+        :param tx_id: Transaction ID to look up.
+        :return: The block containing the transaction, or None if not found.
+        """
+        try:
+            print(f"[BlockMetadata.get_block_by_tx_id] INFO: Searching for block containing transaction {tx_id}...")
+
+            # Retrieve the block hash associated with the transaction ID
+            tx_key = f"tx:{tx_id}".encode("utf-8")
+            with self.txindex_db.env.begin() as txn:
+                block_hash_bytes = txn.get(tx_key)
+
+            if not block_hash_bytes:
+                print(f"[BlockMetadata.get_block_by_tx_id] WARNING: No block found for transaction {tx_id}.")
+                return None
+
+            block_hash = block_hash_bytes.decode("utf-8")
+            print(f"[BlockMetadata.get_block_by_tx_id] INFO: Transaction {tx_id} found in block {block_hash}.")
+
+            # Retrieve block metadata
+            block_key = f"block:{block_hash}".encode("utf-8")
+            with self.block_metadata_db.env.begin() as txn:
+                block_data_bytes = txn.get(block_key)
+
+            if not block_data_bytes:
+                print(f"[BlockMetadata.get_block_by_tx_id] WARNING: Block metadata missing for hash {block_hash}.")
+                return None
+
+            block_metadata = json.loads(block_data_bytes.decode("utf-8"))
+            if not isinstance(block_metadata, dict) or "block_header" not in block_metadata:
+                print(f"[BlockMetadata.get_block_by_tx_id] ERROR: Invalid block metadata format for {block_hash}.")
+                return None
+
+            # Deserialize the block
+            return Block.from_dict(block_metadata["block_header"])
+
+        except Exception as e:
+            print(f"[BlockMetadata.get_block_by_tx_id] ERROR: Failed to retrieve block by transaction ID {tx_id}: {e}")
+            return None
+
+
+
+    def get_transaction_id(self, tx_label: str) -> str:
+        """
+        Retrieves a stored transaction ID using a label (e.g., "GENESIS_COINBASE").
+        :param tx_label: A string label for the transaction to retrieve.
+        :return: The stored transaction ID as a hex string.
+        """
+        try:
+            print(f"[BlockMetadata.get_transaction_id] INFO: Retrieving transaction ID for label '{tx_label}'...")
+
+            with self.block_metadata_db.env.begin() as txn:
+                tx_id_bytes = txn.get(tx_label.encode("utf-8"))
+
+            if not tx_id_bytes:
+                print(f"[BlockMetadata.get_transaction_id] WARNING: No transaction ID found for label '{tx_label}'.")
+                return None
+
+            tx_id = tx_id_bytes.decode("utf-8")
+            print(f"[BlockMetadata.get_transaction_id] SUCCESS: Retrieved transaction ID: {tx_id}")
+            return tx_id
+
+        except Exception as e:
+            print(f"[BlockMetadata.get_transaction_id] ERROR: Failed to retrieve transaction ID for '{tx_label}': {e}")
+            return None
 
 
     def purge_chain(self):

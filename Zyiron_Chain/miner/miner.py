@@ -464,10 +464,10 @@ class Miner:
 
                 # Get the latest block from BlockMetadata
                 print("[Miner.mine_block] INFO: Checking for latest block in BlockMetadata.")
-                last_block_bytes = self.block_metadata.get_latest_block()
+                last_block = self.block_metadata.get_latest_block()
 
-                if last_block_bytes:
-                    last_block = self.block_metadata.deserialize_from_bytes(last_block_bytes)
+                if last_block:
+                    last_block = Block.from_dict(last_block)
                 else:
                     print("[Miner.mine_block] WARNING: No previous block found. Ensuring Genesis block exists.")
 
@@ -480,13 +480,13 @@ class Miner:
                     self.genesis_block_manager.ensure_genesis_block()
 
                     # Retrieve the newly created Genesis block
-                    last_block_bytes = self.block_metadata.get_latest_block()
-                    if not last_block_bytes:
+                    last_block = self.block_metadata.get_latest_block()
+                    if not last_block:
                         print("[Miner.mine_block] ERROR: Failed to retrieve or create Genesis block. Stopping mining.")
                         return None
-                    last_block = self.block_metadata.deserialize_from_bytes(last_block_bytes)
+                    last_block = Block.from_dict(last_block)
 
-                block_height = last_block["index"] + 1
+                block_height = last_block.index + 1
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
 
                 # Adjust difficulty based on the latest block
@@ -542,18 +542,19 @@ class Miner:
                 print("[Miner.mine_block] INFO: Creating coinbase transaction.")
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
-                print(f"[Miner.mine_block] INFO: Coinbase transaction created with ID: {coinbase_tx['tx_id']}.")
+                print(f"[Miner.mine_block] INFO: Coinbase transaction created with TX ID: {coinbase_tx.tx_id}.")
 
                 # Create new block
                 print("[Miner.mine_block] INFO: Creating new block.")
-                new_block = {
-                    "index": block_height,
-                    "previous_hash": last_block["hash"],
-                    "transactions": valid_txs,
-                    "timestamp": int(time.time()),
-                    "nonce": 0,
-                    "difficulty": current_target
-                }
+                new_block = Block(
+                    index=block_height,
+                    previous_hash=last_block.tx_id,
+                    transactions=valid_txs,
+                    timestamp=int(time.time()),
+                    nonce=0,
+                    difficulty=current_target,
+                    miner_address=miner_address
+                )
                 print(f"[Miner.mine_block] INFO: New block created with index {block_height}.")
 
                 # Perform Proof-of-Work
@@ -566,23 +567,23 @@ class Miner:
                 print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final hash: {final_hash[:12]}...")
 
                 # Validate Proof-of-Work before storing
-                if int(final_hash, 16) >= new_block["difficulty"]:
+                if int(final_hash, 16) >= new_block.difficulty:
                     print("[Miner.mine_block] ERROR: Invalid Proof-of-Work. Hash does not meet difficulty target. Stopping mining.")
                     return None
 
                 # Update block with final hash and nonce
-                new_block["hash"] = final_hash
-                new_block["nonce"] = final_nonce
+                new_block.tx_id = final_hash
+                new_block.nonce = final_nonce
                 print(f"[Miner.mine_block] INFO: Block updated with final hash and nonce {final_nonce}.")
 
                 # Store block using BlockMetadata
                 print("[Miner.mine_block] INFO: Storing block in BlockMetadata.")
-                self.block_metadata.store_block(self.block_metadata.serialize_to_bytes(new_block), new_block["difficulty"])
+                self.block_metadata.store_block(new_block, new_block.difficulty)
                 self.chain.append(new_block)
                 print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
                 elapsed_time = int(time.time() - start_time)
-                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Hash: {new_block['hash'][:12]}... | Time Taken: {elapsed_time}s.")
+                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final TX ID: {new_block.tx_id[:12]}... | Time Taken: {elapsed_time}s.")
                 return new_block
 
             except Exception as e:

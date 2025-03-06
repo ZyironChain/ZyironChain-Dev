@@ -10,12 +10,13 @@ Combines the old Block and BlockHeader into a single class.
 - Added detailed print statements for debugging and clarity.
 """
 
+
 import sys
 import os
 import json
 import time
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
@@ -57,13 +58,9 @@ class Block:
         miner_address: str = None
     ):
         """
-        :param index: The height of this block in the chain.
-        :param previous_hash: The hash of the previous block.
-        :param transactions: A list of transactions (including coinbase if any).
-        :param timestamp: Block creation time (int). Defaults to current time if None.
-        :param nonce: The nonce used for Proof-of-Work.
-        :param difficulty: The difficulty target (int). Defaults to GENESIS_TARGET if None.
-        :param miner_address: The address of the miner who found the block.
+        Initializes a new block.
+        - Ensures all required fields are present.
+        - Computes the Merkle root and block hash.
         """
 
         # Basic fields
@@ -91,9 +88,12 @@ class Block:
         self.merkle_root = self._compute_merkle_root()
         print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")
 
+        # ✅ **Fix: Ensure Block stores `tx_id` (from Coinbase transaction)**
+        self.tx_id = self._get_coinbase_tx_id()
+        print(f"[Block.__init__] Assigned Coinbase TX ID: {self.tx_id}")
+
         # ✅ **Fix: Hash is now preserved after mining and not re-computed**
         self.hash = None  # Will be assigned only when mined
-
 
     def get_header(self) -> dict:
         """
@@ -189,9 +189,9 @@ class Block:
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
+            "tx_id": self.tx_id,  # ✅ Include Coinbase TX ID
             "hash": self.hash
         }
-
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
         """
@@ -228,10 +228,12 @@ class Block:
             miner_address=data.get("miner_address")
         )
 
-        # The block's hash might have changed if data changed, so we can recalc or trust 'hash' from dict
-        # We'll just recalc for consistency:
-        if "hash" in data and data["hash"] != block.hash:
-            print("[Block.from_dict] WARNING: Provided block hash does not match recalculated hash. Using recalculated.")
+        # ✅ **Fix: Restore `tx_id`**
+        block.tx_id = data.get("tx_id")
+
+        # ✅ **Fix: Ensure Hash Consistency**
+        block.hash = data.get("hash", block.calculate_hash())
+
         return block
 
     def __repr__(self) -> str:
@@ -242,3 +244,12 @@ class Block:
             f"<Block index={self.index} hash={self.hash[:10]}... "
             f"prev={self.previous_hash[:10]}... merkle={self.merkle_root[:10]}...>"
         )
+    
+    def _get_coinbase_tx_id(self) -> Optional[str]:
+        """
+        Retrieves the `tx_id` of the Coinbase transaction, if present.
+        """
+        for tx in self.transactions:
+            if hasattr(tx, "tx_type") and tx.tx_type == "COINBASE":
+                return tx.tx_id  # ✅ Get `tx_id` from the Coinbase transaction
+        return None  # If no Coinbase TX exists

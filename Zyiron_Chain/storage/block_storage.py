@@ -15,6 +15,8 @@ from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.utils.deserializer import Deserializer
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+
 class WholeBlockData:
     """
     WholeBlockData stores and retrieves the entire blockchain data.
@@ -31,6 +33,7 @@ class WholeBlockData:
         try:
             self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
             self.txindex_db = LMDBManager(Constants.DATABASES["txindex"])
+            self.block_metadata = None  # ✅ Ensure `block_metadata` starts as None
         except Exception as e:
             print(f"[WholeBlockData.__init__] ERROR: Failed to initialize LMDB databases: {e}")
             raise
@@ -42,6 +45,38 @@ class WholeBlockData:
         self.current_block_file = os.path.join(block_data_dir, "block.data")
         self.current_block_offset = 0
         self._initialize_block_data_file()
+
+    def block_meta(self):
+        """
+        Ensures `BlockMetadata` is initialized and returns the instance.
+        ✅ If `block_metadata` is missing, it initializes it automatically.
+        """
+        if not self.block_metadata:
+            print("[WholeBlockData.block_meta] INFO: `block_metadata` is missing. Initializing now...")
+            self.block_metadata = BlockMetadata()  # ✅ Initialize BlockMetadata
+            print("[WholeBlockData.block_meta] INFO: `BlockMetadata` initialized successfully.")
+        return self.block_metadata  # ✅ Always return the BlockMetadata instance
+
+    def store_block(self, block: Block, difficulty: int):
+        """
+        Stores a block using `BlockMetadata.store_block()`.
+
+        :param block: The block to store.
+        :param difficulty: The difficulty target of the block.
+        """
+        try:
+            print(f"[WholeBlockData.store_block] INFO: Storing Block {block.index} with difficulty {difficulty}.")
+
+            # ✅ Call `block_meta()` to ensure `BlockMetadata` exists before storing the block
+            self.block_meta().store_block(block, difficulty)
+            print(f"[WholeBlockData.store_block] SUCCESS: Block {block.index} stored successfully.")
+
+        except Exception as e:
+            print(f"[WholeBlockData.store_block] ERROR: Failed to store block {block.index}: {e}")
+            raise
+
+
+
 
     def _initialize_block_data_file(self):
         """Initialize block.data file with correct magic number."""
