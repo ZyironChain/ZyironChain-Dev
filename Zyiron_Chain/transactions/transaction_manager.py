@@ -23,7 +23,10 @@ if TYPE_CHECKING:
     from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 
 from Zyiron_Chain.utils.deserializer import Deserializer
-
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+from Zyiron_Chain.storage.utxostorage import UTXOStorage
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
 class TransactionManager:
     """
     Manages transaction creation, validation, and mempool operations
@@ -51,13 +54,22 @@ class TransactionManager:
         self.tx_storage = tx_storage
         self.utxo_manager = utxo_manager
         self.key_manager = key_manager
-        utxo_manager=utxo_manager,  # Add this line
 
         self.network = Constants.NETWORK
         self.version = Constants.VERSION
 
+        # Initialize UTXOStorage
+        utxo_db = LMDBManager(Constants.get_db_path("utxo"))
+        utxo_history_db = LMDBManager(Constants.get_db_path("utxo_history"))
+        self.utxo_storage = UTXOStorage(
+            utxo_db=utxo_db,
+            utxo_history_db=utxo_history_db,
+            utxo_manager=utxo_manager
+        )
+
         # Initialize the two mempools
         self.standard_mempool = StandardMempool(
+            utxo_storage=self.utxo_storage,  # Pass UTXOStorage to StandardMempool
             max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_STANDARD_ALLOCATION)
         )
         self.smart_mempool = SmartMempool(
@@ -72,7 +84,6 @@ class TransactionManager:
         print(f"[TransactionManager.__init__] Initialized on {self.network.upper()} | Version {self.version} | "
               f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | "
               f"Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}%")
-
 
 
     def get_transaction(self, tx_id):
@@ -211,20 +222,26 @@ class TransactionManager:
     def _get_chain_height(self) -> int:
         """
         Retrieve the current blockchain height using block metadata.
+
+        Returns:
+            int: The height of the blockchain (number of blocks). Returns 0 if no blocks are found.
         """
         try:
+            # Call the get_all_block_headers method from BlockMetadata
             headers = self.block_metadata.get_all_block_headers()
+            
             if headers:
+                # Calculate the maximum block index (height) from the headers
                 height = max(header["index"] for header in headers)
                 print(f"[TransactionManager._get_chain_height] Current chain height: {height}")
                 return height
             else:
+                # No headers found, return 0
                 print("[TransactionManager._get_chain_height] No block headers found; returning 0.")
                 return 0
         except Exception as e:
+            # Handle any exceptions and log the error
             print(f"[TransactionManager._get_chain_height] ERROR: Unable to retrieve chain height: {e}")
-
-
             return 0
     def _calculate_transaction_size(self, tx: Transaction) -> int:
         """

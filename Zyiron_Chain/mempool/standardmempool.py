@@ -18,17 +18,17 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")
 sys.path.append(project_root)
 
 class StandardMempool:
-    def __init__(self, poc, max_size_mb=None):
+    def __init__(self, utxo_storage, max_size_mb=None):
         """
         Initialize the Standard Mempool with LMDB-backed storage.
 
-        :param poc: PoC instance for blockchain storage
+        :param utxo_storage: UTXOStorage instance for validating UTXOs
         :param max_size_mb: Optional override of max size in MB
         """
-        self.poc = poc
+        self.utxo_storage = utxo_storage
         self.lock = Lock()
         
-        # Use LMDB for transaction persistence, and fetch the correct DB path using Constants.get_db_path()
+        # Use LMDB for transaction persistence
         self.lmdb = LMDBManager(Constants.get_db_path("mempool"))
 
         # Allow size override while maintaining Constants default
@@ -46,9 +46,9 @@ class StandardMempool:
         print(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_mb} MB")
 
     def _load_pending_transactions(self):
-        """Load pending transactions from LMDB into memory, ensuring double SHA3-384 hash compatibility."""
+        """Load pending transactions from LMDB into memory."""
         with self.lock:
-            stored_txs = self.lmdb.get_all_transactions()
+            stored_txs = self.lmdb.get_all_transactions()  # Use the new method
             self.current_size_bytes = sum(tx["size"] for tx in stored_txs)
 
             # Ensure transaction IDs use double SHA3-384 hashing
@@ -56,6 +56,21 @@ class StandardMempool:
                 tx["tx_id"] = hashlib.sha3_384(tx["tx_id"].encode()).hexdigest()
 
             print(f"[MEMPOOL] Loaded {len(stored_txs)} pending transactions from LMDB.")
+
+    def validate_transaction_inputs(self, transaction):
+        """
+        Validate transaction inputs using UTXOStorage.
+        """
+        with self.lock:
+            for inp in transaction.inputs:
+                utxo = self.utxo_storage.get_utxo(inp.tx_out_id)
+                if not utxo:
+                    print(f"[WARN] ⚠️ UTXO {inp.tx_out_id} not found in storage.")
+                    return False
+                if utxo.locked or utxo.amount < inp.amount:
+                    print(f"[WARN] ⚠️ UTXO {inp.tx_out_id} is locked or has insufficient balance.")
+                    return False
+            return True
 
     def __len__(self):
         """Returns the number of transactions in the LMDB-backed Standard Mempool."""

@@ -25,7 +25,9 @@ from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.utils.deserializer import Deserializer
-
+from Zyiron_Chain.storage.block_storage import WholeBlockData
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+from Zyiron_Chain.keys.key_manager import KeyManager
 
 class GenesisBlockManager:
     """
@@ -39,8 +41,9 @@ class GenesisBlockManager:
     """
     GENESIS_HASH = None  # Optionally set a predefined genesis hash (hex string) to bypass mining
 
-    def __init__(self, storage_manager, key_manager, chain, block_manager):
-        self.storage_manager = storage_manager
+    def __init__(self, block_storage: WholeBlockData, block_metadata: BlockMetadata, key_manager: KeyManager, chain, block_manager):
+        self.block_storage = block_storage
+        self.block_metadata = block_metadata
         self.key_manager = key_manager
         self.chain = chain
         self.block_manager = block_manager
@@ -100,13 +103,15 @@ class GenesisBlockManager:
                     print(f"[GenesisBlockManager.create_and_mine_genesis_block] LIVE: Nonce: {genesis_block.nonce}, Elapsed Time: {elapsed}s")
                     last_update = current_time
 
+            # Add the new print statement here
+            print(f"Block {genesis_block.index} mined successfully with Nonce value of {genesis_block.nonce}")
+
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Genesis Block mined with hash: {genesis_block.hash}")
             return genesis_block
 
         except Exception as e:
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] ERROR: Genesis block mining failed: {e}")
             raise
-
 
 
     def ensure_genesis_block(self):
@@ -117,7 +122,7 @@ class GenesisBlockManager:
         mined, and stored in the correct databases.
         """
         try:
-            stored_blocks = self.storage_manager.get_all_blocks()
+            stored_blocks = self.block_metadata.get_all_blocks()
             if stored_blocks:
                 genesis_data = Deserializer().deserialize(stored_blocks[0])  # 🔹 Auto-deserialize data
 
@@ -158,8 +163,9 @@ class GenesisBlockManager:
             else:
                 genesis_block = self.create_and_mine_genesis_block()
 
-            # Store the genesis block using the new storage manager
-            self.storage_manager.store_block(genesis_block, Constants.GENESIS_TARGET)
+            # Store the genesis block using the new storage modules
+            self.block_metadata.store_block(genesis_block, Constants.GENESIS_TARGET)
+            self.block_storage.store_block(genesis_block, Constants.GENESIS_TARGET)
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)
             print(f"[GenesisBlockManager.ensure_genesis_block] SUCCESS: New Genesis block created with hash: {genesis_block.hash}")
@@ -167,7 +173,7 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis initialization failed: {e}")
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Purging corrupted chain data...")
-            self.storage_manager.purge_chain()
+            self.block_metadata.purge_chain()
             raise
 
 

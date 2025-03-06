@@ -18,20 +18,23 @@ from Zyiron_Chain.blockchain.block import Block
 
 # Ensure this is at the very top of your script, before any other code
 
-class Miner:
-    def __init__(self, block_manager, transaction_manager, storage_manager, key_manager):
-        """
-        Initializes the miner with references to:
-        - BlockManager (for managing blocks)
-        - TransactionManager (for selecting transactions)
-        - StorageManager (for persisting blocks)
-        - KeyManager (for retrieving miner addresses)
-        """
-        self.block_manager = block_manager
-        self.transaction_manager = transaction_manager
-        self.storage_manager = storage_manager
-        self.key_manager = key_manager
 
+class Miner:
+    def __init__(self, blockchain, transaction_manager, key_manager, mempool_storage):
+        """
+        Initialize the Miner.
+
+        :param blockchain: The blockchain instance.
+        :param transaction_manager: The transaction manager instance.
+        :param key_manager: The key manager instance.
+        :param mempool_storage: The mempool storage instance.
+        """
+        self.blockchain = blockchain
+        self.transaction_manager = transaction_manager
+        self.key_manager = key_manager
+        self.mempool_storage = mempool_storage
+        print("[Miner.__init__] INFO: Miner initialized successfully.")
+        
         # Fetch the blockchain reference dynamically
         self.blockchain = self.block_manager.blockchain
 
@@ -324,9 +327,11 @@ class Miner:
         """
         with self.mining_lock:
             try:
+                # Debug: Start mining procedure
                 print("[Miner.mine_block] START: Initiating mining procedure. (Function: mine_block, Class: Miner)")
                 start_time = time.time()
 
+                # Get the latest block
                 last_block = self.storage_manager.get_latest_block()
                 if not last_block:
                     print("[Miner.mine_block] WARNING: No previous block found; ensuring Genesis block exists. (Function: mine_block, Class: Miner)")
@@ -337,30 +342,31 @@ class Miner:
                     return None
 
                 block_height = last_block.index + 1
-                print(f"[Miner.mine_block] INFO: Resuming from Block {last_block.index} (Hash: {last_block.hash}). (Function: mine_block, Class: Miner)")
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}. (Function: mine_block, Class: Miner)")
 
+                # Adjust difficulty
                 current_target = self.block_manager.calculate_target(self.storage_manager)
                 current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}. (Function: mine_block, Class: Miner)")
 
+                # Get miner address
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
                 if not miner_address:
                     print("[Miner.mine_block] ERROR: Failed to retrieve miner address. (Function: mine_block, Class: Miner)")
                     return None
-                print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}. (Function: mine_block, Class: Miner)")
 
+                # Calculate block size and get pending transactions
                 self._calculate_block_size()
                 pending_txs = self.transaction_manager.mempool.get_pending_transactions(
                     block_size_mb=self.current_block_size
                 ) or []
                 total_fees = sum(tx.fee for tx in pending_txs if hasattr(tx, "fee"))
-                print(f"[Miner.mine_block] INFO: Retrieved {len(pending_txs)} pending transactions with total fees: {total_fees}. (Function: mine_block, Class: Miner)")
 
+                # Create coinbase transaction
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
-                print("[Miner.mine_block] INFO: Coinbase transaction created. (Function: mine_block, Class: Miner)")
 
+                # Create new block
                 new_block = Block(
                     index=block_height,
                     previous_hash=last_block.hash,
@@ -369,19 +375,20 @@ class Miner:
                     nonce=0,
                     difficulty=current_target
                 )
-                print(f"[Miner.mine_block] INFO: New block constructed with index {new_block.index}. (Function: mine_block, Class: Miner)")
 
+                # Perform Proof-of-Work
                 from Zyiron_Chain.miner.pow import PowManager
-                print(f"[Miner.mine_block] INFO: Starting PoW for Block {block_height}. (Function: mine_block, Class: Miner)")
-                final_hash, final_nonce, attempts = PowManager(new_block)
-                print(f"[Miner.mine_block] INFO: PoW completed. Final nonce: {final_nonce}, Attempts: {attempts}. (Function: mine_block, Class: Miner)")
+                final_hash, final_nonce, attempts = PowManager().perform_pow(new_block)
 
+                # Update block with final hash and nonce
                 new_block.hash = final_hash
                 new_block.header.nonce = final_nonce
 
+                # Store block and update chain
                 self.storage_manager.store_block(new_block, new_block.difficulty)
                 self.block_manager.chain.append(new_block)
 
+                # Print final success message
                 elapsed_time = int(time.time() - start_time)
                 print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Hash: {new_block.hash} | Time Taken: {elapsed_time}s. (Function: mine_block, Class: Miner)")
                 return new_block
@@ -389,7 +396,6 @@ class Miner:
             except Exception as e:
                 print(f"[Miner.mine_block] ERROR: Mining failed with exception -> {e}. (Function: mine_block, Class: Miner)")
                 return None
-
     @property
     def mining_lock(self):
         if not hasattr(self, "_mining_lock"):

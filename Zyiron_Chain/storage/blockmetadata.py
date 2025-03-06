@@ -51,7 +51,27 @@ class BlockMetadata:
         data = self.block_metadata_db.get(block_hash.encode("utf-8"))
         return Deserializer().deserialize(data) if data else None
 
-
+    def create_block_data_file(self, block: Block):
+        """
+        Append a block to the block.data file in binary format.
+        Writes the block length (4 bytes) followed by the serialized block.
+        """
+        try:
+            if not self.current_block_file:
+                raise ValueError("Current block file is not set.")
+            with open(self.current_block_file, "ab+") as f:
+                f.seek(0, os.SEEK_END)
+                if f.tell() == 0:
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                    print(f"[BlockMetadata] INFO: Wrote network magic number {hex(Constants.MAGIC_NUMBER)} to block.data.")
+                block_data = self._serialize_block_to_binary(block)
+                f.write(struct.pack(">I", len(block_data)))
+                f.write(block_data)
+                self.current_block_offset = f.tell()
+                print(f"[BlockMetadata] INFO: Appended Block {block.index} to block.data file at offset {self.current_block_offset}.")
+        except Exception as e:
+            print(f"[BlockMetadata] ERROR: Failed to write block to block.data file: {e}")
+            raise
 
     def _initialize_block_data_file(self):
         """Initialize the block.data file with the correct magic number."""
@@ -74,73 +94,131 @@ class BlockMetadata:
             print(f"[BlockMetadata._initialize_block_data_file] ERROR: Failed to initialize block.data file: {e}")
             raise
 
-    def store_block(self, block: Block, difficulty) -> None:
+
+
+
+
+    def store_block(self, block, difficulty):
         """
-        Store block metadata in LMDB and append full block data to block.data.
-        
-        Steps:
-          1. Ensure block header has a merkle root; if not, recompute.
-          2. Compute block hash using single SHA3-384 and update header.
-          3. Prepare metadata dictionary with all required fields.
-          4. Write metadata to LMDB.
-          5. Append the full block to block.data file.
+        Store block metadata in LMDB and full block data in block.data.
+
+        Steps clearly defined:
+        1. Compute Merkle root if missing.
+        2. Compute and verify the block hash (SHA3-384).
+        3. Store detailed metadata (miner address, reward, difficulty, fees, transactions).
+        4. Write metadata to LMDB.
+        5. Append the entire block data (with magic number) to the block.data file.
+        6. Dynamically handle block file rollover based on Constants.BLOCK_DATA_FILE_SIZE_MB.
+
+        :param block: Block instance to store.
+        :param difficulty: Current difficulty of the block.
         """
         try:
-            print(f"[BlockMetadata.store_block] INFO: Storing metadata for Block {block.index} ...")
-            # Recompute merkle root if missing
-            if not hasattr(block.header, "merkle_root") or not block.header.merkle_root:
-                print(f"[BlockMetadata.store_block] WARNING: Block {block.index} missing Merkle root. Recomputing...")
-                # (Assuming _calculate_merkle_root is implemented elsewhere)
-                block.header.merkle_root = self._calculate_merkle_root(block.transactions)
-            # Ensure transactions is a list
-            if not isinstance(block.transactions, list):
-                print(f"[BlockMetadata.store_block] ERROR: Block {block.index} transactions is not a list.")
-                return
-            # Compute block hash using single SHA3-384 (processing data as bytes)
-            computed_hash = hashlib.sha3_384(block.calculate_hash().encode()).hexdigest()
+            print(f"[BlockMetadata.store_block] INFO: Storing metadata for Block {block.index}...")
+
+            # Step 1: Recompute Merkle root if missing
+            if not hasattr(block, "merkle_root") or not block.merkle_root:
+                print(f"[BlockMetadata.store_block] WARNING: Missing Merkle root for block {block.index}. Recomputing...")
+                block.merkle_root = block._compute_merkle_root()
+
+            # Step 2: Compute and verify block hash explicitly (SHA3-384)
+            header_str = (
+                f"{block.version}{block.index}{block.previous_hash}"
+                f"{block.merkle_root}{block.timestamp}{block.nonce}"
+                f"{block.difficulty}{block.miner_address}"
+            )
+            header_bytes = header_str.encode("utf-8")
+            computed_hash = hashlib.sha3_384(header_bytes).hexdigest()
             block.hash = computed_hash
-            # Ensure merkle root is stored as string
-            block.header.merkle_root = str(block.header.merkle_root)
-            # Prepare metadata dictionary
-            current_timestamp = block.timestamp if isinstance(block.timestamp, int) else int(time.time())
-            try:
-                difficulty_val = int(difficulty)
-            except ValueError:
-                print(f"[BlockMetadata.store_block] ERROR: Difficulty must be an integer; received {difficulty}.")
-                return
-            tx_ids = [tx.tx_id for tx in block.transactions if hasattr(tx, "tx_id") and isinstance(tx.tx_id, str)]
-            if len(tx_ids) < len(block.transactions):
-                print(f"[BlockMetadata.store_block] WARNING: Some transactions in Block {block.index} are missing valid tx_id.")
+            print(f"[BlockMetadata.store_block] INFO: Computed block hash {block.hash}.")
+
+            # Step 3: Prepare detailed metadata dictionary
+            tx_ids = [tx.tx_id for tx in block.transactions if hasattr(tx, "tx_id")]
+            coinbase_tx = next((tx for tx in block.transactions if hasattr(tx, 'tx_type') and tx.tx_type == "COINBASE"), None)
+            
+            miner_address = coinbase_tx.outputs[0].script_pub_key if coinbase_tx else block.miner_address
+            reward_amount = coinbase_tx.outputs[0].amount if coinbase_tx else Constants.INITIAL_COINBASE_REWARD
+
+            total_fees = sum(tx.fee for tx in block.transactions if hasattr(tx, 'fee'))
+
             block_metadata = {
-                "hash": str(block.hash),
+                "hash": block.hash,
                 "block_header": {
                     "index": block.index,
-                    "previous_hash": str(block.previous_hash),
-                    "merkle_root": str(block.header.merkle_root),
-                    "timestamp": current_timestamp,
-                    "nonce": getattr(block, "nonce", 0),
-                    "difficulty": difficulty_val,
+                    "previous_hash": block.previous_hash,
+                    "merkle_root": block.merkle_root,
+                    "timestamp": block.timestamp,
+                    "nonce": block.nonce,
+                    "difficulty": difficulty,
+                    "miner_address": miner_address,
+                    "reward": str(reward_amount),
+                    "fees": str(total_fees),
+                    "version": block.version
                 },
                 "transaction_count": len(block.transactions),
-                "block_size": len(json.dumps(block.to_dict(), ensure_ascii=False).encode("utf-8")),
+                "block_size": len(json.dumps(block.to_dict()).encode("utf-8")),
                 "data_file": self.current_block_file,
                 "data_offset": self.current_block_offset,
-                "tx_ids": tx_ids,
+                "tx_ids": tx_ids
             }
+
+            # Step 4: Store metadata to LMDB
             with self.block_metadata_db.env.begin(write=True) as txn:
                 txn.put(f"block:{block.hash}".encode(), json.dumps(block_metadata).encode("utf-8"))
-            print(f"[BlockMetadata.store_block] INFO: Metadata for Block {block.index} stored in LMDB.")
-            try:
-                self.create_block_data_file(block)
-            except Exception as e:
-                print(f"[BlockMetadata.store_block] ERROR: Failed to write Block {block.index} to block.data: {e}")
-                with self.block_metadata_db.env.begin(write=True) as txn:
-                    txn.delete(f"block:{block.hash}".encode())
-                return
-            print(f"[BlockMetadata.store_block] INFO: Block {block.index} stored successfully.")
+                print(f"[BlockMetadata.store_block] INFO: Block metadata stored successfully for Block {block.index}.")
+
+            # Step 5: Append full block data (with MAGIC_NUMBER) to block.data file
+            block_bytes = json.dumps(block.to_dict(), ensure_ascii=False).encode('utf-8')
+            block_length = len(block_bytes)
+
+            magic_number_bytes = Constants.MAGIC_NUMBER.to_bytes(4, byteorder='big')
+            block_size_bytes = block_length.to_bytes(4, byteorder='big')
+
+            serialized_block_data = magic_number_bytes + block_size_bytes + block_bytes
+
+            # Get current file, handle file rollover
+            current_file_path = self._get_current_block_file()
+            with open(current_file_path, "ab") as block_file:
+                offset_before_write = block_file.tell()
+                block_file.write(serialized_block_data)
+                block_file.flush()
+                print(f"[BlockMetadata.store_block] INFO: Block data written at offset {offset_before_write}.")
+
+            # Step 6: Dynamically handle rollover based on Constants.BLOCK_DATA_FILE_SIZE_MB
+            if block_file.tell() >= Constants.BLOCK_DATA_FILE_SIZE_MB * 1024 * 1024:
+                print(f"[BlockMetadata.store_block] INFO: Block data file {current_file_path} reached max size. New file will be created next time.")
+
+            print(f"[BlockMetadata.store_block] SUCCESS: Fully stored Block {block.index} with hash {block.hash}.")
+
         except Exception as e:
-            print(f"[BlockMetadata.store_block] ERROR: Failed to store Block {block.index}: {e}")
+            print(f"[BlockMetadata.store_block] ERROR: Failed storing Block {block.index}: {e}")
             raise
+
+
+    def _get_current_block_file(self):
+        """
+        Dynamically manage block data files, ensuring file rollover 
+        based on Constants.BLOCK_DATA_FILE_SIZE_MB (explicitly set).
+        """
+        block_data_folder = Constants.DATABASES['block_data']
+        os.makedirs(block_data_folder, exist_ok=True)
+
+        files = sorted([f for f in os.listdir(block_data_folder) if f.endswith('.data')])
+        if not files:
+            current_file = os.path.join(block_data_folder, "block_00001.data")
+            print(f"[BlockMetadata._get_current_block_file] Creating new block data file: {current_file}")
+            return current_file
+
+        latest_file = os.path.join(block_data_folder, files[-1])
+
+        if os.path.getsize(latest_file) >= Constants.BLOCK_DATA_FILE_SIZE_MB * 1024 * 1024:
+            next_file_number = int(files[-1].split('_')[1].split('.')[0]) + 1
+            current_file = os.path.join(block_data_folder, f"block_{next_file_number:05d}.data")
+            print(f"[BlockMetadata._get_current_block_file] Rolling over to new block data file: {current_file}")
+            return current_file
+
+        return latest_file
+
 
     def verify_block_storage(self, block: Block) -> bool:
         """
@@ -235,11 +313,11 @@ class BlockMetadata:
 
     # --------------------- Block.data File Methods --------------------- #
 
+
     def _serialize_block_to_binary(self, block: Block) -> bytes:
         """
-        Serialize a Block object into binary format.
-        The header fields are packed in fixed-length binary, and transaction data
-        is appended as UTF-8 encoded JSON with newline delimiters.
+        Serialize a Block into binary format.
+        Packs the header fields into fixed-length binary and appends transaction data.
         """
         try:
             block_dict = block.to_dict()
@@ -250,77 +328,39 @@ class BlockMetadata:
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
             difficulty_int = int(header["difficulty"])
+            # Convert difficulty to 48 bytes (big-endian)
             difficulty_bytes = difficulty_int.to_bytes(48, "big", signed=False)
             if len(difficulty_bytes) > 48:
                 raise ValueError(f"Difficulty {difficulty_int} exceeds 48 bytes.")
-            miner_address_encoded = header["miner_address"].encode("utf-8")
+            # Process miner address (max 128 bytes, padded)
+            miner_address_str = header["miner_address"]
+            miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
                 raise ValueError("Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
+            # Pack header: index, prev hash, merkle root, timestamp, nonce, difficulty, miner address
             header_format = ">I32s32sQI48s128s"
-            header_data = struct.pack(
-                header_format,
-                block_height,
-                prev_block_hash,
-                merkle_root,
-                timestamp,
-                nonce,
-                difficulty_bytes,
-                miner_address_padded
-            )
+            header_data = struct.pack(header_format,
+                                      block_height,
+                                      prev_block_hash,
+                                      merkle_root,
+                                      timestamp,
+                                      nonce,
+                                      difficulty_bytes,
+                                      miner_address_padded)
+            # Serialize transactions as JSON strings (each separated by a newline)
             tx_data_list = []
             for tx in block_dict["transactions"]:
                 tx_json = json.dumps(tx, sort_keys=True)
                 tx_data_list.append(tx_json)
+            # Join transactions with newline as delimiter
             tx_data = "\n".join(tx_data_list).encode("utf-8")
             tx_count = len(block_dict["transactions"])
             tx_count_data = struct.pack(">I", tx_count)
             return header_data + tx_count_data + tx_data
         except Exception as e:
-            print(f"[BlockMetadata._serialize_block_to_binary] ERROR: Failed to serialize block: {e}")
+            print(f"[BlockMetadata] ERROR: Failed to serialize block: {e}")
             raise
-
-    def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
-        """
-        Deserialize binary data into a Block object.
-        """
-        try:
-            header_format = ">I32s32sQI48s128s"
-            header_size = struct.calcsize(header_format)
-            (block_height,
-             prev_block_hash,
-             merkle_root,
-             timestamp,
-             nonce,
-             difficulty_bytes,
-             miner_address_bytes) = struct.unpack(header_format, block_data[0:header_size])
-            difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
-            miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
-            tx_count_offset = header_size
-            tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
-            tx_data = block_data[tx_count_offset + 4:]
-            tx_jsons = tx_data.split(b'\n')
-            transactions = []
-            for tx_json in tx_jsons:
-                if not tx_json.strip():
-                    continue
-                transactions.append(json.loads(tx_json.decode("utf-8")))
-            block_dict = {
-                "header": {
-                    "index": block_height,
-                    "previous_hash": prev_block_hash.hex(),
-                    "merkle_root": merkle_root.hex(),
-                    "timestamp": timestamp,
-                    "nonce": nonce,
-                    "difficulty": difficulty_int,
-                    "miner_address": miner_address_str,
-                },
-                "transactions": transactions
-            }
-            return Block.from_dict(block_dict)
-        except Exception as e:
-            print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to deserialize block: {e}")
-            return None
 
     def get_block_from_data_file(self, offset: int) -> Optional[Block]:
         """
@@ -522,6 +562,58 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata._get_database] ERROR: Failed to get database {db_key}: {e}")
             raise
+
+
+
+
+
+    def get_all_block_headers(self) -> List[Dict]:
+        """
+        Retrieve all block headers from the LMDB storage.
+
+        Returns:
+            List[Dict]: A list of block headers, where each header is a dictionary.
+        """
+        try:
+            print("[BlockMetadata.get_all_block_headers] INFO: Retrieving all block headers...")
+            headers = []
+            
+            # Open a read transaction for the LMDB database
+            with self.block_metadata_db.env.begin() as txn:
+                cursor = txn.cursor()
+                
+                # Iterate through all key-value pairs in the database
+                for key, value in cursor:
+                    # Filter for keys that start with "block:"
+                    if key.decode().startswith("block:"):
+                        try:
+                            # Deserialize the block metadata
+                            block_meta = json.loads(value.decode("utf-8"))
+                            
+                            # Extract the block header
+                            header = block_meta.get("block_header")
+                            if isinstance(header, dict) and "index" in header:
+                                headers.append(header)
+                            else:
+                                print(f"[BlockMetadata.get_all_block_headers] WARNING: Invalid header in block {block_meta.get('hash', 'unknown')}")
+                        except json.JSONDecodeError as e:
+                            print(f"[BlockMetadata.get_all_block_headers] ERROR: Failed to parse block metadata: {e}")
+                            continue
+            
+            if not headers:
+                print("[BlockMetadata.get_all_block_headers] WARNING: No block headers found in LMDB.")
+                return []
+            
+            print(f"[BlockMetadata.get_all_block_headers] INFO: Retrieved {len(headers)} block headers.")
+            return headers
+        except Exception as e:
+            print(f"[BlockMetadata.get_all_block_headers] ERROR: Failed to retrieve block headers: {e}")
+            return []
+
+
+
+
+
 
     def get_all_blocks(self) -> List[Dict]:
         """

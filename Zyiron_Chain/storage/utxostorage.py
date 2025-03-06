@@ -43,49 +43,88 @@ class UTXOStorage:
             print(f"[UTXOStorage.__init__] ERROR: Failed to initialize UTXOStorage: {e}")
             raise
 
+    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
+        """
+        Retrieve a UTXO from LMDB.
+        Checks internal cache first, then queries the LMDB database.
+        """
+        try:
+            if tx_out_id in self._cache:
+                print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from cache.")
+                return TransactionOut.from_dict(self._cache[tx_out_id])
+            key = tx_out_id.encode("utf-8")
+            data = self.utxo_db.get(key)
+            if not data:
+                print(f"[UTXOStorage.get_utxo] WARNING: UTXO {tx_out_id} not found.")
+                return None
+            utxo_entry = json.loads(data.decode("utf-8"))
+            self._cache[tx_out_id] = utxo_entry
+            print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from storage and cached it.")
+            return TransactionOut.from_dict(utxo_entry)
+        except Exception as e:
+            print(f"[UTXOStorage.get_utxo] ERROR: UTXO retrieval failed for {tx_out_id}: {e}")
+            return None
+
     def update_utxos(self, block) -> None:
         """
-        Update UTXO databases for a new block.
-        For each transaction in the block:
-          - Remove spent UTXOs.
-          - Add new UTXOs.
+        Update UTXO databases (utxo.lmdb & utxo_history.lmdb) for the given block.
+
+        Steps:
+        1. Remove spent UTXOs.
+        2. Add new UTXOs.
+        3. Record UTXO changes in the history database.
         """
         try:
             with self._db_lock:
                 with self.utxo_db.env.begin(write=True) as utxo_txn, \
-                     self.utxo_history_db.env.begin(write=True) as history_txn:
+                        self.utxo_history_db.env.begin(write=True) as history_txn:
+
+                    # Step 1: Remove spent UTXOs
                     for tx in block.transactions:
-                        if not hasattr(tx, "inputs") or not hasattr(tx, "outputs"):
-                            print(f"[UTXOStorage.update_utxos] ERROR: Transaction {tx.tx_id} is malformed. Skipping update.")
-                            continue
+                        if hasattr(tx, "inputs"):
+                            for tx_input in tx.inputs:
+                                spent_key = f"utxo:{tx_input.tx_out_id}".encode("utf-8")
+                                spent_utxo = utxo_txn.get(spent_key)
+                                if spent_utxo:
+                                    # Save spent UTXO to history
+                                    history_key = f"spent_utxo:{tx_input.tx_out_id}:{block.timestamp}".encode("utf-8")
+                                    history_txn.put(history_key, spent_utxo)
+                                    # Remove spent UTXO from current UTXOs
+                                    utxo_txn.delete(spent_key)
+                                    print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {tx_input.tx_out_id}.")
+                                else:
+                                    print(f"[UTXOStorage.update_utxos] WARNING: Spent UTXO {tx_input.tx_out_id} not found.")
 
-                        # Remove spent UTXOs
-                        for inp in tx.inputs:
-                            key = f"utxo:{inp.tx_out_id}".encode("utf-8")
-                            if utxo_txn.get(key):
-                                utxo_txn.delete(key)
-                                print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {inp.tx_out_id}.")
-                            else:
-                                print(f"[UTXOStorage.update_utxos] WARNING: Tried to remove non-existent UTXO {inp.tx_out_id}.")
-
-                        # Add new UTXOs for each output
+                    # Step 2: Add new UTXOs generated from block transactions
+                    for tx in block.transactions:
                         for idx, output in enumerate(tx.outputs):
                             utxo_id = f"{tx.tx_id}:{idx}"
-                            utxo_entry = {
+                            utxo_data = {
                                 "tx_out_id": utxo_id,
                                 "amount": float(output.amount),
                                 "script_pub_key": output.script_pub_key,
+                                "locked": getattr(output, "locked", False),
                                 "block_index": block.index
                             }
-                            key = f"utxo:{utxo_id}".encode("utf-8")
-                            utxo_txn.put(key, pickle.dumps(utxo_entry))
-                            history_key = f"history:{utxo_id}:{block.timestamp}".encode("utf-8")
-                            history_txn.put(history_key, pickle.dumps(utxo_entry))
-                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {utxo_id} with amount {output.amount}.")
-            print(f"[UTXOStorage.update_utxos] SUCCESS: UTXOs updated for Block {block.index}.")
+                            serialized_utxo = json.dumps(utxo_data).encode("utf-8")
+                            utxo_key = f"utxo:{utxo_id}".encode("utf-8")
+
+                            # Store new UTXO
+                            utxo_txn.put(utxo_key, serialized_utxo)
+
+                            # Save new UTXO in history database
+                            history_key = f"new_utxo:{utxo_id}:{block.timestamp}".encode("utf-8")
+                            history_txn.put(history_key, serialized_utxo)
+
+                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {utxo_id} amount {output.amount}")
+
+            print(f"[UTXOStorage.update_utxos] SUCCESS: UTXO databases updated for block {block.index}.")
+
         except Exception as e:
-            print(f"[UTXOStorage.update_utxos] ERROR: Failed to update UTXOs for Block {block.index}: {e}")
+            print(f"[UTXOStorage.update_utxos] ERROR: Failed updating UTXOs: {e}")
             raise
+
+
 
     def store_utxo(self, utxo_id: str, utxo_data: dict) -> bool:
         """
@@ -125,31 +164,10 @@ class UTXOStorage:
             print(f"[UTXOStorage.store_utxo] ERROR: Failed to store UTXO {utxo_id}: {e}")
             return False
 
-    def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
-        """
-        Retrieve a UTXO from LMDB.
-        Checks internal cache first, then queries the LMDB database.
-        """
-        try:
-            if tx_out_id in self._cache:
-                print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from cache.")
-                return TransactionOut.from_dict(self._cache[tx_out_id])
-            key = tx_out_id.encode("utf-8")
-            data = self.utxo_db.get(key)
-            if not data:
-                print(f"[UTXOStorage.get_utxo] WARNING: UTXO {tx_out_id} not found.")
-                return None
-            utxo_entry = json.loads(data.decode("utf-8"))
-            self._cache[tx_out_id] = utxo_entry
-            print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {tx_out_id} from storage and cached it.")
-            return TransactionOut.from_dict(utxo_entry)
-        except Exception as e:
-            print(f"[UTXOStorage.get_utxo] ERROR: UTXO retrieval failed for {tx_out_id}: {e}")
-            return None
 
 
 
-    def get_utxo(self, tx_out_id):
+    def get_utxos(self, tx_out_id):
         """Retrieve UTXO data and deserialize if necessary."""
         data = self.utxo_db.get(tx_out_id.encode("utf-8"))
         return Deserializer().deserialize(data) if data else None

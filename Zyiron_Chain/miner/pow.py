@@ -19,46 +19,35 @@ class PowManager:
     def perform_pow(self, block):
         """
         Executes the PoW hashing loop for the given block.
-        
         Continuously increments the block's nonce until the computed hash (converted
         to an integer) is lower than the block's difficulty target.
-        
-        Returns:
-            tuple: (final_hash_hex: str, final_nonce: int, total_attempts: int)
         """
         start_time = time.time()
-        last_update = start_time
         nonce = 0
         attempts = 0
 
-        print(f"[PowManager.perform_pow] START: Entering PoW loop for Block {block.index}. "
-              f"Target: {block.difficulty}")
+        # Debug: Start PoW loop
+        print(f"[PowManager.perform_pow] START: Entering PoW loop for Block {block.index}. Target: {block.difficulty}")
 
         while True:
             block.header.nonce = nonce
-            # Compute the block hash using our single hashing method (data processed as bytes)
             block_data_bytes = block.calculate_hash().encode()
             hash_bytes = Hashing.hash(block_data_bytes)
             hash_int = int.from_bytes(hash_bytes, byteorder='big')
-            hash_hex = hash_bytes.hex()
 
-            print(f"[PowManager.perform_pow] (Block {block.index}) Nonce: {nonce} | Attempts: {attempts} | "
-                  f"Hash (int): {hash_int} | Target: {block.difficulty}")
+            # Debug: Print progress every 2 seconds
+            if attempts % 1000 == 0:  # Print every 1000 attempts to reduce noise
+                elapsed = int(time.time() - start_time)
+                print(f"[PowManager.perform_pow] Progress: Block {block.index} | Nonce: {nonce} | Attempts: {attempts} | Elapsed: {elapsed}s")
 
             if hash_int < block.difficulty:
-                print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined with nonce {nonce}. "
-                      f"Final hash: {hash_hex} meets target.")
-                return hash_hex, nonce, attempts
+                # Success: Block mined
+                elapsed = int(time.time() - start_time)
+                print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined with nonce {nonce}. Final hash: {hash_bytes.hex()} | Time: {elapsed}s")
+                return hash_bytes.hex(), nonce, attempts
 
             nonce += 1
-            attempts += 1
-
-            current_time = time.time()
-            if current_time - last_update >= 2:
-                elapsed = int(current_time - start_time)
-                print(f"[PowManager.perform_pow] LIVE UPDATE: Block {block.index} | Nonce: {nonce} | "
-                      f"Attempts: {attempts} | Elapsed: {elapsed}s")
-                last_update = current_time
+        attempts += 1
 
     def adjust_difficulty(self, storage_manager):
         """

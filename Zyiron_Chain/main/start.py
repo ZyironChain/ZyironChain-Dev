@@ -42,14 +42,6 @@ def detailed_print(message: str):
     print(f"[START] {message}")
 
 class Start:
-    """
-    Main entry point for the blockchain project.
-
-    - Initializes all splitted storage modules individually.
-    - Creates the KeyManager, TransactionManager, Blockchain, and Miner.
-    - Provides methods to run basic blockchain operations.
-    """
-
     def __init__(self):
         detailed_print("Initializing blockchain project...")
         detailed_print(f"Network: {Constants.NETWORK}, Version: {Constants.VERSION}")
@@ -101,6 +93,7 @@ class Start:
             utxo_manager=utxo_manager,  # Pass the utxo_manager instance
             key_manager=self.key_manager
         )
+
         # 4. Initialize the Blockchain
         detailed_print("Initializing Blockchain...")
         self.blockchain = Blockchain(
@@ -112,13 +105,14 @@ class Start:
             transaction_manager=self.transaction_manager,
             key_manager=self.key_manager
         )
+
         # 5. Initialize Miner
         detailed_print("Initializing Miner...")
         self.miner = Miner(
-            blockchain=self.blockchain,
+            block_manager=self.blockchain,  # Pass the Blockchain instance as block_manager
             transaction_manager=self.transaction_manager,
-            key_manager=self.key_manager,
-            mempool_storage=self.mempool_storage
+            storage_manager=self.block_storage,  # Pass the storage manager
+            key_manager=self.key_manager
         )
 
     def load_blockchain(self):

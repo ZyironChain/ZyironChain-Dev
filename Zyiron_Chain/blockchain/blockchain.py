@@ -11,7 +11,7 @@ Blockchain Class
 
 import sys
 import os
-
+from typing import List, Optional
 # Adjust Python path for project structure
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 sys.path.append(project_root)
@@ -30,6 +30,7 @@ from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # Hypothe
 
 # Constants might be needed for difficulty, chain name, etc.
 from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.miner.pow import PowManager
 
 
 class Blockchain:
@@ -41,21 +42,43 @@ class Blockchain:
       - Provides high-level methods for adding blocks, retrieving blocks, etc.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        block_storage=None,     # For retrieving block data if needed
+        block_metadata=None,    # For retrieving block headers / ordering
+        tx_storage=None,        # For checking transaction existence, storing TX data
+        utxo_storage=None,      # For managing UTXOs
+        wallet_index=None,      # For wallet-related operations
+        transaction_manager=None,  # For transaction management
+        key_manager=None        # For key management
+    ):
         """
-        Initialize the Blockchain:
-         - Set up references to the new splitted storage modules (block_storage, blockmetadata).
-         - Load existing chain from storage. If none found, create a genesis block.
-         - Initialize a BlockManager to handle advanced block tasks (like difficulty).
+        Initialize the Blockchain.
+
+        :param block_storage: Module handling full block storage (WholeBlockData).
+        :param block_metadata: Module handling block metadata (BlockMetadata).
+        :param tx_storage: Module for transaction indexing (TxStorage).
+        :param utxo_storage: Module for UTXO management (UTXOStorage).
+        :param wallet_index: Module for wallet-related operations (WalletStorage).
+        :param transaction_manager: Module for transaction management (TransactionManager).
+        :param key_manager: Module for key management (KeyManager).
         """
         print("[Blockchain.__init__] Initializing Blockchain...")
 
         # Storage modules for blocks and metadata
-        self.block_storage = WholeBlockData()
-        self.block_metadata = BlockMetadata()
+        self.block_storage = block_storage or WholeBlockData()
+        self.block_metadata = block_metadata or BlockMetadata()
+        self.tx_storage = tx_storage
+        self.utxo_storage = utxo_storage
+        self.wallet_index = wallet_index
+        self.transaction_manager = transaction_manager
+        self.key_manager = key_manager
 
         # In-memory chain list
         self.chain = []
+
+        # Initialize PowManager for proof-of-work operations
+        self.pow_manager = PowManager()
 
         # Attempt to load chain from storage
         self.load_chain_from_storage()
@@ -64,136 +87,139 @@ class Blockchain:
         if not self.chain:
             print("[Blockchain.__init__] No existing blocks found. Creating Genesis block.")
             # Use GenesisBlockManager to create a new genesis block
-            genesis_block = GenesisBlockManager().create_genesis_block()
+            genesis_block_manager = GenesisBlockManager(
+                block_storage=self.block_storage,
+                block_metadata=self.block_metadata,
+                key_manager=self.key_manager,
+                chain=self.chain,
+                block_manager=self
+            )
+            genesis_block = genesis_block_manager.create_and_mine_genesis_block()
             self.add_block(genesis_block, is_genesis=True)
         else:
             print(f"[Blockchain.__init__] Loaded {len(self.chain)} blocks from storage.")
 
-        # Initialize BlockManager with references (the block manager might need the chain)
-        # transaction_manager can be None or replaced if needed
-        self.block_manager = BlockManager(self, self.block_storage, None)
-
-    def load_chain_from_storage(self):
+    def load_chain_from_storage(self) -> None:
         """
-        Load all blocks from block storage & metadata into self.chain.
+        Load the blockchain from storage into memory.
         """
-        print("[Blockchain.load_chain_from_storage] Loading chain from block storage...")
+        try:
+            print("[Blockchain.load_chain_from_storage] Loading chain from storage...")
+            stored_blocks = self.block_metadata.get_all_blocks()
+            if stored_blocks:
+                for block_data in stored_blocks:
+                    block = Block.from_dict(block_data)
+                    self.chain.append(block)
+                print(f"[Blockchain.load_chain_from_storage] Loaded {len(self.chain)} blocks from storage.")
+            else:
+                print("[Blockchain.load_chain_from_storage] No blocks found in storage.")
+        except Exception as e:
+            print(f"[Blockchain.load_chain_from_storage] ERROR: Failed to load chain from storage: {e}")
 
-        # We rely on block_metadata to get block heights / ordering, then fetch full blocks from block_storage
-        stored_blocks = self.block_metadata.get_all_block_headers()
-        if not stored_blocks:
-            print("[Blockchain.load_chain_from_storage] No blocks found in metadata. Possibly empty chain.")
-            return
-
-        # Sort blocks by index to rebuild chain in correct order
-        sorted_by_index = sorted(stored_blocks, key=lambda b: b["index"])
-        for meta in sorted_by_index:
-            block_hash = meta.get("hash")
-            if not block_hash:
-                print(f"[Blockchain.load_chain_from_storage] WARNING: Block metadata missing 'hash' for index {meta.get('index')}. Skipping.")
-                continue
-
-            # Fetch the full block from block_storage
-            block_obj = self.block_storage.load_block_by_hash(block_hash)
-            if not block_obj:
-                print(f"[Blockchain.load_chain_from_storage] ERROR: Could not load block data for hash {block_hash}.")
-                continue
-
-            # Rebuild the block object from dictionary
-            loaded_block = Block.from_dict(block_obj)
-            self.chain.append(loaded_block)
-
-        print(f"[Blockchain.load_chain_from_storage] Finished loading. Found {len(self.chain)} blocks in total.")
-
-    def add_block(self, new_block: Block, is_genesis=False):
+    def add_block(self, block: Block, is_genesis: bool = False) -> bool:
         """
-        Add a block to the chain (both in-memory and storage).
-        If not genesis, do minimal checks like ensuring previous hash matches last block's hash.
+        Add a block to the blockchain.
+        - Validates the block before adding.
+        - Updates storage modules.
+        - Updates the in-memory chain.
+
+        :param block: The block to add.
+        :param is_genesis: Whether the block is the genesis block.
+        :return: True if the block was added successfully, False otherwise.
         """
-        print(f"[Blockchain.add_block] Adding Block #{new_block.index} to chain...")
+        try:
+            print(f"[Blockchain.add_block] Adding Block {block.index} to the chain...")
 
-        # If it's not the genesis block, ensure previous hash matches the last chain block
-        if not is_genesis:
-            if not self.chain:
-                print("[Blockchain.add_block] ERROR: No existing chain, but block is not genesis.")
-                return
-            last_block = self.chain[-1]
-            if new_block.previous_hash != last_block.hash:
-                print("[Blockchain.add_block] ERROR: new_block.previous_hash != last_block.hash. Cannot add block.")
-                return
+            # Validate the block (skip validation for genesis block)
+            if not is_genesis and not self.validate_block(block):
+                print(f"[Blockchain.add_block] ERROR: Block {block.index} failed validation.")
+                return False
 
-        # Persist the block in the new splitted storage modules
-        self.block_storage.store_block(new_block)
-        self.block_metadata.store_block_header(new_block)  # Update metadata as well
-        self.chain.append(new_block)
+            # Add block to storage via BlockMetadata (handles both metadata and block data)
+            self.block_metadata.store_block(block, block.difficulty)
 
-        print(f"[Blockchain.add_block] SUCCESS: Block #{new_block.index} added. Chain length: {len(self.chain)}")
+            # Add block to in-memory chain
+            self.chain.append(block)
+            print(f"[Blockchain.add_block] SUCCESS: Block {block.index} added to the chain.")
+            return True
+        except Exception as e:
+            print(f"[Blockchain.add_block] ERROR: Failed to add Block {block.index}: {e}")
+            return False
 
-    def get_latest_block(self) -> Block:
+    def validate_block(self, block: Block) -> bool:
         """
-        Return the last block in the chain, or None if empty.
+        Validate a block before adding it to the blockchain.
+        - Checks proof-of-work.
+        - Ensures the block links to the previous block.
+        - Validates all transactions in the block.
+
+        :param block: The block to validate.
+        :return: True if the block is valid, False otherwise.
         """
-        if not self.chain:
-            print("[Blockchain.get_latest_block] WARNING: Chain is empty.")
-            return None
-        return self.chain[-1]
+        try:
+            print(f"[Blockchain.validate_block] Validating Block {block.index}...")
+
+            # Check proof-of-work
+            if not self.pow_manager.validate_proof_of_work(block):
+                print(f"[Blockchain.validate_block] ERROR: Block {block.index} failed proof-of-work validation.")
+                return False
+
+            # Ensure the block links to the previous block
+            if len(self.chain) > 0:
+                last_block = self.chain[-1]
+                if block.previous_hash != last_block.hash:
+                    print(f"[Blockchain.validate_block] ERROR: Block {block.index} has an invalid previous hash.")
+                    return False
+
+            # Validate all transactions in the block
+            for tx in block.transactions:
+                if not self.transaction_manager.validate_transaction(tx):
+                    print(f"[Blockchain.validate_block] ERROR: Transaction {tx.tx_id} in Block {block.index} is invalid.")
+                    return False
+
+            print(f"[Blockchain.validate_block] SUCCESS: Block {block.index} validated.")
+            return True
+        except Exception as e:
+            print(f"[Blockchain.validate_block] ERROR: Failed to validate Block {block.index}: {e}")
+            return False
+
+    def get_latest_block(self) -> Optional[Block]:
+        """
+        Retrieve the latest block in the blockchain.
+
+        :return: The latest block, or None if the chain is empty.
+        """
+        if self.chain:
+            return self.chain[-1]
+        return None
 
     def validate_chain(self) -> bool:
         """
-        Validate the entire chain in memory:
-         - Check each block's previous_hash matches the last block's hash.
-         - Optionally check difficulty, merkle root, etc. if needed.
-        """
-        print("[Blockchain.validate_chain] Validating entire in-memory chain...")
+        Validate the entire blockchain.
+        - Ensures each block links to the previous block.
+        - Validates all transactions in each block.
 
-        if not self.chain:
-            print("[Blockchain.validate_chain] Chain is empty, considered invalid or incomplete.")
-            return False
-
-        for i in range(1, len(self.chain)):
-            current_block = self.chain[i]
-            prev_block = self.chain[i - 1]
-
-            # Check previous_hash link
-            if current_block.previous_hash != prev_block.hash:
-                print(f"[Blockchain.validate_chain] ERROR: Block #{current_block.index} previous_hash mismatch.")
-                return False
-
-            # Recalculate block hash and compare
-            recalculated_hash = current_block.calculate_hash()
-            if recalculated_hash != current_block.hash:
-                print(f"[Blockchain.validate_chain] ERROR: Block #{current_block.index} hash mismatch. Expected {current_block.hash}, got {recalculated_hash}.")
-                return False
-
-        print("[Blockchain.validate_chain] SUCCESS: Chain is valid.")
-        return True
-
-    def get_block_by_index(self, index: int) -> Block:
-        """
-        Return the block at the given index from the in-memory chain or None if out of range.
-        """
-        for blk in self.chain:
-            if blk.index == index:
-                return blk
-        print(f"[Blockchain.get_block_by_index] No block found at index {index}.")
-        return None
-
-    def __repr__(self):
-        return f"<Blockchain length={len(self.chain)} network={Constants.NETWORK}>"
-
-    def _get_chain_height(self) -> int:
-        """
-        Example helper to retrieve chain height from block metadata.
-        If your blockmetadata has a different method, adjust accordingly.
+        :return: True if the blockchain is valid, False otherwise.
         """
         try:
-            # block_metadata might have a method get_highest_block_index() or similar
-            # Example: highest_block = self.block_metadata.get_latest_block_header()
-            all_headers = self.block_metadata.get_all_block_headers()
-            if not all_headers:
-                return 0
-            highest_index = max(h["index"] for h in all_headers if "index" in h)
-            return highest_index + 1
+            print("[Blockchain.validate_chain] Validating blockchain...")
+            for i in range(1, len(self.chain)):
+                current_block = self.chain[i]
+                previous_block = self.chain[i - 1]
+
+                # Check block linkage
+                if current_block.previous_hash != previous_block.hash:
+                    print(f"[Blockchain.validate_chain] ERROR: Block {current_block.index} has an invalid previous hash.")
+                    return False
+
+                # Validate all transactions in the block
+                for tx in current_block.transactions:
+                    if not self.transaction_manager.validate_transaction(tx):
+                        print(f"[Blockchain.validate_chain] ERROR: Transaction {tx.tx_id} in Block {current_block.index} is invalid.")
+                        return False
+
+            print("[Blockchain.validate_chain] SUCCESS: Blockchain validated.")
+            return True
         except Exception as e:
-            print(f"[TransactionManager._get_chain_height] ERROR: {e}")
-            return 0
+            print(f"[Blockchain.validate_chain] ERROR: Failed to validate blockchain: {e}")
+            return False

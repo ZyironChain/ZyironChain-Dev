@@ -38,7 +38,6 @@ def get_coinbase_tx():
 from Zyiron_Chain.utils.deserializer import Deserializer
 
 
-
 class Block:
     """
     A single Block in the blockchain, containing:
@@ -113,7 +112,6 @@ class Block:
             "miner_address": self.miner_address
         }
 
-
     @classmethod
     def from_bytes(cls, block_bytes):
         """Deserialize a block from bytes."""
@@ -122,21 +120,15 @@ class Block:
 
     def calculate_hash(self) -> str:
         """
-        Calculate the block's hash by concatenating header fields and applying
-        single SHA3-384 hashing. Returns a hex string.
+        Calculate the block's hash (silence detailed prints during mining)
         """
-        print("[Block.calculate_hash] Calculating block hash from header fields...")
         header_str = (
             f"{self.version}{self.index}{self.previous_hash}"
             f"{self.merkle_root}{self.timestamp}{self.nonce}"
             f"{self.difficulty}{self.miner_address}"
         )
         header_bytes = header_str.encode("utf-8")
-
-        # Single SHA3-384 hashing (Hashing.hash returns bytes)
-        block_hash = Hashing.hash(header_bytes).hex()
-        print(f"[Block.calculate_hash] Computed hash: {block_hash}")
-        return block_hash
+        return Hashing.hash(header_bytes).hex()
 
     def _compute_merkle_root(self) -> str:
         """
@@ -184,17 +176,19 @@ class Block:
         """
         print("[Block.to_dict] Serializing block to dictionary.")
         return {
-            "index": self.index,
-            "previous_hash": self.previous_hash,
+            "header": {
+                "version": self.version,
+                "index": self.index,
+                "previous_hash": self.previous_hash,
+                "merkle_root": self.merkle_root,
+                "timestamp": self.timestamp,
+                "nonce": self.nonce,
+                "difficulty": self.difficulty,
+                "miner_address": self.miner_address,
+            },
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
-            "timestamp": self.timestamp,
-            "nonce": self.nonce,
-            "difficulty": self.difficulty,
-            "miner_address": self.miner_address,
-            "version": self.version,
-            "merkle_root": self.merkle_root,
             "hash": self.hash
         }
 

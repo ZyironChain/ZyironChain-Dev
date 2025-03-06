@@ -17,36 +17,34 @@ import hashlib
 
 class Hashing:
     """
-    Centralized hashing utilities for the blockchain system.
-    Always uses single SHA3-384 hashing and returns the hash as bytes.
-    All input data must be provided as bytes.
+    Utility class for hashing operations using SHA3-384.
     """
+    DEBUG = False  # Set to False to disable debug prints
 
     @staticmethod
     def sha3_384(data: bytes) -> bytes:
         """
-        Compute a single SHA3-384 hash.
+        Compute the SHA3-384 hash of the input data.
 
-        :param data: Input data in bytes format.
-        :return: SHA3-384 hashed output as bytes.
-        """
-        try:
-            # Compute hash and get digest in bytes
-            result = hashlib.sha3_384(data).digest()
-            print(f"[Hashing.sha3_384] Successfully computed hash for data (length={len(data)}).")
-            return result
-        except Exception as e:
-            print(f"[Hashing.sha3_384] ERROR: Failed to compute hash. Exception: {e}")
-            raise
-
-    @classmethod
-    def hash(cls, data: bytes) -> bytes:
-        """
-        Compute a single SHA3-384 hash for the input data using the single hashing method.
-        This method ensures that the output is always in bytes.
-
-        :param data: Input data in bytes format.
+        :param data: Input data as bytes.
         :return: SHA3-384 hash as bytes.
         """
-        print(f"[Hashing.hash] Called with data length: {len(data)} bytes.")
-        return cls.sha3_384(data)
+        if not isinstance(data, bytes):
+            raise TypeError("Input data must be of type bytes.")
+        if Hashing.DEBUG:
+            print(f"[Hashing.sha3_384] Successfully computed hash for data (length={len(data)}).")
+        return hashlib.sha3_384(data).digest()
+
+    @staticmethod
+    def hash(data: bytes) -> bytes:
+        """
+        Compute the hash of the input data using SHA3-384.
+
+        :param data: Input data as bytes.
+        :return: SHA3-384 hash as bytes.
+        """
+        if not isinstance(data, bytes):
+            raise TypeError("Input data must be of type bytes.")
+        if Hashing.DEBUG:
+            print(f"[Hashing.hash] Called with data length: {len(data)} bytes.")
+        return Hashing.sha3_384(data)

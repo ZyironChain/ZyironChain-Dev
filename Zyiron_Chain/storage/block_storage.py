@@ -82,6 +82,8 @@ class WholeBlockData:
 
 
 
+
+
     def create_block_data_file(self, block: Block):
         """
         Append a block to the block.data file in binary format.

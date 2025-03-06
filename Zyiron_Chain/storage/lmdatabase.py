@@ -113,6 +113,35 @@ class LMDBManager:
     # Potentially remove or rename this if you don’t need to re-initialize DBs
     # after the constructor. If no code calls it, you can safely remove it.
     # -------------------------------------------------------------------------
+
+
+    def get_all_transactions(self) -> List[Dict]:
+        """
+        Retrieve all transactions from the LMDB database.
+        Returns a list of transaction dictionaries.
+        """
+        transactions = []
+        try:
+            with self.env.begin() as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    try:
+                        key_str = key.decode("utf-8")
+                        if key_str.startswith("tx:"):  # Filter for transaction keys
+                            tx_data = value.decode("utf-8")
+                            tx_dict = json.loads(tx_data)
+                            transactions.append(tx_dict)
+                    except Exception as e:
+                        print(f"[LMDBManager.get_all_transactions] ERROR: Failed to process key {key}: {e}")
+            print(f"[LMDBManager.get_all_transactions] INFO: Retrieved {len(transactions)} transactions.")
+            return transactions
+        except Exception as e:
+            print(f"[LMDBManager.get_all_transactions] ERROR: Failed to retrieve transactions: {e}")
+            return []
+
+
+
+
     def _initialize_databases(self):
         """
         (Optional) Re-initializes the LMDB databases.
