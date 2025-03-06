@@ -298,3 +298,11 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_chain] ERROR: Failed to validate blockchain: {e}")
             return False
+        
+
+    def purge_chain():
+        """
+        Placeholder function for purging the blockchain.
+        This will be implemented later to handle full blockchain resets.
+        """
+        pass

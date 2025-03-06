@@ -115,10 +115,16 @@ class GenesisBlockManager:
 
 
     def ensure_genesis_block(self):
+        """
+        Ensures the Genesis block exists in storage.
+        - If a valid Genesis block exists, it is loaded.
+        - If not, a new Genesis block is created (or a predefined GENESIS_HASH is used),
+        mined, and stored in the correct databases.
+        """
         try:
             stored_blocks = self.block_metadata.get_all_blocks()
             if stored_blocks:
-                genesis_data = Deserializer().deserialize(stored_blocks[0])  # 🔹 Auto-deserialize data
+                genesis_data = Deserializer().deserialize(stored_blocks[0])
 
                 header = genesis_data.get("header", {})
                 if not isinstance(header, dict):
@@ -147,7 +153,7 @@ class GenesisBlockManager:
                 genesis_block = Block(
                     index=0,
                     previous_hash=Constants.ZERO_HASH,
-                    transactions=[],  # Optionally, add a coinbase transaction if desired
+                    transactions=[],
                     timestamp=int(time.time()),
                     nonce=0,
                     difficulty=Constants.GENESIS_TARGET,
@@ -157,9 +163,13 @@ class GenesisBlockManager:
             else:
                 genesis_block = self.create_and_mine_genesis_block()
 
-            # Store the genesis block using the new storage modules
-            self.block_metadata.store_block(genesis_block, Constants.GENESIS_TARGET)
-            self.block_storage.store_block(genesis_block, Constants.GENESIS_TARGET)
+            # ✅ **Fix: Correct `_serialize_to_bytes()` call**
+            serialized_block = self.block_metadata._serialize_to_bytes(genesis_block.to_dict())
+
+            # ✅ **Fix: Correct Genesis Block Storage**
+            self.block_metadata.store_block(serialized_block)
+            self.block_storage.store_block(serialized_block)
+
             self.chain.append(genesis_block)
             self.block_manager.chain.append(genesis_block)
             print(f"[GenesisBlockManager.ensure_genesis_block] SUCCESS: New Genesis block created with hash: {genesis_block.hash}")
@@ -167,8 +177,16 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager.ensure_genesis_block] ERROR: Genesis initialization failed: {e}")
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Purging corrupted chain data...")
-            self.block_metadata.purge_chain()
+
+            # ✅ **Fix: Correct `purge_chain()` call**
+            if hasattr(self.block_metadata, "purge_chain") and callable(self.block_metadata.purge_chain):
+                self.block_metadata.purge_chain()
+            else:
+                print("[GenesisBlockManager.ensure_genesis_block] WARNING: `purge_chain` method not found in `BlockMetadata`.")
+
             raise
+
+
 
     def validate_genesis_block(self, genesis_block) -> bool:
         """

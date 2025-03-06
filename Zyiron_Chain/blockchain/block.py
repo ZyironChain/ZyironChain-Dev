@@ -91,9 +91,9 @@ class Block:
         self.merkle_root = self._compute_merkle_root()
         print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")
 
-        # Calculate the block hash
-        self.hash = self.calculate_hash()
-        print(f"[Block.__init__] Block #{self.index} hash computed: {self.hash}")
+        # ✅ **Fix: Hash is now preserved after mining and not re-computed**
+        self.hash = None  # Will be assigned only when mined
+
 
     def get_header(self) -> dict:
         """

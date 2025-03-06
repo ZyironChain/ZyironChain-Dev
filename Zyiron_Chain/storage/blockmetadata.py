@@ -401,37 +401,6 @@ class BlockMetadata:
             raise
 
 
-    def _serialize_to_bytes(data) -> bytes:
-        """
-        Converts data into a JSON-encoded byte format.
-        Ensures all storage and retrieval operations use bytes.
-        """
-        if isinstance(data, dict):
-            return json.dumps(data, ensure_ascii=False).encode("utf-8")
-        elif isinstance(data, str):
-            return data.encode("utf-8")
-        elif isinstance(data, bytes):
-            return data  # Already bytes, return as is
-        else:
-            raise TypeError(f"Unsupported data type for serialization: {type(data)}")
-
-
-
-
-    def _deserialize_from_bytes(data: bytes):
-        """
-        Decodes a JSON-encoded byte format back into a dictionary or string.
-        Ensures correct retrieval from storage.
-        """
-        if isinstance(data, bytes):
-            try:
-                return json.loads(data.decode("utf-8"))  # Convert bytes to dict
-            except json.JSONDecodeError:
-                return data.decode("utf-8")  # Convert to string if not JSON
-        return data  # Return as is if not bytes
-            
-
-
 
     def get_block_from_data_file(self, offset: int):
         """
@@ -846,3 +815,41 @@ class BlockMetadata:
             print(f"[BlockMetadata._store_block_metadata] INFO: Stored metadata for block {block.hash}: {metadata}")
         except Exception as e:
             print(f"[BlockMetadata._store_block_metadata] ERROR: Failed to store block metadata: {e}")
+
+
+
+    def purge_chain(self):
+        """Purges corrupted blockchain data."""
+        print("[BlockMetadata.purge_chain] .......")
+
+    @staticmethod
+    def _serialize_to_bytes(data) -> bytes:
+        """
+        Converts data into a JSON-encoded byte format.
+        Ensures all storage and retrieval operations use bytes.
+        """
+        if isinstance(data, dict):
+            return json.dumps(data, ensure_ascii=False).encode("utf-8")
+        elif isinstance(data, str):
+            return data.encode("utf-8")
+        elif isinstance(data, bytes):
+            return data  # Already bytes, return as is
+        else:
+            raise TypeError(f"Unsupported data type for serialization: {type(data)}")
+
+    @staticmethod
+    def _deserialize_from_bytes(data: bytes):
+        """
+        Decodes a JSON-encoded byte format back into a dictionary or string.
+        Ensures correct retrieval from storage.
+        """
+        if isinstance(data, bytes):
+            try:
+                return json.loads(data.decode("utf-8"))  # Convert bytes to dict
+            except json.JSONDecodeError:
+                return data.decode("utf-8")  # Convert to string if not JSON
+        return data  # Return as is if not bytes
+
+
+
+    
