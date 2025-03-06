@@ -38,6 +38,7 @@ from Zyiron_Chain.keys.key_manager import KeyManager
 from Zyiron_Chain.storage.lmdatabase import LMDBManager  # For LMDB manager creation
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockManager
+from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # ✅ Import GenesisBlockManager
 
 def detailed_print(message: str):
     """Helper function for detailed print-based debugging."""
@@ -73,8 +74,7 @@ class Start:
         from Zyiron_Chain.network.peerconstant import PeerConstants
         peer_constants = PeerConstants()  # This will validate the network and provide PEER_USER_ID
         detailed_print(f"Initializing UTXOManager with peer id '{peer_constants.PEER_USER_ID}'...")
-        # UTXOManager now takes only the storage_manager as its parameter.
-        from Zyiron_Chain.storage.utxostorage import UTXOStorage  # ensure correct import
+        
         # Create UTXOManager
         utxo_manager = UTXOManager(utxo_db)
 
@@ -118,17 +118,28 @@ class Start:
             transaction_manager=self.transaction_manager
         )
 
-        # 5. Initialize Miner
+        # 4b. Initialize GenesisBlockManager ✅
+        detailed_print("Initializing GenesisBlockManager...")
+        self.genesis_block_manager = GenesisBlockManager(
+            block_storage=self.block_storage,
+            block_metadata=self.block_metadata,
+            key_manager=self.key_manager,
+            chain=self.block_manager.chain,
+            block_manager=self.block_manager
+        )
+
+        # 5. Initialize Miner ✅ Ensure block_storage is passed
         detailed_print("Initializing Miner...")
         self.miner = Miner(
             blockchain=self.blockchain,
             block_manager=self.block_manager,
-            block_metadata=self.block_metadata,  # <-- explicitly pass this
+            block_metadata=self.block_metadata,
+            block_storage=self.block_storage,  # ✅ Ensure WholeBlockData is passed
             transaction_manager=self.transaction_manager,
             key_manager=self.key_manager,
-            mempool_storage=self.mempool_storage
+            mempool_storage=self.mempool_storage,
+            genesis_block_manager=self.genesis_block_manager  # ✅ Pass GenesisBlockManager
         )
-
 
     def load_blockchain(self):
         detailed_print("Loading blockchain data from storage...")
@@ -147,9 +158,6 @@ class Start:
 
     def send_sample_transaction(self):
         detailed_print("Preparing sample transaction...")
-        # Replace these dummy values with real inputs/outputs from your application if needed
-        sample_inputs = [{"tx_id": "dummy_tx_id1", "amount": "1.0"}]
-        sample_outputs = [{"address": "sample_recipient_address", "amount": "0.9"}]
         try:
             tx_data = self.transaction_manager.create_transaction(
                 recipient_script_pub_key="sample_recipient_address",
@@ -175,7 +183,6 @@ class Start:
         self.send_sample_transaction()
         self.start_mining()
         detailed_print("----- Blockchain Operations Completed -----")
-
 
 if __name__ == "__main__":
     starter = Start()

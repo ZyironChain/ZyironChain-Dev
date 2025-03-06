@@ -26,18 +26,40 @@ from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.miner.pow import PowManager
 from Zyiron_Chain.storage.blockmetadata import BlockMetadata
 from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager
+from Zyiron_Chain.storage.block_storage import WholeBlockData
+
+
+import sys
+import os
+import time
+import json
+from threading import Lock
+from decimal import Decimal
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
+from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+from Zyiron_Chain.blockchain.block import Block
+from Zyiron_Chain.blockchain.block_manager import BlockManager
+from Zyiron_Chain.miner.pow import PowManager
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+from Zyiron_Chain.storage.block_storage import WholeBlockData  # ✅ Corrected Import
+from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager
 
 class Miner:
     def __init__(
         self,
         blockchain,
         block_manager,
-        block_metadata,  # ✅ Keep BlockMetadata
-        block_storage,   # ✅ Ensure BlockStorage is properly passed
+        block_metadata,  
+        block_storage,   # ✅ Uses WholeBlockData correctly
         transaction_manager,
         key_manager,
         mempool_storage,
-        genesis_block_manager=None  # ✅ Ensure GenesisBlockManager is initialized
+        genesis_block_manager=None  
     ):
         """
         Initialize the Miner.
@@ -45,7 +67,7 @@ class Miner:
         :param blockchain: The blockchain instance.
         :param block_manager: The BlockManager instance.
         :param block_metadata: The BlockMetadata instance for LMDB interaction.
-        :param block_storage: The BlockStorage instance for full block data.
+        :param block_storage: The WholeBlockData instance for full block data. ✅ Fixed
         :param transaction_manager: The transaction manager instance.
         :param key_manager: The key manager instance.
         :param mempool_storage: The mempool storage instance.
@@ -61,7 +83,7 @@ class Miner:
         if not block_metadata:
             raise ValueError("[Miner.__init__] ERROR: `block_metadata` instance is required.")
         if not block_storage:
-            raise ValueError("[Miner.__init__] ERROR: `block_storage` instance is required.")  # ✅ Ensure BlockStorage is required
+            raise ValueError("[Miner.__init__] ERROR: `block_storage` (WholeBlockData) instance is required.")  
         if not transaction_manager:
             raise ValueError("[Miner.__init__] ERROR: `transaction_manager` instance is required.")
         if not key_manager:
@@ -73,16 +95,16 @@ class Miner:
         self.blockchain = blockchain
         self.block_manager = block_manager
         self.block_metadata = block_metadata
-        self.block_storage = block_storage  # ✅ Ensure BlockStorage is assigned
+        self.block_storage = block_storage  # ✅ Uses WholeBlockData
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.mempool_storage = mempool_storage
-        self.genesis_block_manager = genesis_block_manager  # ✅ Assign GenesisBlockManager
+        self.genesis_block_manager = genesis_block_manager  
 
-        # Dynamically set current block size from Constants (initially minimum size)
+        # Dynamically set current block size from Constants
         self.current_block_size = Constants.MIN_BLOCK_SIZE_BYTES / (1024 * 1024)
         self.network = Constants.NETWORK
-        self.chain = self.block_manager.chain  # Ensure Miner references blockchain chain correctly
+        self.chain = self.block_manager.chain  
 
         # Initialize mining lock
         self._mining_lock = Lock()
@@ -92,7 +114,7 @@ class Miner:
         print(f"[Miner.__init__] INFO: Current block size set to {self.current_block_size:.2f} MB from Constants.")
         print(f"[Miner.__init__] INFO: Miner initialized on {self.network.upper()}.")
 
-        
+
     def _calculate_block_size(self):
         """
         Dynamically adjust block size based on mempool transaction volume and allocations from Constants.
@@ -410,7 +432,15 @@ class Miner:
 
 
 
-
+    @property
+    def mining_lock(self):
+        """
+        Property to ensure thread-safe mining operations.
+        """
+        if not hasattr(self, "_mining_lock"):
+            print("[Miner.mining_lock] INFO: Initializing mining lock.")
+            self._mining_lock = Lock()
+        return self._mining_lock
 
 
 
@@ -558,14 +588,3 @@ class Miner:
             except Exception as e:
                 print(f"[Miner.mine_block] ERROR: Mining failed: {e}. Stopping mining.")
                 return None
-
-
-    @property
-    def mining_lock(self):
-        """
-        Property to ensure thread-safe mining operations.
-        """
-        if not hasattr(self, "_mining_lock"):
-            print("[Miner.mining_lock] INFO: Initializing mining lock.")
-            self._mining_lock = Lock()
-        return self._mining_lock
