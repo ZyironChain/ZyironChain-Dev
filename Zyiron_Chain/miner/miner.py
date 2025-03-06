@@ -15,41 +15,87 @@ from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.blockchain.block import Block
-
+from Zyiron_Chain.blockchain.block_manager import BlockManager
 # Ensure this is at the very top of your script, before any other code
-
+from Zyiron_Chain.miner.pow import PowManager
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+import time
+from threading import Lock
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.block import Block
+from Zyiron_Chain.miner.pow import PowManager
+from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager
 
 class Miner:
-    def __init__(self, blockchain, transaction_manager, key_manager, mempool_storage):
+    def __init__(
+        self,
+        blockchain,
+        block_manager,
+        block_metadata,  # ✅ Keep BlockMetadata
+        block_storage,   # ✅ Ensure BlockStorage is properly passed
+        transaction_manager,
+        key_manager,
+        mempool_storage,
+        genesis_block_manager=None  # ✅ Ensure GenesisBlockManager is initialized
+    ):
         """
         Initialize the Miner.
 
         :param blockchain: The blockchain instance.
+        :param block_manager: The BlockManager instance.
+        :param block_metadata: The BlockMetadata instance for LMDB interaction.
+        :param block_storage: The BlockStorage instance for full block data.
         :param transaction_manager: The transaction manager instance.
         :param key_manager: The key manager instance.
         :param mempool_storage: The mempool storage instance.
+        :param genesis_block_manager: The GenesisBlockManager instance (optional).
         """
+        print("[Miner.__init__] INFO: Initializing Miner...")
+
+        # Validate required components
+        if not blockchain:
+            raise ValueError("[Miner.__init__] ERROR: `blockchain` instance is required.")
+        if not block_manager:
+            raise ValueError("[Miner.__init__] ERROR: `block_manager` instance is required.")
+        if not block_metadata:
+            raise ValueError("[Miner.__init__] ERROR: `block_metadata` instance is required.")
+        if not block_storage:
+            raise ValueError("[Miner.__init__] ERROR: `block_storage` instance is required.")  # ✅ Ensure BlockStorage is required
+        if not transaction_manager:
+            raise ValueError("[Miner.__init__] ERROR: `transaction_manager` instance is required.")
+        if not key_manager:
+            raise ValueError("[Miner.__init__] ERROR: `key_manager` instance is required.")
+        if not mempool_storage:
+            raise ValueError("[Miner.__init__] ERROR: `mempool_storage` instance is required.")
+
+        # Assign instances
         self.blockchain = blockchain
+        self.block_manager = block_manager
+        self.block_metadata = block_metadata
+        self.block_storage = block_storage  # ✅ Ensure BlockStorage is assigned
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.mempool_storage = mempool_storage
-        print("[Miner.__init__] INFO: Miner initialized successfully.")
-        
-        # Fetch the blockchain reference dynamically
-        self.blockchain = self.block_manager.blockchain
+        self.genesis_block_manager = genesis_block_manager  # ✅ Assign GenesisBlockManager
 
-        # Fetch the active network dynamically from Constants
+        # Dynamically set current block size from Constants (initially minimum size)
+        self.current_block_size = Constants.MIN_BLOCK_SIZE_BYTES / (1024 * 1024)
         self.network = Constants.NETWORK
+        self.chain = self.block_manager.chain  # Ensure Miner references blockchain chain correctly
 
-        self.current_block_size = 1.0  # Set initial block size dynamically
-        self.chain = self.block_manager.chain  # Ensure Miner has reference to blockchain
+        # Initialize mining lock
+        self._mining_lock = Lock()
+        print("[Miner.__init__] INFO: Mining lock initialized.")
 
+        print("[Miner.__init__] INFO: Miner initialized successfully.")
+        print(f"[Miner.__init__] INFO: Current block size set to {self.current_block_size:.2f} MB from Constants.")
         print(f"[Miner.__init__] INFO: Miner initialized on {self.network.upper()}.")
 
+        
     def _calculate_block_size(self):
         """
-        Dynamically adjust block size based on mempool transaction volume and allocation settings.
-        Processes block size in MB.
+        Dynamically adjust block size based on mempool transaction volume and allocations from Constants.
         """
         try:
             pending_txs = self.transaction_manager.mempool.get_pending_transactions(
@@ -59,49 +105,67 @@ class Miner:
                 print("[Miner._calculate_block_size] ERROR: Invalid transaction list retrieved from mempool.")
                 return
 
-            count = len(pending_txs)
-            # Use Constants for block size settings (converted to MB)
-            min_tx, max_tx = 1000, 50000
-            min_size = Constants.MIN_BLOCK_SIZE_BYTES / (1024 * 1024)
-            max_size = Constants.MAX_BLOCK_SIZE_BYTES / (1024 * 1024)
+            tx_count = len(pending_txs)
+            
+            # Explicitly fetch constants
+            min_size_bytes = Constants.MIN_BLOCK_SIZE_BYTES
+            max_size_bytes = Constants.MAX_BLOCK_SIZE_BYTES
 
-            if count <= min_tx:
-                new_size = min_size
-            elif count >= max_tx:
-                new_size = max_size
+            min_size_mb = min_size_bytes / (1024 * 1024)
+            max_size_mb = max_size_bytes / (1024 * 1024)
+
+            min_tx_count = 1000
+            max_tx_count = 50000
+
+            # Dynamically calculate block size based on transaction count
+            if tx_count <= min_tx_count:
+                new_size_mb = min_size_mb
+            elif tx_count >= max_tx_count:
+                new_size_mb = max_size_mb
             else:
-                scale = (count - min_tx) / (max_tx - min_tx)
-                new_size = min_size + (max_size - min_size) * scale
+                scale = (tx_count - min_tx_count) / (max_tx_count - min_tx_count)
+                new_size_mb = min_size_mb + (max_size_mb - min_size_mb) * scale
 
-            standard_allocation = new_size * Constants.MEMPOOL_STANDARD_ALLOCATION
-            smart_allocation = new_size * Constants.MEMPOOL_SMART_ALLOCATION
+            # Allocate space according to constants
+            standard_allocation_mb = new_size_mb * Constants.BLOCK_ALLOCATION_STANDARD
+            smart_allocation_mb = new_size_mb * Constants.BLOCK_ALLOCATION_SMART
 
+            # Separate transactions explicitly
             standard_txs = []
             smart_txs = []
             for tx in pending_txs:
                 if not hasattr(tx, "tx_id") or not hasattr(tx, "size"):
-                    print(f"[Miner._calculate_block_size] WARNING: Skipping transaction with missing attributes: {tx}")
+                    print(f"[Miner._calculate_block_size] WARNING: Skipping invalid transaction: {tx}")
                     continue
-                if any(tx.tx_id.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"]):
+                tx_id_str = tx.tx_id.decode("utf-8") if isinstance(tx.tx_id, bytes) else tx.tx_id
+                if any(tx_id_str.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"]):
                     standard_txs.append(tx)
-                elif any(tx.tx_id.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["SMART"]["prefixes"]):
+                elif any(tx_id_str.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["SMART"]["prefixes"]):
                     smart_txs.append(tx)
 
-            total_standard_size = sum(tx.size for tx in standard_txs) / (1024 * 1024)
-            total_smart_size = sum(tx.size for tx in smart_txs) / (1024 * 1024)
+            # Calculate total transaction sizes
+            total_standard_size_mb = sum(tx.size for tx in standard_txs) / (1024 * 1024)
+            total_smart_size_mb = sum(tx.size for tx in smart_txs) / (1024 * 1024)
 
-            if total_standard_size > standard_allocation:
-                print(f"[Miner._calculate_block_size] WARNING: Standard transactions exceed allocation ({total_standard_size:.2f} MB)")
-                total_standard_size = standard_allocation
-            if total_smart_size > smart_allocation:
-                print(f"[Miner._calculate_block_size] WARNING: Smart transactions exceed allocation ({total_smart_size:.2f} MB)")
-                total_smart_size = smart_allocation
+            # Ensure allocations are not exceeded
+            if total_standard_size_mb > standard_allocation_mb:
+                print(f"[Miner._calculate_block_size] WARNING: Standard transactions exceed allocation ({total_standard_size_mb:.2f} MB). Limiting to allocation.")
+                total_standard_size_mb = standard_allocation_mb
 
-            final_block_size = total_standard_size + total_smart_size
-            self.current_block_size = max(min_size, min(final_block_size, max_size))
-            print(f"[Miner._calculate_block_size] INFO: Block size dynamically adjusted to {self.current_block_size:.2f} MB")
+            if total_smart_size_mb > smart_allocation_mb:
+                print(f"[Miner._calculate_block_size] WARNING: Smart transactions exceed allocation ({total_smart_size_mb:.2f} MB). Limiting to allocation.")
+                total_smart_size_mb = smart_allocation_mb
+
+            final_block_size_mb = total_standard_size_mb + total_smart_size_mb
+
+            # Set the final block size explicitly within allowed bounds
+            self.current_block_size = max(min_size_mb, min(final_block_size_mb, max_size_mb))
+
+            print(f"[Miner._calculate_block_size] INFO: Block size set to {self.current_block_size:.2f} MB based on mempool transactions.")
+            
         except Exception as e:
             print(f"[Miner._calculate_block_size] ERROR: Exception during block size calculation: {e}")
+            raise
 
     def _create_coinbase(self, miner_address, fees):
         """
@@ -189,54 +253,79 @@ class Miner:
         except Exception as e:
             print(f"[Miner._validate_coinbase] ERROR: Coinbase validation failed: {e}")
             return False
-
     def mining_loop(self, network=None):
         """
         Continuous mining loop:
         - Mines new blocks until interrupted.
-        - Ensures Genesis block exists (handled externally).
+        - Ensures Genesis block exists.
         - Dynamically adjusts difficulty.
-        - Uses detailed print statements for progress.
+        - Uses detailed print statements for progress and debugging.
+        - Stops mining on errors.
         """
         network = network or Constants.NETWORK
         print(f"\n[Miner.mining_loop] INFO: Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
+
+        # Ensure the Genesis block exists explicitly
         if not self.block_manager.chain:
             print(f"[Miner.mining_loop] WARNING: Blockchain is empty! Ensuring Genesis block exists on {network.upper()}...")
-            self.block_manager.blockchain._ensure_genesis_block()
-            genesis_block = self.storage_manager.get_latest_block()
-            if not genesis_block or int(genesis_block.hash, 16) >= genesis_block.difficulty:
-                raise RuntimeError(f"[Miner.mining_loop] ERROR: Genesis Block validation failed on {network.upper()}!")
-            print(f"[Miner.mining_loop] INFO: Genesis Block ready with hash: {genesis_block.hash[:12]}...")
+            self.blockchain.ensure_genesis_block()
+            genesis_block = self.block_metadata.get_latest_block()
 
-        block_height = len(self.block_manager.chain)
-        block = None
+            if not genesis_block:
+                print(f"[Miner.mining_loop] ERROR: Genesis Block not found after creation attempt on {network.upper()}! Stopping mining.")
+                return
+
+            if int(genesis_block.hash, 16) >= genesis_block.difficulty:
+                print(f"[Miner.mining_loop] ERROR: Genesis Block validation failed (invalid difficulty) on {network.upper()}! Stopping mining.")
+                return
+
+            self.block_manager.chain.append(genesis_block)
+            print(f"[Miner.mining_loop] INFO: Genesis Block added successfully: {genesis_block.hash[:12]}...")
+
+        block_height = self.block_manager.chain[-1].index + 1
 
         while True:
             try:
+                print(f"\n[Miner.mining_loop] INFO: Starting to mine block at height {block_height} on {network.upper()}.")
+
                 block = self.mine_block(network)
-                if not block or not self.validate_new_block(block):
-                    print(f"[Miner.mining_loop] ERROR: Mined block at height {block.index} is invalid on {network.upper()}.")
-                    raise ValueError(f"[Miner.mining_loop] ERROR: Mined block failed validation on {network.upper()}.")
-                block_height += 1
+                
+                if not block:
+                    print(f"[Miner.mining_loop] ERROR: Failed to mine a new block at height {block_height} on {network.upper()}. Stopping mining.")
+                    break
+
+                if not self.blockchain.validate_block(block):
+                    print(f"[Miner.mining_loop] ERROR: Mined block at height {block.index} is invalid on {network.upper()}. Stopping mining.")
+                    break
+
+                self.block_metadata.store_block(block, block.difficulty)
                 self.block_manager.chain.append(block)
-                self.storage_manager.store_block(block, block.header.difficulty)
-                total_supply = self.storage_manager.get_total_mined_supply()
-                print(f"[Miner.mining_loop] INFO: Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY})")
-                new_difficulty = self.block_manager.calculate_target(self.storage_manager)
-                print(f"[Miner.mining_loop] INFO: Adjusted difficulty on {network.upper()} to: {hex(new_difficulty)}")
+                
+                total_supply = self.block_metadata.get_total_mined_supply()
+                print(f"[Miner.mining_loop] INFO: Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY}).")
+
+                new_difficulty = self.block_manager.calculate_target()
+                print(f"[Miner.mining_loop] INFO: Difficulty adjusted on {network.upper()} to: {hex(new_difficulty)}")
+
+                block_height += 1
+
             except KeyboardInterrupt:
                 print(f"\n[Miner.mining_loop] INFO: Mining loop on {network.upper()} interrupted by user.")
                 break
+
             except Exception as e:
-                print(f"[Miner.mining_loop] ERROR: Mining error on {network.upper()}: {e}")
+                print(f"[Miner.mining_loop] ERROR: Mining encountered an unexpected error on {network.upper()}: {e}")
                 if block is not None:
-                    print(f"[Miner.mining_loop] ERROR: Failed at block height: {block.index} on {network.upper()}")
-                    print(f"         Block hash: {block.hash[:12]}...")
+                    print(f"[Miner.mining_loop] ERROR: Block {block.index} | Hash: {block.hash[:12]}...")
+                last_block = self.block_manager.get_latest_block()
+                if last_block:
+                    print(f"[Miner.mining_loop] INFO: Last valid block hash: {last_block.hash[:12]}...")
                 else:
-                    print(f"[Miner.mining_loop] ERROR: Error during block initialization on {network.upper()}.")
-                if self.block_manager.chain:
-                    print(f"[Miner.mining_loop] ERROR: Last valid block hash: {self.block_manager.chain[-1].hash[:12]}...")
+                    print("[Miner.mining_loop] ERROR: No valid blocks found in the chain. Stopping mining.")
                 break
+
+
+
 
     def validate_new_block(self, new_block):
         """
@@ -319,85 +408,164 @@ class Miner:
             print(f"[Miner.validate_new_block] ERROR: Unexpected error during block validation: {e}")
             return False
 
+
+
+
+
+
+
+
     def mine_block(self, network=Constants.NETWORK):
         """
         Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
-        Delegates the PoW hashing loop to pow.py (via perform_pow).
-        All data is processed as bytes.
+        - Calls `GenesisBlockManager.ensure_genesis_block()` if no previous block is found.
+        - Uses single SHA3-384 hashing for mining.
+        - Retrieves transactions from mempool and includes coinbase transaction.
         """
         with self.mining_lock:
             try:
-                # Debug: Start mining procedure
-                print("[Miner.mine_block] START: Initiating mining procedure. (Function: mine_block, Class: Miner)")
+                print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
 
-                # Get the latest block
-                last_block = self.storage_manager.get_latest_block()
-                if not last_block:
-                    print("[Miner.mine_block] WARNING: No previous block found; ensuring Genesis block exists. (Function: mine_block, Class: Miner)")
-                    self.block_manager.blockchain._ensure_genesis_block()
-                    last_block = self.storage_manager.get_latest_block()
-                if not last_block:
-                    print("[Miner.mine_block] ERROR: Failed to retrieve or create Genesis block. (Function: mine_block, Class: Miner)")
+                # Ensure `BlockMetadata` is properly initialized
+                if not hasattr(self, "block_metadata") or not self.block_metadata:
+                    print("[Miner.mine_block] ERROR: `block_metadata` not initialized. Cannot retrieve latest block.")
                     return None
 
-                block_height = last_block.index + 1
-                print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}. (Function: mine_block, Class: Miner)")
+                # Get the latest block from BlockMetadata
+                print("[Miner.mine_block] INFO: Checking for latest block in BlockMetadata.")
+                last_block_bytes = self.block_metadata.get_latest_block()
 
-                # Adjust difficulty
-                current_target = self.block_manager.calculate_target(self.storage_manager)
+                if last_block_bytes:
+                    last_block = self.block_metadata.deserialize_from_bytes(last_block_bytes)
+                else:
+                    print("[Miner.mine_block] WARNING: No previous block found. Ensuring Genesis block exists.")
+
+                    # Ensure `genesis_block_manager` is initialized
+                    if not hasattr(self, "genesis_block_manager") or not self.genesis_block_manager:
+                        print("[Miner.mine_block] ERROR: `genesis_block_manager` not initialized. Stopping mining.")
+                        return None
+
+                    print("[Miner.mine_block] INFO: Creating Genesis block using GenesisBlockManager.")
+                    self.genesis_block_manager.ensure_genesis_block()
+
+                    # Retrieve the newly created Genesis block
+                    last_block_bytes = self.block_metadata.get_latest_block()
+                    if not last_block_bytes:
+                        print("[Miner.mine_block] ERROR: Failed to retrieve or create Genesis block. Stopping mining.")
+                        return None
+                    last_block = self.block_metadata.deserialize_from_bytes(last_block_bytes)
+
+                block_height = last_block["index"] + 1
+                print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
+
+                # Adjust difficulty based on the latest block
+                if not hasattr(self, "block_manager") or not self.block_manager:
+                    print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot calculate difficulty.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Calculating difficulty target.")
+                current_target = self.block_manager.calculate_target()
                 current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
-                print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}. (Function: mine_block, Class: Miner)")
+                print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
                 # Get miner address
-                miner_address = self.key_manager.get_default_public_key(network, "miner")
-                if not miner_address:
-                    print("[Miner.mine_block] ERROR: Failed to retrieve miner address. (Function: mine_block, Class: Miner)")
+                if not hasattr(self, "key_manager") or not self.key_manager:
+                    print("[Miner.mine_block] ERROR: `key_manager` not initialized. Cannot retrieve miner address.")
                     return None
 
-                # Calculate block size and get pending transactions
+                print("[Miner.mine_block] INFO: Retrieving miner address.")
+                miner_address = self.key_manager.get_default_public_key(network, "miner")
+                if not miner_address:
+                    print("[Miner.mine_block] ERROR: Failed to retrieve miner address. Stopping mining.")
+                    return None
+                print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}.")
+
+                # Dynamically calculate block size based on mempool load
+                if not hasattr(self, "_calculate_block_size") or not callable(self._calculate_block_size):
+                    print("[Miner.mine_block] ERROR: `_calculate_block_size` method not found. Cannot calculate block size.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Calculating block size based on mempool load.")
                 self._calculate_block_size()
+                print(f"[Miner.mine_block] INFO: Current block size set to {self.current_block_size:.2f} MB.")
+
+                # Get pending transactions from mempool
+                if not hasattr(self, "transaction_manager") or not hasattr(self.transaction_manager, "mempool"):
+                    print("[Miner.mine_block] ERROR: `transaction_manager` or `mempool` not initialized. Cannot retrieve transactions.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Retrieving pending transactions from mempool.")
                 pending_txs = self.transaction_manager.mempool.get_pending_transactions(
                     block_size_mb=self.current_block_size
                 ) or []
-                total_fees = sum(tx.fee for tx in pending_txs if hasattr(tx, "fee"))
+                print(f"[Miner.mine_block] INFO: Retrieved {len(pending_txs)} pending transactions.")
+
+                total_fees = sum(tx["fee"] for tx in pending_txs if "fee" in tx)
+                print(f"[Miner.mine_block] INFO: Total fees for this block: {total_fees} ZYC.")
 
                 # Create coinbase transaction
+                if not hasattr(self, "_create_coinbase") or not callable(self._create_coinbase):
+                    print("[Miner.mine_block] ERROR: `_create_coinbase` method not found. Cannot create coinbase transaction.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Creating coinbase transaction.")
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
+                print(f"[Miner.mine_block] INFO: Coinbase transaction created with ID: {coinbase_tx['tx_id']}.")
 
                 # Create new block
-                new_block = Block(
-                    index=block_height,
-                    previous_hash=last_block.hash,
-                    transactions=valid_txs,
-                    timestamp=int(time.time()),
-                    nonce=0,
-                    difficulty=current_target
-                )
+                print("[Miner.mine_block] INFO: Creating new block.")
+                new_block = {
+                    "index": block_height,
+                    "previous_hash": last_block["hash"],
+                    "transactions": valid_txs,
+                    "timestamp": int(time.time()),
+                    "nonce": 0,
+                    "difficulty": current_target
+                }
+                print(f"[Miner.mine_block] INFO: New block created with index {block_height}.")
 
                 # Perform Proof-of-Work
-                from Zyiron_Chain.miner.pow import PowManager
-                final_hash, final_nonce, attempts = PowManager().perform_pow(new_block)
+                if not hasattr(self, "pow_manager") or not self.pow_manager:
+                    print("[Miner.mine_block] ERROR: `pow_manager` not initialized. Cannot perform Proof-of-Work.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Starting Proof-of-Work.")
+                final_hash, final_nonce, attempts = self.pow_manager.perform_pow(new_block)
+                print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final hash: {final_hash[:12]}...")
+
+                # Validate Proof-of-Work before storing
+                if int(final_hash, 16) >= new_block["difficulty"]:
+                    print("[Miner.mine_block] ERROR: Invalid Proof-of-Work. Hash does not meet difficulty target. Stopping mining.")
+                    return None
 
                 # Update block with final hash and nonce
-                new_block.hash = final_hash
-                new_block.header.nonce = final_nonce
+                new_block["hash"] = final_hash
+                new_block["nonce"] = final_nonce
+                print(f"[Miner.mine_block] INFO: Block updated with final hash and nonce {final_nonce}.")
 
-                # Store block and update chain
-                self.storage_manager.store_block(new_block, new_block.difficulty)
-                self.block_manager.chain.append(new_block)
+                # Store block using BlockMetadata
+                print("[Miner.mine_block] INFO: Storing block in BlockMetadata.")
+                self.block_metadata.store_block(self.block_metadata.serialize_to_bytes(new_block), new_block["difficulty"])
+                self.chain.append(new_block)
+                print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
-                # Print final success message
                 elapsed_time = int(time.time() - start_time)
-                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Hash: {new_block.hash} | Time Taken: {elapsed_time}s. (Function: mine_block, Class: Miner)")
+                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Hash: {new_block['hash'][:12]}... | Time Taken: {elapsed_time}s.")
                 return new_block
 
             except Exception as e:
-                print(f"[Miner.mine_block] ERROR: Mining failed with exception -> {e}. (Function: mine_block, Class: Miner)")
+                print(f"[Miner.mine_block] ERROR: Mining failed: {e}. Stopping mining.")
                 return None
+
+
     @property
     def mining_lock(self):
+        """
+        Property to ensure thread-safe mining operations.
+        """
         if not hasattr(self, "_mining_lock"):
+            print("[Miner.mining_lock] INFO: Initializing mining lock.")
             self._mining_lock = Lock()
         return self._mining_lock

@@ -114,11 +114,14 @@ class Constants:
 
     # 🔹 **Maximum Block Size**
     MAX_BLOCK_SIZE_SETTINGS = {
-        "mainnet": (1 * 1024 * 1024, 10 * 1024 * 1024),
-        "testnet": (1 * 1024 * 1024, 10 * 1024 * 1024),
-        "regnet": (1 * 1024 * 1024, 2 * 1024 * 1024)
+        "mainnet": (1 * 1024 * 1024, 10 * 1024 * 1024),  # 1 MB initial, 10 MB max
+        "testnet": (1 * 1024 * 1024, 10 * 1024 * 1024),  # 1 MB initial, 10 MB max
+        "regnet": (1 * 1024 * 1024, 2 * 1024 * 1024)     # 1 MB initial, 2 MB max
     }
     MIN_BLOCK_SIZE_BYTES, MAX_BLOCK_SIZE_BYTES = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
+
+    # Explicitly set the initial block size to the minimum value
+    INITIAL_BLOCK_SIZE_MB = MIN_BLOCK_SIZE_BYTES / (1024 * 1024)
 
     MAX_TIME_DRIFT = 7200
 

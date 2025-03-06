@@ -71,10 +71,12 @@ class UTXOStorage:
 
         Steps:
         1. Remove spent UTXOs.
-        2. Add new UTXOs.
+        2. Add new UTXOs from block transactions.
         3. Record UTXO changes in the history database.
         """
         try:
+            print(f"[UTXOStorage.update_utxos] INFO: Updating UTXOs for Block {block.index}...")
+
             with self._db_lock:
                 with self.utxo_db.env.begin(write=True) as utxo_txn, \
                         self.utxo_history_db.env.begin(write=True) as history_txn:
@@ -86,39 +88,47 @@ class UTXOStorage:
                                 spent_key = f"utxo:{tx_input.tx_out_id}".encode("utf-8")
                                 spent_utxo = utxo_txn.get(spent_key)
                                 if spent_utxo:
-                                    # Save spent UTXO to history
                                     history_key = f"spent_utxo:{tx_input.tx_out_id}:{block.timestamp}".encode("utf-8")
                                     history_txn.put(history_key, spent_utxo)
-                                    # Remove spent UTXO from current UTXOs
                                     utxo_txn.delete(spent_key)
                                     print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {tx_input.tx_out_id}.")
                                 else:
                                     print(f"[UTXOStorage.update_utxos] WARNING: Spent UTXO {tx_input.tx_out_id} not found.")
 
-                    # Step 2: Add new UTXOs generated from block transactions
+                    # Step 2: Add new UTXOs from transactions explicitly
                     for tx in block.transactions:
                         for idx, output in enumerate(tx.outputs):
                             utxo_id = f"{tx.tx_id}:{idx}"
+
+                            # Explicitly handle dict vs object outputs
+                            if isinstance(output, dict):
+                                amount = float(output.get("amount", 0))
+                                script_pub_key = output.get("script_pub_key", "")
+                                locked = output.get("locked", False)
+                            else:
+                                amount = float(getattr(output, "amount", 0))
+                                script_pub_key = getattr(output, "script_pub_key", "")
+                                locked = getattr(output, "locked", False)
+
                             utxo_data = {
                                 "tx_out_id": utxo_id,
-                                "amount": float(output.amount),
-                                "script_pub_key": output.script_pub_key,
-                                "locked": getattr(output, "locked", False),
+                                "amount": amount,
+                                "script_pub_key": script_pub_key,
+                                "locked": locked,
                                 "block_index": block.index
                             }
+
                             serialized_utxo = json.dumps(utxo_data).encode("utf-8")
                             utxo_key = f"utxo:{utxo_id}".encode("utf-8")
 
-                            # Store new UTXO
                             utxo_txn.put(utxo_key, serialized_utxo)
 
-                            # Save new UTXO in history database
                             history_key = f"new_utxo:{utxo_id}:{block.timestamp}".encode("utf-8")
                             history_txn.put(history_key, serialized_utxo)
 
-                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {utxo_id} amount {output.amount}")
+                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {utxo_id}, amount {amount}")
 
-            print(f"[UTXOStorage.update_utxos] SUCCESS: UTXO databases updated for block {block.index}.")
+            print(f"[UTXOStorage.update_utxos] SUCCESS: UTXOs updated successfully for Block {block.index}.")
 
         except Exception as e:
             print(f"[UTXOStorage.update_utxos] ERROR: Failed updating UTXOs: {e}")

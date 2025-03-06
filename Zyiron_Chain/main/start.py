@@ -37,6 +37,8 @@ from Zyiron_Chain.transactions.transaction_manager import TransactionManager
 from Zyiron_Chain.keys.key_manager import KeyManager
 from Zyiron_Chain.storage.lmdatabase import LMDBManager  # For LMDB manager creation
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockManager
+
 def detailed_print(message: str):
     """Helper function for detailed print-based debugging."""
     print(f"[START] {message}")
@@ -106,14 +108,27 @@ class Start:
             key_manager=self.key_manager
         )
 
+        # 4a. Initialize BlockManager
+        detailed_print("Initializing BlockManager...")
+        self.block_manager = BlockManager(
+            blockchain=self.blockchain,
+            block_storage=self.block_storage,
+            block_metadata=self.block_metadata,
+            tx_storage=self.tx_storage,
+            transaction_manager=self.transaction_manager
+        )
+
         # 5. Initialize Miner
         detailed_print("Initializing Miner...")
         self.miner = Miner(
-            block_manager=self.blockchain,  # Pass the Blockchain instance as block_manager
+            blockchain=self.blockchain,
+            block_manager=self.block_manager,
+            block_metadata=self.block_metadata,  # <-- explicitly pass this
             transaction_manager=self.transaction_manager,
-            storage_manager=self.block_storage,  # Pass the storage manager
-            key_manager=self.key_manager
+            key_manager=self.key_manager,
+            mempool_storage=self.mempool_storage
         )
+
 
     def load_blockchain(self):
         detailed_print("Loading blockchain data from storage...")

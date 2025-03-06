@@ -32,7 +32,6 @@ from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # Hypothe
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.miner.pow import PowManager
 
-
 class Blockchain:
     """
     Main Blockchain class that:
@@ -87,40 +86,63 @@ class Blockchain:
         if not self.chain:
             print("[Blockchain.__init__] No existing blocks found. Creating Genesis block.")
             # Use GenesisBlockManager to create a new genesis block
-            genesis_block_manager = GenesisBlockManager(
+            self.genesis_block_manager = GenesisBlockManager(
                 block_storage=self.block_storage,
                 block_metadata=self.block_metadata,
                 key_manager=self.key_manager,
                 chain=self.chain,
                 block_manager=self
             )
-            genesis_block = genesis_block_manager.create_and_mine_genesis_block()
+            genesis_block = self.genesis_block_manager.create_and_mine_genesis_block()
             self.add_block(genesis_block, is_genesis=True)
         else:
             print(f"[Blockchain.__init__] Loaded {len(self.chain)} blocks from storage.")
 
-    def load_chain_from_storage(self) -> None:
+    def load_chain_from_storage(self):
+        """
+        Load the blockchain from storage modules.
+        """
+        try:
+            print("[Blockchain.load_chain_from_storage] Loading chain from storage...")
+            self.chain = self.block_metadata.load_chain()
+            if not self.chain:
+                print("[Blockchain.load_chain_from_storage] WARNING: No blocks found in storage.")
+            else:
+                print(f"[Blockchain.load_chain_from_storage] SUCCESS: Loaded {len(self.chain)} blocks.")
+        except Exception as e:
+            print(f"[Blockchain.load_chain_from_storage] ERROR: Failed to load chain from storage: {e}")
+
+    def load_chain_from_storage(self) -> list:
         """
         Load the blockchain from storage into memory.
+        
+        :return: List of loaded blocks or empty list if none are found.
         """
         try:
             print("[Blockchain.load_chain_from_storage] Loading chain from storage...")
             stored_blocks = self.block_metadata.get_all_blocks()
-            if stored_blocks:
-                for block_data in stored_blocks:
-                    block = Block.from_dict(block_data)
-                    self.chain.append(block)
-                print(f"[Blockchain.load_chain_from_storage] Loaded {len(self.chain)} blocks from storage.")
-            else:
+            
+            if not stored_blocks:
                 print("[Blockchain.load_chain_from_storage] No blocks found in storage.")
+                return []  # Explicitly return empty list
+            
+            for block_data in stored_blocks:
+                block = Block.from_dict(block_data)
+                self.chain.append(block)
+            
+            print(f"[Blockchain.load_chain_from_storage] Loaded {len(self.chain)} blocks from storage.")
+            return self.chain
+
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ERROR: Failed to load chain from storage: {e}")
+            return []  # Explicitly return empty list even on error
+
 
     def add_block(self, block: Block, is_genesis: bool = False) -> bool:
         """
         Add a block to the blockchain.
-        - Validates the block before adding.
-        - Updates storage modules.
+        - Validates the block before adding (unless genesis).
+        - Updates storage modules (block metadata, transactions, and UTXOs).
         - Updates the in-memory chain.
 
         :param block: The block to add.
@@ -130,21 +152,74 @@ class Blockchain:
         try:
             print(f"[Blockchain.add_block] Adding Block {block.index} to the chain...")
 
-            # Validate the block (skip validation for genesis block)
+            # Validate the block explicitly (skip validation for genesis block)
             if not is_genesis and not self.validate_block(block):
                 print(f"[Blockchain.add_block] ERROR: Block {block.index} failed validation.")
                 return False
 
-            # Add block to storage via BlockMetadata (handles both metadata and block data)
+            # Store block metadata and full block data explicitly
             self.block_metadata.store_block(block, block.difficulty)
+
+            # Explicitly store each transaction in txindex.lmdb
+            for tx in block.transactions:
+                tx_id = tx.tx_id if hasattr(tx, "tx_id") else tx.get("tx_id")
+                block_hash = block.hash
+
+                # Explicitly ensure inputs and outputs are dictionaries
+                inputs = [
+                    inp.to_dict() if hasattr(inp, "to_dict") else inp
+                    for inp in getattr(tx, "inputs", [])
+                ]
+
+                outputs = self._extract_outputs(tx)
+
+                timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
+
+                self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
+                print(f"[Blockchain.add_block] INFO: Transaction {tx_id} indexed successfully.")
+
+            # Explicitly update UTXOs in utxo.lmdb and utxo_history.lmdb
+            self.utxo_storage.update_utxos(block)
+            print(f"[Blockchain.add_block] INFO: UTXO database updated successfully.")
 
             # Add block to in-memory chain
             self.chain.append(block)
             print(f"[Blockchain.add_block] SUCCESS: Block {block.index} added to the chain.")
             return True
+
         except Exception as e:
             print(f"[Blockchain.add_block] ERROR: Failed to add Block {block.index}: {e}")
             return False
+
+    def _extract_outputs(self, tx) -> list:
+        """
+        Helper method to extract transaction outputs in a consistent dictionary format.
+
+        :param tx: Transaction instance or dictionary containing outputs.
+        :return: List of output dictionaries.
+        """
+        extracted_outputs = []
+
+        outputs = getattr(tx, "outputs", [])
+        for out in outputs:
+            if isinstance(out, dict):
+                amount = out.get("amount", 0)
+                script_pub_key = out.get("script_pub_key", "")
+                locked = out.get("locked", False)
+            else:
+                amount = getattr(out, "amount", 0)
+                script_pub_key = getattr(out, "script_pub_key", "")
+                locked = getattr(out, "locked", False)
+
+            extracted_outputs.append({
+                "amount": amount,
+                "script_pub_key": script_pub_key,
+                "locked": locked
+            })
+
+        return extracted_outputs
+
+
 
     def validate_block(self, block: Block) -> bool:
         """

@@ -115,12 +115,6 @@ class GenesisBlockManager:
 
 
     def ensure_genesis_block(self):
-        """
-        Ensures the Genesis block exists in storage.
-        - If a valid Genesis block exists, it is loaded.
-        - If not, a new Genesis block is created (or a predefined GENESIS_HASH is used),
-        mined, and stored in the correct databases.
-        """
         try:
             stored_blocks = self.block_metadata.get_all_blocks()
             if stored_blocks:
@@ -175,7 +169,6 @@ class GenesisBlockManager:
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Purging corrupted chain data...")
             self.block_metadata.purge_chain()
             raise
-
 
     def validate_genesis_block(self, genesis_block) -> bool:
         """

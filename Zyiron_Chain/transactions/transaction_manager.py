@@ -90,7 +90,30 @@ class TransactionManager:
         """Retrieve transaction data and deserialize if necessary."""
         data = self.tx_storage.get_transaction(tx_id)
         return Deserializer().deserialize(data) if data else None
-
+    def create_transaction(self, sender, receiver, amount, fee):
+        """
+        Create a new transaction.
+        :param sender: Sender's address.
+        :param receiver: Receiver's address.
+        :param amount: Amount to send.
+        :param fee: Transaction fee.
+        :return: The created transaction.
+        """
+        try:
+            print(f"[TransactionManager.create_transaction] Creating transaction from {sender} to {receiver}...")
+            transaction = {
+                "sender": sender,
+                "receiver": receiver,
+                "amount": amount,
+                "fee": fee,
+                "timestamp": int(time.time()),
+                "tx_id": Hashing.hash(f"{sender}{receiver}{amount}{fee}".encode()).hex()
+            }
+            print(f"[TransactionManager.create_transaction] SUCCESS: Transaction created with ID {transaction['tx_id']}.")
+            return transaction
+        except Exception as e:
+            print(f"[TransactionManager.create_transaction] ERROR: Failed to create transaction: {e}")
+            return None
 
 
     @property
