@@ -49,6 +49,7 @@ class GenesisBlockManager:
         self.block_manager = block_manager
         self.network = Constants.NETWORK
         print(f"[GenesisBlockManager.__init__] Initialized for network: {self.network}")
+        
     def create_and_mine_genesis_block(self) -> Block:
         """
         Creates and mines the Genesis block using single SHA3-384 hashing.
@@ -59,6 +60,7 @@ class GenesisBlockManager:
         try:
             print("[GenesisBlockManager.create_and_mine_genesis_block] INFO: Checking for existing Genesis block...")
 
+            # ✅ Ensure miner address is available
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             if not miner_address:
                 raise ValueError("[GenesisBlockManager.create_and_mine_genesis_block] ERROR: Failed to retrieve miner address for Genesis block.")
@@ -119,11 +121,19 @@ class GenesisBlockManager:
             # ✅ **Genesis Block Mined Successfully**
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Mined Genesis Block {genesis_block.index} with hash: {genesis_block.hash}")
 
-            # ✅ **Store Genesis Block and Transaction ID**
+            # ✅ **Store Genesis Transaction in LMDB**
             with self.block_metadata.block_metadata_db.env.begin(write=True) as txn:
                 txn.put(b"GENESIS_COINBASE", coinbase_tx.tx_id.encode("utf-8"))
 
+            # ✅ **Ensure Block Storage and Metadata Exist Before Storing**
+            if not hasattr(self, "block_metadata") or not self.block_metadata:
+                raise ValueError("[GenesisBlockManager] ERROR: BlockMetadata instance is missing.")
+
+            if not hasattr(self, "block_storage") or not self.block_storage:
+                raise ValueError("[GenesisBlockManager] ERROR: BlockStorage instance is missing.")
+
             # ✅ **Store Genesis Block in Metadata and Block Storage**
+            print("[GenesisBlockManager] INFO: Storing Genesis Block in BlockMetadata and BlockStorage...")
             self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
             self.block_storage.store_block(genesis_block, genesis_block.difficulty)
 

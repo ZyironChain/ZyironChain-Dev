@@ -43,7 +43,7 @@ class BlockMetadata:
             # ✅ Initialize LMDB for block metadata
             self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
 
-            # ✅ Initialize TxStorage explicitly
+            # ✅ Ensure TxStorage is provided
             if tx_storage is None:
                 raise ValueError("[BlockMetadata.__init__] ERROR: TxStorage instance is required.")
             self.tx_storage = tx_storage
@@ -79,20 +79,35 @@ class BlockMetadata:
         """
         try:
             if not self.current_block_file:
-                raise ValueError("Current block file is not set.")
+                raise ValueError("[BlockMetadata.create_block_data_file] ERROR: Current block file is not set.")
+
+            # ✅ Ensure block file rollover is handled before writing the new block
+            self._handle_block_file_rollover()
+
             with open(self.current_block_file, "ab+") as f:
                 f.seek(0, os.SEEK_END)
+
+                # ✅ Ensure the magic number is written **ONLY ONCE** at the start of the file
                 if f.tell() == 0:
                     f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
-                    print(f"[BlockMetadata] INFO: Wrote network magic number {hex(Constants.MAGIC_NUMBER)} to block.data.")
+                    print(f"[BlockMetadata.create_block_data_file] INFO: Wrote network magic number {hex(Constants.MAGIC_NUMBER)} to block.data.")
+
+                # ✅ Serialize block to binary format
                 block_data = self._serialize_block_to_binary(block)
-                f.write(struct.pack(">I", len(block_data)))
+
+                # ✅ Write block size (4 bytes) followed by block data
+                block_size_bytes = len(block_data).to_bytes(4, byteorder='big')
+                f.write(block_size_bytes)
                 f.write(block_data)
+
+                # ✅ Update block offset
                 self.current_block_offset = f.tell()
-                print(f"[BlockMetadata] INFO: Appended Block {block.index} to block.data file at offset {self.current_block_offset}.")
+                print(f"[BlockMetadata.create_block_data_file] SUCCESS: Appended Block {block.index} to block.data file at offset {self.current_block_offset}.")
+
         except Exception as e:
-            print(f"[BlockMetadata] ERROR: Failed to write block to block.data file: {e}")
+            print(f"[BlockMetadata.create_block_data_file] ERROR: Failed to write block to block.data file: {e}")
             raise
+
 
     def _initialize_block_data_file(self):
         """Initialize the block.data file with the correct magic number."""
@@ -126,10 +141,10 @@ class BlockMetadata:
         1. Compute Merkle root if missing.
         2. Preserve explicitly mined hash (NO recomputation).
         3. Prepare detailed block metadata (miner address, reward, difficulty, fees, transactions).
-        4. Explicitly store block metadata in LMDB.
-        5. Explicitly index each transaction in txindex.lmdb.
-        6. Serialize and append entire block data (with MAGIC_NUMBER) to block.data file.
-        7. Handle block file rollover based on Constants.BLOCK_DATA_FILE_SIZE_MB explicitly.
+        4. Store block metadata in LMDB.
+        5. Index each transaction in txindex.lmdb.
+        6. Serialize and append entire block data (WITHOUT MAGIC NUMBER) to block.data.
+        7. Handle block file rollover based on Constants.BLOCK_DATA_FILE_SIZE_MB.
         """
         try:
             print(f"[BlockMetadata.store_block] INFO: Starting storage for Block {block.index}...")
@@ -209,10 +224,11 @@ class BlockMetadata:
 
             # Step 7: Append block data to block.data file
             print(f"[BlockMetadata.store_block] INFO: Appending block data to block.data file...")
-            magic_number_bytes = Constants.MAGIC_NUMBER.to_bytes(4, byteorder='big')
+
             block_bytes = json.dumps(block_dict, ensure_ascii=False).encode('utf-8')
             block_size_bytes = len(block_bytes).to_bytes(4, byteorder='big')
-            serialized_block_full = magic_number_bytes + block_size_bytes + block_bytes
+
+            serialized_block_full = block_size_bytes + block_bytes  # ✅ No magic number added
 
             current_file_path = self._get_current_block_file()
             with open(current_file_path, "ab") as block_file:
@@ -231,6 +247,7 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.store_block] ERROR: Exception while storing Block {block.index}: {e}")
             raise
+
 
     def _serialize_transactions(self, transactions: list):
         """
@@ -389,12 +406,12 @@ class BlockMetadata:
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
-            difficulty_int = int(header["difficulty"])
+            difficulty_bytes = int(header["difficulty"]).to_bytes(128, "big", signed=False).lstrip(b"\x00")
 
-            # ✅ Convert difficulty to 48 bytes (big-endian)
-            difficulty_bytes = difficulty_int.to_bytes(48, "big", signed=False)
-            if len(difficulty_bytes) > 48:
-                raise ValueError(f"[BlockMetadata] ERROR: Difficulty {difficulty_int} exceeds 48 bytes.")
+            # ✅ Dynamic Difficulty Length Storage
+            difficulty_length = len(difficulty_bytes)  # Length of difficulty field (1-128 bytes)
+            if difficulty_length > 128:
+                raise ValueError(f"[BlockMetadata] ERROR: Difficulty length {difficulty_length} exceeds 128 bytes.")
 
             # ✅ Process miner address (max 128 bytes, padded)
             miner_address_str = header["miner_address"]
@@ -403,8 +420,8 @@ class BlockMetadata:
                 raise ValueError("[BlockMetadata] ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
 
-            # ✅ Pack header fields: block index, previous hash, merkle root, timestamp, nonce, difficulty, miner address
-            header_format = ">I32s32sQI48s128s"
+            # ✅ Pack header fields with Dynamic Difficulty Length
+            header_format = f">I48s48sQI B{difficulty_length}s 128s"
             header_data = struct.pack(
                 header_format,
                 block_height,
@@ -412,9 +429,12 @@ class BlockMetadata:
                 merkle_root,
                 timestamp,
                 nonce,
-                difficulty_bytes,
+                difficulty_length,  # ✅ 1-byte difficulty length
+                difficulty_bytes,    # ✅ Dynamic difficulty size
                 miner_address_padded
             )
+
+            print(f"[BlockMetadata] INFO: Difficulty stored as {difficulty_length} bytes.")
 
             # ✅ Serialize transactions as JSON and encode as bytes
             tx_data_list = []
@@ -440,6 +460,7 @@ class BlockMetadata:
 
 
 
+
     def get_block_from_data_file(self, offset: int):
         """
         Retrieve a block from block.data using its offset.
@@ -453,16 +474,18 @@ class BlockMetadata:
                 print(f"[BlockMetadata.get_block_from_data_file] ERROR: block.data file not found: {self.current_block_file}")
                 return None
 
+            file_size = os.path.getsize(self.current_block_file)
+            print(f"[BlockMetadata.get_block_from_data_file] INFO: File size of block.data: {file_size} bytes.")
+
+            # Ensure offset is within file size
+            if offset >= file_size:
+                print(f"[BlockMetadata.get_block_from_data_file] ERROR: Offset {offset} is out of bounds.")
+                return None
+
             with open(self.current_block_file, "rb") as f:
-                file_size = os.path.getsize(self.current_block_file)
-                print(f"[BlockMetadata.get_block_from_data_file] INFO: File size of block.data: {file_size} bytes.")
+                f.seek(offset)  # ✅ Start at exact offset (No Magic Number Skipping)
 
-                # Ensure offset is within file size
-                if offset + 8 > file_size:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Offset {offset} is out of bounds.")
-                    return None
-
-                f.seek(offset + 4)  # Skip magic number (4 bytes)
+                # Read block size
                 block_size_bytes = f.read(4)
                 if len(block_size_bytes) != 4:
                     print("[BlockMetadata.get_block_from_data_file] ERROR: Failed to read block size from file.")
@@ -472,18 +495,17 @@ class BlockMetadata:
                 print(f"[BlockMetadata.get_block_from_data_file] INFO: Block size read as {block_size} bytes.")
 
                 # Validate block size
-                if block_size > file_size - offset or block_size <= 0:
+                if block_size <= 0 or (offset + 4 + block_size) > file_size:
                     print(f"[BlockMetadata.get_block_from_data_file] ERROR: Invalid block size {block_size} at offset {offset}.")
                     return None
 
-                f.seek(offset + 8)  # Skip magic number + block size metadata
+                # Read block data
                 block_data = f.read(block_size)
-
                 if len(block_data) != block_size:
                     print(f"[BlockMetadata.get_block_from_data_file] ERROR: Read {len(block_data)} bytes, expected {block_size}.")
                     return None
 
-                print(f"[BlockMetadata.get_block_from_data_file] INFO: Successfully retrieved block from offset {offset}.")
+                print(f"[BlockMetadata.get_block_from_data_file] SUCCESS: Successfully retrieved block from offset {offset}.")
                 return block_data
 
         except Exception as e:
@@ -495,30 +517,27 @@ class BlockMetadata:
     def get_latest_block(self) -> Optional[Block]:
         """
         Retrieve the latest block from LMDB and the block.data file.
+        Ensures correct sorting, validation, and prevents chain corruption.
         """
         try:
             print("[BlockMetadata.get_latest_block] INFO: Retrieving latest block from LMDB...")
-            all_blocks = []
 
-            # Open LMDB transaction
+            all_blocks = []
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 print("[BlockMetadata.get_latest_block] INFO: Iterating through LMDB entries...")
 
                 for key, value in cursor:
-                    if key.startswith(b"block:"):  # Ensure key is bytes
+                    if key.startswith(b"block:"):
                         try:
-                            decoded_key = key.decode()
-                            print(f"[BlockMetadata.get_latest_block] INFO: Processing block with key: {decoded_key}")
-
                             block_metadata = json.loads(value.decode("utf-8"))
 
                             # Validate block metadata structure
-                            if not isinstance(block_metadata, dict):
-                                print(f"[BlockMetadata.get_latest_block] ERROR: Invalid block metadata (not dict): {block_metadata}")
+                            if not isinstance(block_metadata, dict) or "block_header" not in block_metadata:
+                                print(f"[BlockMetadata.get_latest_block] ERROR: Invalid block metadata: {block_metadata}")
                                 continue
 
-                            header = block_metadata.get("block_header", {})
+                            header = block_metadata["block_header"]
                             if not isinstance(header, dict) or "index" not in header:
                                 print("[BlockMetadata.get_latest_block] ERROR: Block header missing 'index'")
                                 continue
@@ -534,15 +553,13 @@ class BlockMetadata:
                 print("[BlockMetadata.get_latest_block] WARNING: No blocks found in LMDB. Chain may be empty.")
                 return None
 
-            # Find the block with the highest index
-            latest_block_data = max(all_blocks, key=lambda b: b["block_header"]["index"], default=None)
-            if not latest_block_data:
-                print("[BlockMetadata.get_latest_block] ERROR: Could not determine latest block.")
-                return None
+            # Sort blocks by index and ensure proper chain integrity
+            sorted_blocks = sorted(all_blocks, key=lambda b: b["block_header"]["index"])
+            latest_block_data = sorted_blocks[-1]
 
-            # Validate block hash
+            # Validate block hash format
             block_hash = latest_block_data.get("hash", Constants.ZERO_HASH)
-            if not isinstance(block_hash, str) or not all(c in "0123456789abcdefABCDEF" for c in block_hash):
+            if not isinstance(block_hash, str) or len(block_hash) != 96:
                 print(f"[BlockMetadata.get_latest_block] ERROR: Invalid block hash format: {block_hash}")
                 return None
 
@@ -589,7 +606,7 @@ class BlockMetadata:
                 print(f"[BlockMetadata.get_latest_block] ERROR: Failed to load full block {block_hash} from block.data file.")
                 return None
 
-            print(f"[BlockMetadata.get_latest_block] INFO: Successfully retrieved Block {full_block.index} (Hash: {full_block.hash}).")
+            print(f"[BlockMetadata.get_latest_block] SUCCESS: Successfully retrieved Block {full_block.index} (Hash: {full_block.hash}).")
             return full_block
 
         except Exception as e:
@@ -742,6 +759,7 @@ class BlockMetadata:
     def get_all_blocks(self) -> List[Dict]:
         """
         Retrieve all stored blocks from the blocks.data file and LMDB as a list of dictionaries.
+        Ensures proper block retrieval without treating magic numbers incorrectly.
         """
         try:
             print("[BlockMetadata.get_all_blocks] INFO: Retrieving all blocks from storage...")
@@ -752,34 +770,37 @@ class BlockMetadata:
                 return []
 
             with open(self.current_block_file, "rb") as f:
+                file_size = os.path.getsize(self.current_block_file)
+                print(f"[BlockMetadata.get_all_blocks] INFO: File size of block.data: {file_size} bytes.")
+
+                # ✅ Read the global magic number (first 4 bytes only)
+                global_magic_number = f.read(4)
+                if global_magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
+                    print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid magic number {global_magic_number.hex()} at start of file. Expected {hex(Constants.MAGIC_NUMBER)}")
+                    return []
+
                 while True:
-                    # Read magic number for each block
-                    magic_number = f.read(4)
-                    if not magic_number:
-                        break  # End of file
-
-                    if magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
-                        print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid magic number {magic_number.hex()} at offset {f.tell()}. Expected {hex(Constants.MAGIC_NUMBER)}")
-                        break
-
-                    # Read block size
+                    # ✅ Read block size
                     block_size_bytes = f.read(4)
                     if not block_size_bytes:
-                        print("[BlockMetadata.get_all_blocks] ERROR: Incomplete block size.")
+                        break  # End of file
+
+                    if len(block_size_bytes) != 4:
+                        print("[BlockMetadata.get_all_blocks] ERROR: Incomplete block size field. File may be corrupted.")
                         break
 
                     block_size = struct.unpack(">I", block_size_bytes)[0]
                     if block_size <= 0 or block_size > Constants.MAX_BLOCK_SIZE_BYTES:
-                        print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid block size {block_size}.")
-                        break
+                        print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid block size {block_size}. Skipping block.")
+                        continue
 
-                    # Read block data
+                    # ✅ Read block data
                     block_data = f.read(block_size)
                     if len(block_data) != block_size:
                         print(f"[BlockMetadata.get_all_blocks] ERROR: Incomplete block data. Expected {block_size}, got {len(block_data)}.")
-                        break
+                        continue
 
-                    # Deserialize block
+                    # ✅ Deserialize block
                     try:
                         block_dict = json.loads(block_data.decode("utf-8"))
                         blocks.append(block_dict)
@@ -787,22 +808,25 @@ class BlockMetadata:
                         print(f"[BlockMetadata.get_all_blocks] ERROR: Failed to decode block data: {e}")
                         continue
 
-            # Sort and validate chain continuity
+            # ✅ Sort blocks and validate chain continuity
             blocks.sort(key=lambda b: b["header"]["index"])
             prev_hash = Constants.ZERO_HASH
+
             for block in blocks:
                 current_hash = block["hash"]
                 if block["header"]["previous_hash"] != prev_hash:
-                    print(f"[BlockMetadata.get_all_blocks] ERROR: Chain discontinuity at block {block['header']['index']}. Prev hash {block['header']['previous_hash']} vs expected {prev_hash}")
-                    return []
+                    print(f"[BlockMetadata.get_all_blocks] ERROR: Chain discontinuity at block {block['header']['index']}. "
+                        f"Prev hash {block['header']['previous_hash']} vs expected {prev_hash}")
+                    return []  # Prevent returning corrupted chains
                 prev_hash = current_hash
 
-            print(f"[BlockMetadata.get_all_blocks] INFO: Retrieved {len(blocks)} valid blocks.")
+            print(f"[BlockMetadata.get_all_blocks] SUCCESS: Retrieved {len(blocks)} valid blocks.")
             return blocks
 
         except Exception as e:
             print(f"[BlockMetadata.get_all_blocks] ERROR: Failed to retrieve blocks: {e}")
             return []
+
 
 
     def _block_to_storage_format(self, block: Block) -> Dict:

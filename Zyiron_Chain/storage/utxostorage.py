@@ -31,6 +31,10 @@ class UTXOStorage:
     Detailed print statements are provided for each operation and error condition.
     """
 
+
+
+
+
     def __init__(self, utxo_db: LMDBManager, utxo_history_db: LMDBManager, utxo_manager):
         try:
             self.utxo_db = utxo_db
@@ -42,6 +46,140 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage.__init__] ERROR: Failed to initialize UTXOStorage: {e}")
             raise
+
+
+    def _get_utxo_key(tx_id: bytes, output_index: int) -> bytes:
+        """
+        Generates a binary key for UTXO storage in LMDB.
+
+        - tx_id: 48-byte transaction ID (SHA3-384 hash)
+        - output_index: 4-byte unsigned integer (big-endian)
+
+        Returns:
+            A binary key formatted as: b"utxo:" + tx_id (48B) + output_index (4B)
+        """
+        try:
+            # ✅ Ensure tx_id is exactly 48 bytes
+            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
+                raise ValueError(f"[UTXOStorage._get_utxo_key] ERROR: Invalid tx_id format. Expected 48 bytes, got {len(tx_id)}.")
+
+            # ✅ Ensure output_index is a valid integer
+            if not isinstance(output_index, int) or output_index < 0:
+                raise ValueError(f"[UTXOStorage._get_utxo_key] ERROR: output_index must be a non-negative integer.")
+
+            # ✅ Format key: Prefix + Transaction ID (48B) + Output Index (4B)
+            utxo_key = b"utxo:" + tx_id + struct.pack(">I", output_index)
+
+            print(f"[UTXOStorage._get_utxo_key] INFO: Generated UTXO key for tx_id {tx_id.hex()} at index {output_index}.")
+            return utxo_key
+
+        except Exception as e:
+            print(f"[UTXOStorage._get_utxo_key] ERROR: Failed to generate UTXO key: {e}")
+            raise
+
+
+    def _serialize_utxo(tx_id: bytes, output_index: int, amount: int, script_pub_key: bytes, is_locked: bool, block_height: int, spent_status: bool) -> bytes:
+        """
+        Serializes a UTXO into binary format for storage in LMDB.
+
+        Fields:
+            - tx_id (48B)            → SHA3-384 transaction hash
+            - output_index (4B)       → 4-byte unsigned integer
+            - amount (8B)             → 8-byte unsigned integer (smallest unit)
+            - script_pub_key_length (2B) → Length of the scriptPubKey (max 512B)
+            - script_pub_key (Variable)  → Locking script
+            - is_locked (1B)          → 1-byte flag (0 = Unlocked, 1 = Locked)
+            - block_height (4B)       → 4-byte unsigned integer (block number)
+            - spent_status (1B)       → 1-byte flag (0 = Unspent, 1 = Spent)
+
+        Returns:
+            - Binary serialized UTXO (bytes)
+        """
+        try:
+            # ✅ Ensure transaction ID is exactly 48 bytes
+            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
+                raise ValueError(f"[UTXOStorage._serialize_utxo] ERROR: Invalid tx_id length. Expected 48 bytes, got {len(tx_id)}.")
+
+            # ✅ Ensure scriptPubKey is within the allowed length
+            script_length = len(script_pub_key)
+            if script_length > 512:
+                raise ValueError(f"[UTXOStorage._serialize_utxo] ERROR: script_pub_key too long. Max 512B, got {script_length}B.")
+
+            # ✅ Pack data into binary format
+            utxo_data = (
+                tx_id +  # 48 bytes
+                struct.pack(">I", output_index) +  # 4 bytes
+                struct.pack(">Q", amount) +  # 8 bytes
+                struct.pack(">H", script_length) +  # 2 bytes (script length)
+                script_pub_key +  # Variable length (max 512B)
+                struct.pack(">B", int(is_locked)) +  # 1 byte (locked flag)
+                struct.pack(">I", block_height) +  # 4 bytes (block height)
+                struct.pack(">B", int(spent_status))  # 1 byte (spent flag)
+            )
+
+            print(f"[UTXOStorage._serialize_utxo] INFO: Serialized UTXO {tx_id.hex()} at index {output_index} into {len(utxo_data)} bytes.")
+            return utxo_data
+
+        except Exception as e:
+            print(f"[UTXOStorage._serialize_utxo] ERROR: Failed to serialize UTXO: {e}")
+            raise
+
+
+    def _deserialize_utxo(utxo_data: bytes) -> dict:
+        """
+        Deserializes binary UTXO data back into a dictionary format.
+
+        Returns:
+            - Dictionary with UTXO fields
+        """
+        try:
+            # ✅ Minimum expected length: 48B (tx_id) + 4B (output_index) + 8B (amount) + 2B (script_len) + 1B (locked) + 4B (block_height) + 1B (spent) = 68B
+            if len(utxo_data) < 68:
+                raise ValueError(f"[UTXOStorage._deserialize_utxo] ERROR: UTXO data too short. Expected at least 68B, got {len(utxo_data)}B.")
+
+            # ✅ Extract fixed-length fields
+            offset = 0
+            tx_id = utxo_data[offset:offset+48]
+            offset += 48
+            output_index = struct.unpack(">I", utxo_data[offset:offset+4])[0]
+            offset += 4
+            amount = struct.unpack(">Q", utxo_data[offset:offset+8])[0]
+            offset += 8
+            script_length = struct.unpack(">H", utxo_data[offset:offset+2])[0]
+            offset += 2
+
+            # ✅ Extract scriptPubKey (Variable-length)
+            script_pub_key = utxo_data[offset:offset+script_length]
+            offset += script_length
+
+            # ✅ Extract remaining fields
+            is_locked = bool(struct.unpack(">B", utxo_data[offset:offset+1])[0])
+            offset += 1
+            block_height = struct.unpack(">I", utxo_data[offset:offset+4])[0]
+            offset += 4
+            spent_status = bool(struct.unpack(">B", utxo_data[offset:offset+1])[0])
+
+            # ✅ Construct UTXO dictionary
+            utxo_dict = {
+                "tx_id": tx_id,
+                "output_index": output_index,
+                "amount": amount,
+                "script_pub_key": script_pub_key,
+                "is_locked": is_locked,
+                "block_height": block_height,
+                "spent_status": spent_status
+            }
+
+            print(f"[UTXOStorage._deserialize_utxo] INFO: Deserialized UTXO {tx_id.hex()} at index {output_index}.")
+            return utxo_dict
+
+        except Exception as e:
+            print(f"[UTXOStorage._deserialize_utxo] ERROR: Failed to deserialize UTXO: {e}")
+            raise
+
+
+
+
 
     def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
         """
@@ -67,12 +205,11 @@ class UTXOStorage:
 
     def update_utxos(self, block) -> None:
         """
-        Update UTXO databases (utxo.lmdb & utxo_history.lmdb) for the given block.
+        Update UTXO databases (utxo.lmdb & utxo_history.lmdb) for the given block using binary format.
 
         Steps:
-        1. Remove spent UTXOs.
+        1. Remove spent UTXOs and archive them in `utxo_history.lmdb`.
         2. Add new UTXOs from block transactions.
-        3. Record UTXO changes in the history database.
         """
         try:
             print(f"[UTXOStorage.update_utxos] INFO: Updating UTXOs for Block {block.index}...")
@@ -81,52 +218,46 @@ class UTXOStorage:
                 with self.utxo_db.env.begin(write=True) as utxo_txn, \
                         self.utxo_history_db.env.begin(write=True) as history_txn:
 
-                    # Step 1: Remove spent UTXOs
+                    # ✅ Step 1: Remove spent UTXOs (Binary Format)
                     for tx in block.transactions:
                         if hasattr(tx, "inputs"):
                             for tx_input in tx.inputs:
-                                spent_key = f"utxo:{tx_input.tx_out_id}".encode("utf-8")
-                                spent_utxo = utxo_txn.get(spent_key)
-                                if spent_utxo:
-                                    history_key = f"spent_utxo:{tx_input.tx_out_id}:{block.timestamp}".encode("utf-8")
-                                    history_txn.put(history_key, spent_utxo)
-                                    utxo_txn.delete(spent_key)
-                                    print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {tx_input.tx_out_id}.")
-                                else:
-                                    print(f"[UTXOStorage.update_utxos] WARNING: Spent UTXO {tx_input.tx_out_id} not found.")
+                                utxo_key = b"utxo:" + tx_input.tx_id + struct.pack(">I", tx_input.output_index)
+                                spent_utxo = utxo_txn.get(utxo_key)
 
-                    # Step 2: Add new UTXOs from transactions explicitly
+                                if spent_utxo:
+                                    # ✅ Archive spent UTXO with timestamp in `utxo_history.lmdb`
+                                    history_key = b"spent_utxo:" + tx_input.tx_id + struct.pack(">I", tx_input.output_index) + struct.pack(">I", block.timestamp)
+                                    history_txn.put(history_key, spent_utxo)
+
+                                    # ✅ Remove spent UTXO from `utxo.lmdb`
+                                    utxo_txn.delete(utxo_key)
+                                    print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {tx_input.tx_id.hex()}:{tx_input.output_index}.")
+                                else:
+                                    print(f"[UTXOStorage.update_utxos] WARNING: Spent UTXO {tx_input.tx_id.hex()}:{tx_input.output_index} not found.")
+
+                    # ✅ Step 2: Add new UTXOs (Binary Format)
                     for tx in block.transactions:
                         for idx, output in enumerate(tx.outputs):
-                            utxo_id = f"{tx.tx_id}:{idx}"
+                            # ✅ Convert output data into binary format
+                            serialized_utxo = self._serialize_utxo(
+                                tx_id=tx.tx_id,
+                                output_index=idx,
+                                amount=output.amount,
+                                script_pub_key=output.script_pub_key,
+                                is_locked=output.locked,
+                                block_height=block.index,
+                                spent_status=False
+                            )
 
-                            # Explicitly handle dict vs object outputs
-                            if isinstance(output, dict):
-                                amount = float(output.get("amount", 0))
-                                script_pub_key = output.get("script_pub_key", "")
-                                locked = output.get("locked", False)
-                            else:
-                                amount = float(getattr(output, "amount", 0))
-                                script_pub_key = getattr(output, "script_pub_key", "")
-                                locked = getattr(output, "locked", False)
-
-                            utxo_data = {
-                                "tx_out_id": utxo_id,
-                                "amount": amount,
-                                "script_pub_key": script_pub_key,
-                                "locked": locked,
-                                "block_index": block.index
-                            }
-
-                            serialized_utxo = json.dumps(utxo_data).encode("utf-8")
-                            utxo_key = f"utxo:{utxo_id}".encode("utf-8")
-
+                            utxo_key = b"utxo:" + tx.tx_id + struct.pack(">I", idx)
                             utxo_txn.put(utxo_key, serialized_utxo)
 
-                            history_key = f"new_utxo:{utxo_id}:{block.timestamp}".encode("utf-8")
+                            # ✅ Store new UTXO in `utxo_history.lmdb`
+                            history_key = b"new_utxo:" + tx.tx_id + struct.pack(">I", idx) + struct.pack(">I", block.timestamp)
                             history_txn.put(history_key, serialized_utxo)
 
-                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {utxo_id}, amount {amount}")
+                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {tx.tx_id.hex()}:{idx}, amount {output.amount}.")
 
             print(f"[UTXOStorage.update_utxos] SUCCESS: UTXOs updated successfully for Block {block.index}.")
 
@@ -136,43 +267,40 @@ class UTXOStorage:
 
 
 
-    def store_utxo(self, utxo_id: str, utxo_data: dict) -> bool:
+    def get_utxo(self, tx_id: bytes, output_index: int) -> Optional[dict]:
         """
-        Store an individual UTXO in LMDB.
-        Converts values to appropriate types and preserves precision.
+        Retrieve a UTXO from LMDB in binary format and deserialize it.
+
+        :param tx_id: Transaction ID (48 bytes, SHA3-384 hash).
+        :param output_index: Output index (4 bytes, unsigned int).
+        :return: UTXO dictionary if found, None otherwise.
         """
         try:
-            if not isinstance(utxo_data, dict):
-                raise TypeError("[UTXOStorage.store_utxo] ERROR: UTXO data must be a dictionary.")
+            # ✅ Ensure valid transaction ID length (48 bytes)
+            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
+                raise ValueError(f"[UTXOStorage.get_utxo] ERROR: Invalid tx_id length. Expected 48B, got {len(tx_id)}B.")
 
-            required_keys = {"tx_out_id", "amount", "script_pub_key", "block_index"}
-            missing = required_keys - utxo_data.keys()
-            if missing:
-                raise KeyError(f"[UTXOStorage.store_utxo] ERROR: Missing keys in UTXO data: {missing}")
+            # ✅ Generate Binary Key for UTXO Retrieval
+            utxo_key = b"utxo:" + tx_id + struct.pack(">I", output_index)
 
-            tx_out_id = str(utxo_data["tx_out_id"])
-            amount = Decimal(str(utxo_data["amount"])).quantize(Decimal(Constants.COIN))
-            script_pub_key = str(utxo_data["script_pub_key"])
-            locked = bool(utxo_data.get("locked", False))
-            block_index = int(utxo_data.get("block_index", 0))
+            # ✅ Fetch from LMDB
+            with self.utxo_db.env.begin() as txn:
+                utxo_value = txn.get(utxo_key)
 
-            utxo_entry = {
-                "tx_out_id": tx_out_id,
-                "amount": str(amount),
-                "script_pub_key": script_pub_key,
-                "locked": locked,
-                "block_index": block_index
-            }
-            key = tx_out_id.encode("utf-8")
-            existing = self.utxo_db.get(key)
-            if existing:
-                print(f"[UTXOStorage.store_utxo] WARNING: UTXO {tx_out_id} exists. Replacing entry.")
-            self.utxo_db.put(key, json.dumps(utxo_entry).encode("utf-8"), replace=True)
-            print(f"[UTXOStorage.store_utxo] SUCCESS: Stored UTXO {utxo_id}.")
-            return True
-        except (KeyError, TypeError, ValueError, Decimal.InvalidOperation) as e:
-            print(f"[UTXOStorage.store_utxo] ERROR: Failed to store UTXO {utxo_id}: {e}")
-            return False
+            if not utxo_value:
+                print(f"[UTXOStorage.get_utxo] WARNING: UTXO {tx_id.hex()} at index {output_index} not found.")
+                return None
+
+            # ✅ Deserialize Binary UTXO Data
+            utxo_data = self._deserialize_utxo(utxo_value)
+            print(f"[UTXOStorage.get_utxo] SUCCESS: Retrieved UTXO {tx_id.hex()} at index {output_index}.")
+            return utxo_data
+
+        except Exception as e:
+            print(f"[UTXOStorage.get_utxo] ERROR: Failed to retrieve UTXO {tx_id.hex()} at index {output_index}: {e}")
+            return None
+
+
 
 
 
@@ -207,23 +335,53 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage.export_utxos] ERROR: Failed to export UTXOs: {e}")
 
-    def validate_utxo(self, tx_out_id: str, amount: Decimal) -> bool:
+    def validate_utxo(self, tx_id: bytes, output_index: int, amount: Decimal) -> bool:
         """
         Validate that a UTXO exists, is unlocked, and has sufficient balance.
+
+        :param tx_id: Transaction ID (48 bytes, SHA3-384 hash).
+        :param output_index: Output index (4 bytes, unsigned int).
+        :param amount: Amount to validate (Decimal).
+        :return: True if UTXO is valid, False otherwise.
         """
-        utxo = self.get_utxo(tx_out_id)
-        if not utxo:
-            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} does not exist.")
+        try:
+            # ✅ Ensure valid transaction ID length (48 bytes)
+            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
+                raise ValueError(f"[UTXOStorage.validate_utxo] ERROR: Invalid tx_id length. Expected 48B, got {len(tx_id)}B.")
+
+            # ✅ Generate Binary Key
+            utxo_key = b"utxo:" + tx_id + struct.pack(">I", output_index)
+
+            # ✅ Retrieve UTXO from LMDB
+            with self.utxo_db.env.begin() as txn:
+                utxo_data = txn.get(utxo_key)
+
+            if not utxo_data:
+                print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_id.hex()}:{output_index} does not exist.")
+                return False
+
+            # ✅ Deserialize Binary UTXO Data
+            utxo = self._deserialize_utxo(utxo_data)
+
+            # ✅ Check if UTXO is locked
+            if utxo["is_locked"]:
+                print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_id.hex()}:{output_index} is locked and cannot be spent.")
+                return False
+
+            # ✅ Validate sufficient balance
+            utxo_amount = Decimal(str(utxo["amount"]))
+            if utxo_amount < amount:
+                print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_id.hex()}:{output_index} has insufficient balance. "
+                    f"Required: {amount}, Available: {utxo_amount}")
+                return False
+
+            print(f"[UTXOStorage.validate_utxo] INFO: UTXO {tx_id.hex()}:{output_index} validated for spending. "
+                f"Required {amount}, Available {utxo_amount}")
+            return True
+
+        except Exception as e:
+            print(f"[UTXOStorage.validate_utxo] ERROR: Failed to validate UTXO {tx_id.hex()}:{output_index}: {e}")
             return False
-        if utxo.locked:
-            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} is locked and cannot be spent.")
-            return False
-        utxo_amount = Decimal(str(utxo.amount))
-        if utxo_amount < amount:
-            print(f"[UTXOStorage.validate_utxo] ERROR: UTXO {tx_out_id} has insufficient balance. Required: {amount}, Available: {utxo.amount}")
-            return False
-        print(f"[UTXOStorage.validate_utxo] INFO: UTXO {tx_out_id} validated for spending: Required {amount}, Available {utxo.amount}")
-        return True
 
 
     def _get_database(self, db_key: str) -> LMDBManager:

@@ -39,6 +39,7 @@ from Zyiron_Chain.storage.lmdatabase import LMDBManager  # For LMDB manager crea
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockManager
 from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # ✅ Import GenesisBlockManager
+from Zyiron_Chain.transactions.fees import FeeModel
 
 def detailed_print(message: str):
     """Helper function for detailed print-based debugging."""
@@ -53,32 +54,37 @@ class Start:
         detailed_print("Initializing KeyManager...")
         self.key_manager = KeyManager()
 
-        # 2. Initialize each splitted storage module
-        detailed_print("Initializing splitted storage modules...")
+        # 2. Initialize FeeModel ✅
+        detailed_print("Initializing FeeModel...")
+        self.fee_model = FeeModel(Constants.MAX_SUPPLY)
 
-        # Block storage & metadata
-        self.block_storage = WholeBlockData()
-        self.block_metadata = BlockMetadata()
-        self.tx_storage = TxStorage()
+        # 3. Initialize TxStorage ✅ Pass FeeModel
+        detailed_print("Initializing TxStorage...")
+        self.tx_storage = TxStorage(fee_model=self.fee_model)
+
+        # 4. Initialize Block Storage & Metadata ✅ Pass TxStorage
+        detailed_print("Initializing block storage and metadata...")
+        self.block_storage = WholeBlockData(tx_storage=self.tx_storage)  # ✅ FIXED
+        self.block_metadata = BlockMetadata(tx_storage=self.tx_storage)
+
+        # 5. Initialize Wallet Storage & Mempool Storage
         self.wallet_index = WalletStorage()
         self.mempool_storage = MempoolStorage()
 
-        # For UTXOStorage, create LMDB managers for UTXO and UTXO history:
+        # 6. Initialize UTXO Storage ✅ Ensure LMDB paths exist
         utxo_db_path = Constants.DATABASES.get("utxo")
         utxo_history_path = Constants.DATABASES.get("utxo_history")
         detailed_print(f"Initializing LMDB managers for UTXO at {utxo_db_path} and UTXO history at {utxo_history_path}...")
         utxo_db = LMDBManager(utxo_db_path)
         utxo_history_db = LMDBManager(utxo_history_path)
 
-        # Create a UTXOManager using the storage manager (peer id now comes from PeerConstants)
+        # 7. Initialize UTXO Manager ✅ Pass LMDB and Peer Constants
         from Zyiron_Chain.network.peerconstant import PeerConstants
-        peer_constants = PeerConstants()  # This will validate the network and provide PEER_USER_ID
+        peer_constants = PeerConstants()
         detailed_print(f"Initializing UTXOManager with peer id '{peer_constants.PEER_USER_ID}'...")
-        
-        # Create UTXOManager
         utxo_manager = UTXOManager(utxo_db)
 
-        # Now initialize UTXOStorage with the required parameters.
+        # 8. Initialize UTXO Storage ✅
         self.utxo_storage = UTXOStorage(
             utxo_db=utxo_db,
             utxo_history_db=utxo_history_db,
@@ -86,29 +92,34 @@ class Start:
         )
         detailed_print("UTXOStorage initialized successfully.")
 
-        # 3. Initialize TransactionManager with utxo_manager
+        # 9. Initialize Transaction Manager ✅ Ensure it gets TxStorage
         detailed_print("Initializing TransactionManager...")
         self.transaction_manager = TransactionManager(
             block_storage=self.block_storage,
             block_metadata=self.block_metadata,
-            tx_storage=self.tx_storage,
-            utxo_manager=utxo_manager,  # Pass the utxo_manager instance
+            tx_storage=self.tx_storage,  # ✅ Ensure correct storage is passed
+            utxo_manager=utxo_manager,
             key_manager=self.key_manager
         )
 
-        # 4. Initialize the Blockchain
+        # ✅ 10. Initialize Blockchain ✅ Ensure all components are passed
         detailed_print("Initializing Blockchain...")
-        self.blockchain = Blockchain(
-            block_storage=self.block_storage,
-            block_metadata=self.block_metadata,
-            tx_storage=self.tx_storage,
-            utxo_storage=self.utxo_storage,
-            wallet_index=self.wallet_index,
-            transaction_manager=self.transaction_manager,
-            key_manager=self.key_manager
-        )
+        try:
+            self.blockchain = Blockchain(
+                block_storage=self.block_storage,
+                block_metadata=self.block_metadata,
+                tx_storage=self.tx_storage,  # ✅ Ensure TxStorage is passed
+                utxo_storage=self.utxo_storage,
+                wallet_index=self.wallet_index,
+                transaction_manager=self.transaction_manager,
+                key_manager=self.key_manager
+            )
+            detailed_print("[Blockchain] SUCCESS: Blockchain initialized successfully.")
+        except Exception as e:
+            detailed_print(f"[Blockchain] ERROR: Blockchain initialization failed: {e}")
+            raise
 
-        # 4a. Initialize BlockManager
+        # 11. Initialize BlockManager ✅ Ensure Blockchain and Storage are Passed
         detailed_print("Initializing BlockManager...")
         self.block_manager = BlockManager(
             blockchain=self.blockchain,
@@ -118,7 +129,7 @@ class Start:
             transaction_manager=self.transaction_manager
         )
 
-        # 4b. Initialize GenesisBlockManager ✅
+        # 12. Initialize Genesis Block Manager ✅
         detailed_print("Initializing GenesisBlockManager...")
         self.genesis_block_manager = GenesisBlockManager(
             block_storage=self.block_storage,
@@ -128,18 +139,19 @@ class Start:
             block_manager=self.block_manager
         )
 
-        # 5. Initialize Miner ✅ Ensure block_storage is passed
+        # 13. Initialize Miner ✅ Ensure All Components Are Passed
         detailed_print("Initializing Miner...")
         self.miner = Miner(
             blockchain=self.blockchain,
             block_manager=self.block_manager,
             block_metadata=self.block_metadata,
-            block_storage=self.block_storage,  # ✅ Ensure WholeBlockData is passed
+            block_storage=self.block_storage,
             transaction_manager=self.transaction_manager,
             key_manager=self.key_manager,
             mempool_storage=self.mempool_storage,
-            genesis_block_manager=self.genesis_block_manager  # ✅ Pass GenesisBlockManager
+            genesis_block_manager=self.genesis_block_manager
         )
+
 
     def load_blockchain(self):
         detailed_print("Loading blockchain data from storage...")
