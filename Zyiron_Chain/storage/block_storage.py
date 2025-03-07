@@ -160,12 +160,6 @@ class WholeBlockData:
 
 
 
-    def get_block(self, block_id):
-        """Retrieve and deserialize block data if necessary."""
-        data = self.block_db.get(block_id.encode("utf-8"))
-        return Deserializer().deserialize(data) if data else None
-
-
 
 
 

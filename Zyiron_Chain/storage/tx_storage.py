@@ -56,10 +56,6 @@ class TxStorage:
             raise
 
 
-    def get_transaction(self, tx_id):
-        """Retrieve transaction data and deserialize it if necessary."""
-        data = self.txindex_db.get(tx_id.encode("utf-8"))
-        return Deserializer().deserialize(data) if data else None
 
 
     def store_transaction(self, tx_id: str, block_hash: str, inputs: List[Dict], outputs: List[Dict], timestamp: int) -> None:

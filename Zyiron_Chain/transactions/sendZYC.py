@@ -40,12 +40,6 @@ class SendZYC:
         print(f"[SendZYC] Initialized for network {self.network.upper()} with coin unit {self.coin_unit}")
 
 
-    def get_transaction_data(self, tx_id):
-        """Retrieve and deserialize transaction data."""
-        data = self.mempool.get_transaction(tx_id)
-        return Deserializer().deserialize(data) if data else None
-    
-
 
     def prepare_tx_in(self, required_amount):
         """

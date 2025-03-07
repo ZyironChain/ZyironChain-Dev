@@ -305,13 +305,6 @@ class LMDBManager:
     # -------------------------------------------------------------------------
     # Helper JSON (De)Serialization
     # -------------------------------------------------------------------------
-    def _serialize(self, data):
-        """Serialize a dict to a JSON-encoded bytes."""
-        return json.dumps(data).encode()
-
-    def _deserialize(self, data):
-        """Deserialize JSON-encoded bytes into a Python dict."""
-        return json.loads(data.decode()) if data else None
 
     # -------------------------------------------------------------------------
     # Simulated Transaction Methods

@@ -306,11 +306,6 @@ class UTXOStorage:
 
 
 
-    def get_utxos(self, tx_out_id):
-        """Retrieve UTXO data and deserialize if necessary."""
-        data = self.utxo_db.get(tx_out_id.encode("utf-8"))
-        return Deserializer().deserialize(data) if data else None
-
 
 
     def export_utxos(self) -> None:
