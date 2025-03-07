@@ -147,46 +147,64 @@ class WholeBlockData:
         Packs the header fields into fixed-length binary and appends transaction data.
         """
         try:
+            print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
+
             block_dict = block.to_dict()
             header = block_dict["header"]
+
+            # Extract block header fields
             block_height = int(header["index"])
             prev_block_hash = bytes.fromhex(header["previous_hash"])
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
             difficulty_int = int(header["difficulty"])
-            # Convert difficulty to 48 bytes (big-endian)
+
+            # ✅ Convert difficulty to 48 bytes (big-endian)
             difficulty_bytes = difficulty_int.to_bytes(48, "big", signed=False)
             if len(difficulty_bytes) > 48:
-                raise ValueError(f"Difficulty {difficulty_int} exceeds 48 bytes.")
-            # Process miner address (max 128 bytes, padded)
+                raise ValueError(f"[WholeBlockData] ERROR: Difficulty {difficulty_int} exceeds 48 bytes.")
+
+            # ✅ Process miner address (max 128 bytes, padded)
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
-                raise ValueError("Miner address exceeds 128 bytes.")
+                raise ValueError("[WholeBlockData] ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
-            # Pack header: index, prev hash, merkle root, timestamp, nonce, difficulty, miner address
+
+            # ✅ Pack header fields: block index, previous hash, merkle root, timestamp, nonce, difficulty, miner address
             header_format = ">I32s32sQI48s128s"
-            header_data = struct.pack(header_format,
-                                      block_height,
-                                      prev_block_hash,
-                                      merkle_root,
-                                      timestamp,
-                                      nonce,
-                                      difficulty_bytes,
-                                      miner_address_padded)
-            # Serialize transactions as JSON strings (each separated by a newline)
+            header_data = struct.pack(
+                header_format,
+                block_height,
+                prev_block_hash,
+                merkle_root,
+                timestamp,
+                nonce,
+                difficulty_bytes,
+                miner_address_padded
+            )
+
+            # ✅ Serialize transactions as JSON and encode as bytes
             tx_data_list = []
             for tx in block_dict["transactions"]:
-                tx_json = json.dumps(tx, sort_keys=True)
-                tx_data_list.append(tx_json)
-            # Join transactions with newline as delimiter
+                try:
+                    tx_json = json.dumps(tx, sort_keys=True)
+                    tx_data_list.append(tx_json)
+                except Exception as e:
+                    print(f"[WholeBlockData] ERROR: Failed to serialize transaction: {e}")
+
             tx_data = "\n".join(tx_data_list).encode("utf-8")
             tx_count = len(block_dict["transactions"])
             tx_count_data = struct.pack(">I", tx_count)
-            return header_data + tx_count_data + tx_data
+
+            # ✅ Return complete serialized block
+            serialized_block = header_data + tx_count_data + tx_data
+            print(f"[WholeBlockData] SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
+            return serialized_block
+
         except Exception as e:
-            print(f"[WholeBlockData] ERROR: Failed to serialize block: {e}")
+            print(f"[WholeBlockData] ERROR: Failed to serialize block {block.index}: {e}")
             raise
 
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
@@ -350,6 +368,24 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to retrieve latest block: {e}")
             return None
+
+
+
+    def _validate_block_file(self):
+        """
+        Validates the block data file.
+        - If the file exceeds BLOCK_DATA_FILE_SIZE_MB (512MB from Constants), it will be regenerated.
+        """
+        if os.path.exists(self.current_block_file):
+            with open(self.current_block_file, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                file_size_mb = f.tell() / (1024 * 1024)  # Convert bytes to MB
+                if file_size_mb > Constants.BLOCK_DATA_FILE_SIZE_MB:
+                    print(f"[ERROR] Block data file exceeds {Constants.BLOCK_DATA_FILE_SIZE_MB}MB - regenerating")
+                    os.remove(self.current_block_file)
+                    self._initialize_block_data_file()
+
+
 
     def get_total_mined_supply(self) -> Decimal:
         """

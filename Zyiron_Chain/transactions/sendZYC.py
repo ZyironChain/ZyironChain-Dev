@@ -48,31 +48,64 @@ class SendZYC:
 
 
     def prepare_tx_in(self, required_amount):
+        """
+        Selects UTXOs to fulfill the required amount, ensuring valid inputs.
+        Locks selected UTXOs to prevent double spending.
+        """
         with self.lock:
+            print(f"[INFO] Selecting UTXOs to fulfill {required_amount} ZYC...")
+
             selected_utxos = self.utxo_manager.select_utxos(required_amount)
             inputs = []
             total_input = Decimal("0")
+
             if not selected_utxos:
                 print(f"[ERROR] No available UTXOs to fulfill {required_amount}.")
                 raise ValueError("Insufficient UTXOs for the transaction.")
+
             for utxo_id, utxo_data in selected_utxos.items():
                 try:
                     utxo_amount = Decimal(utxo_data.get("amount", 0))
+                    sender_address = self.key_manager.get_default_public_key(self.network)
+
+                    # ✅ Ensure UTXO belongs to the sender
+                    if utxo_data.get("script_pub_key") != sender_address:
+                        print(f"[WARN] Skipping UTXO {utxo_id}: Does not belong to sender.")
+                        continue
+
+                    # ✅ Ensure UTXO amount is valid
                     if utxo_amount <= 0:
                         print(f"[WARN] Skipping invalid UTXO {utxo_id} with amount {utxo_amount}.")
                         continue
+
+                    # ✅ Retrieve private key safely
                     private_key = self.key_manager.get_private_key()
+                    if not private_key:
+                        print(f"[ERROR] Failed to retrieve private key for UTXO {utxo_id}.")
+                        raise ValueError("Private key retrieval failed.")
+
+                    # ✅ Generate script signature
                     signature_data = f"{utxo_id}{private_key}"
                     script_sig = hashlib.sha3_384(signature_data.encode()).hexdigest()
+
+                    # ✅ Append valid transaction input
                     inputs.append(TransactionIn(tx_out_id=utxo_id, script_sig=script_sig))
                     total_input += utxo_amount
+
                 except Exception as e:
                     print(f"[ERROR] Failed to process UTXO {utxo_id}: {e}")
+
+            # ✅ Ensure total input meets required amount
             if total_input < required_amount:
                 print(f"[ERROR] Insufficient funds. Required: {required_amount}, Available: {total_input}.")
                 raise ValueError("Insufficient funds for the transaction.")
+
+            # ✅ Lock UTXOs after selection
+            self.utxo_manager.lock_selected_utxos([tx.tx_out_id for tx in inputs])
+
             print(f"[INFO] Prepared {len(inputs)} inputs with total amount {total_input}.")
             return inputs, total_input
+
 
     def prepare_tx_out(self, recipient, amount, change_address, change_amount):
         with self.lock:
@@ -130,26 +163,70 @@ class SendZYC:
                 print(f"[ERROR] Broadcast failed for transaction {transaction.tx_id}: {e}")
                 return False
 
-    def prepare_transaction(self, recipient_script_pub_key, amount, block_size, payment_type="Standard"):
+    def prepare_transaction(self, recipient_script_pub_key, amount, block_size, payment_type="STANDARD"):
+        """
+        Prepares a transaction by selecting UTXOs, calculating fees, and constructing inputs and outputs.
+        Ensures transactions adhere to network-specific confirmation times.
+        """
         with self.lock:
             try:
+                print(f"[SendZYC.prepare_transaction] INFO: Preparing transaction to {recipient_script_pub_key} for {amount} ZYC...")
+
+                # ✅ Convert amount to Decimal safely
                 amount = Decimal(str(amount))
-                estimated_tx_size = 250
-                fee = self.calculate_fee(block_size, payment_type, estimated_tx_size)
+
+                # ✅ Estimate transaction size
+                estimated_tx_size = 1000
+
+                # ✅ Dynamically calculate fee based on congestion and type
+                fee_details = self.fee_model.calculate_fee_and_tax(block_size, payment_type, amount, estimated_tx_size)
+                fee = fee_details["base_fee"]
+                miner_fee = fee_details["miner_fee"]
+                tax_fee = fee_details["tax_fee"]
+
+                print(f"[SendZYC.prepare_transaction] INFO: Fee Breakdown - Base Fee: {fee}, Miner Fee: {miner_fee}, Tax Fee: {tax_fee}")
+
+                # ✅ Ensure fee does not exceed transaction amount
                 if fee > amount:
                     print(f"[ERROR] Fee ({fee}) exceeds transaction amount ({amount}). Transaction aborted.")
                     raise ValueError("Transaction fee is too high compared to the amount.")
+
+                # ✅ Calculate required amount (amount + fee)
                 required_amount = amount + Decimal(fee)
+
+                # ✅ Select UTXOs for required amount
                 inputs, total_input = self.prepare_tx_in(required_amount)
+
+                # ✅ Calculate change
                 change = total_input - required_amount
                 if change < 0:
                     print(f"[ERROR] Insufficient funds. Required: {required_amount}, Available: {total_input}.")
                     raise ValueError("Insufficient funds after UTXO selection.")
+
+                print(f"[SendZYC.prepare_transaction] INFO: Selected UTXOs cover {total_input} ZYC, Change: {change} ZYC")
+
+                # ✅ Retrieve miner's script pub key for fee allocation
                 miner_script_pub_key = self.key_manager.get_default_public_key(self.network, role="miner")
+
+                # ✅ Prepare transaction outputs
                 outputs = self.prepare_tx_out(recipient_script_pub_key, amount, miner_script_pub_key, change)
+
+                # ✅ Lock UTXOs to prevent double spending
                 self.utxo_manager.lock_selected_utxos([tx.tx_out_id for tx in inputs])
+
+                # ✅ Construct transaction
                 transaction = Transaction(inputs=inputs, outputs=outputs)
+
+                # ✅ Dynamically assign confirmation times based on network
+                confirmation_times = Constants.TRANSACTION_CONFIRMATIONS
+                required_confirmations = confirmation_times.get(payment_type.upper(), confirmation_times["STANDARD"])
+
+                print(f"[SendZYC.prepare_transaction] INFO: Transaction {transaction.tx_id} requires {required_confirmations} confirmations.")
+
+                # ✅ Sign transaction
                 self.sign_tx(transaction)
+
+                # ✅ Broadcast transaction
                 if self.broadcast_transaction(transaction):
                     print(f"[INFO] Transaction {transaction.tx_id} successfully prepared and broadcasted.")
                     return transaction
@@ -157,9 +234,11 @@ class SendZYC:
                     print(f"[ERROR] Failed to broadcast transaction {transaction.tx_id}. Unlocking UTXOs.")
                     self.utxo_manager.unlock_selected_utxos([tx.tx_out_id for tx in inputs])
                     return None
+
             except Exception as e:
                 print(f"[ERROR] Failed to prepare transaction: {e}")
                 return None
+
 
     def sign_tx(self, transaction):
         with self.lock:

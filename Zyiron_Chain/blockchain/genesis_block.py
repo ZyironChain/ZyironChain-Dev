@@ -49,7 +49,6 @@ class GenesisBlockManager:
         self.block_manager = block_manager
         self.network = Constants.NETWORK
         print(f"[GenesisBlockManager.__init__] Initialized for network: {self.network}")
-
     def create_and_mine_genesis_block(self) -> Block:
         """
         Creates and mines the Genesis block using single SHA3-384 hashing.
@@ -58,7 +57,7 @@ class GenesisBlockManager:
         - Returns the mined Genesis block.
         """
         try:
-            print("[GenesisBlockManager.create_and_mine_genesis_block] INFO: Starting Genesis block mining...")
+            print("[GenesisBlockManager.create_and_mine_genesis_block] INFO: Checking for existing Genesis block...")
 
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             if not miner_address:
@@ -69,11 +68,11 @@ class GenesisBlockManager:
             if stored_tx_id:
                 print(f"[GenesisBlockManager.create_and_mine_genesis_block] INFO: Genesis Coinbase TX already exists with TX ID: {stored_tx_id}")
 
-                # ✅ **Instead of returning `None`, LOAD the existing Genesis block**
+                # ✅ **Load the existing Genesis block if found**
                 stored_genesis_block = self.block_metadata.get_block_by_tx_id(stored_tx_id)
                 if stored_genesis_block:
                     print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Loaded existing Genesis block with hash: {stored_genesis_block.hash}")
-                    return stored_genesis_block  # ✅ Return the existing Genesis block
+                    return stored_genesis_block  
 
                 print("[GenesisBlockManager.create_and_mine_genesis_block] WARNING: Stored Genesis TX exists but block not found, proceeding to mine again.")
 
@@ -118,19 +117,23 @@ class GenesisBlockManager:
                     last_update = current_time
 
             # ✅ **Genesis Block Mined Successfully**
-            print(f"Block {genesis_block.index} mined successfully with Nonce value of {genesis_block.nonce}")
-            print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Genesis Block mined with hash: {genesis_block.hash}")
+            print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Mined Genesis Block {genesis_block.index} with hash: {genesis_block.hash}")
 
-            # ✅ **Store Genesis Transaction ID**
+            # ✅ **Store Genesis Block and Transaction ID**
             with self.block_metadata.block_metadata_db.env.begin(write=True) as txn:
                 txn.put(b"GENESIS_COINBASE", coinbase_tx.tx_id.encode("utf-8"))
-            print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Stored Genesis Coinbase TX ID: {coinbase_tx.tx_id}")
 
+            # ✅ **Store Genesis Block in Metadata and Block Storage**
+            self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
+            self.block_storage.store_block(genesis_block, genesis_block.difficulty)
+
+            print(f"[GenesisBlockManager.create_and_mine_genesis_block] SUCCESS: Stored Genesis block with hash: {genesis_block.hash}")
             return genesis_block
 
         except Exception as e:
             print(f"[GenesisBlockManager.create_and_mine_genesis_block] ERROR: Genesis block mining failed: {e}")
             raise
+
 
 
 

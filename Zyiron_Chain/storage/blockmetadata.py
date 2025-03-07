@@ -17,6 +17,7 @@ from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.utils.deserializer import Deserializer
 from Zyiron_Chain.storage.tx_storage import TxStorage
+
 class BlockMetadata:
     """
     BlockMetadata is responsible for handling block metadata storage.
@@ -25,27 +26,46 @@ class BlockMetadata:
       - Store block headers (metadata) in LMDB.
       - Track block offsets and file information from the block.data file.
       - Ensure blocks are stored with correct magic numbers.
-      - Use single SHA3‑384 hashing.
+      - Use single SHA3-384 hashing.
       - Provide detailed print statements for every major step and error.
     """
 
-    def __init__(self, tx_storage=None):
+    def __init__(self, tx_storage: Optional[TxStorage] = None):
+        """
+        Initializes BlockMetadata:
+        - Sets up LMDB storage for block metadata.
+        - Initializes TxStorage for transaction indexing.
+        - Manages block data file paths and ensures correct initialization.
+        """
         try:
-            # Initialize block metadata LMDB database
+            print("[BlockMetadata.__init__] INFO: Initializing BlockMetadata...")
+
+            # ✅ Initialize LMDB for block metadata
             self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
 
-            # Initialize TxStorage explicitly
-            self.tx_storage = tx_storage or TxStorage()
+            # ✅ Initialize TxStorage explicitly
+            if tx_storage is None:
+                raise ValueError("[BlockMetadata.__init__] ERROR: TxStorage instance is required.")
+            self.tx_storage = tx_storage
 
-            # Set block.data file path
-            block_data_folder = Constants.DATABASES.get("block_data", "./block_data/")
+            # ✅ Set block data file path dynamically
+            block_data_folder = Constants.DATABASES.get("block_data")
+            if not block_data_folder:
+                raise ValueError("[BlockMetadata.__init__] ERROR: 'block_data' path missing in Constants.DATABASES.")
+
+            os.makedirs(block_data_folder, exist_ok=True)  # Ensure directory exists
             self.current_block_file = os.path.join(block_data_folder, "block_00001.data")
             self.current_block_offset = 0
+
+            # ✅ Initialize block data file with correct magic number
             self._initialize_block_data_file()
+
             print("[BlockMetadata.__init__] SUCCESS: Initialized BlockMetadata with LMDB and TxStorage.")
+
         except Exception as e:
             print(f"[BlockMetadata.__init__] ERROR: Initialization failed: {e}")
             raise
+
 
     def get_block_metadata(self, block_hash):
         """Retrieve block metadata and deserialize if needed."""
@@ -358,46 +378,64 @@ class BlockMetadata:
         Packs the header fields into fixed-length binary and appends transaction data.
         """
         try:
+            print(f"[BlockMetadata] INFO: Serializing Block {block.index} to binary.")
+
             block_dict = block.to_dict()
             header = block_dict["header"]
+
+            # Extract block header fields
             block_height = int(header["index"])
             prev_block_hash = bytes.fromhex(header["previous_hash"])
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
             difficulty_int = int(header["difficulty"])
-            # Convert difficulty to 48 bytes (big-endian)
+
+            # ✅ Convert difficulty to 48 bytes (big-endian)
             difficulty_bytes = difficulty_int.to_bytes(48, "big", signed=False)
             if len(difficulty_bytes) > 48:
-                raise ValueError(f"Difficulty {difficulty_int} exceeds 48 bytes.")
-            # Process miner address (max 128 bytes, padded)
+                raise ValueError(f"[BlockMetadata] ERROR: Difficulty {difficulty_int} exceeds 48 bytes.")
+
+            # ✅ Process miner address (max 128 bytes, padded)
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
-                raise ValueError("Miner address exceeds 128 bytes.")
+                raise ValueError("[BlockMetadata] ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
-            # Pack header: index, prev hash, merkle root, timestamp, nonce, difficulty, miner address
+
+            # ✅ Pack header fields: block index, previous hash, merkle root, timestamp, nonce, difficulty, miner address
             header_format = ">I32s32sQI48s128s"
-            header_data = struct.pack(header_format,
-                                      block_height,
-                                      prev_block_hash,
-                                      merkle_root,
-                                      timestamp,
-                                      nonce,
-                                      difficulty_bytes,
-                                      miner_address_padded)
-            # Serialize transactions as JSON strings (each separated by a newline)
+            header_data = struct.pack(
+                header_format,
+                block_height,
+                prev_block_hash,
+                merkle_root,
+                timestamp,
+                nonce,
+                difficulty_bytes,
+                miner_address_padded
+            )
+
+            # ✅ Serialize transactions as JSON and encode as bytes
             tx_data_list = []
             for tx in block_dict["transactions"]:
-                tx_json = json.dumps(tx, sort_keys=True)
-                tx_data_list.append(tx_json)
-            # Join transactions with newline as delimiter
+                try:
+                    tx_json = json.dumps(tx, sort_keys=True)
+                    tx_data_list.append(tx_json)
+                except Exception as e:
+                    print(f"[BlockMetadata] ERROR: Failed to serialize transaction: {e}")
+
             tx_data = "\n".join(tx_data_list).encode("utf-8")
             tx_count = len(block_dict["transactions"])
             tx_count_data = struct.pack(">I", tx_count)
-            return header_data + tx_count_data + tx_data
+
+            # ✅ Return complete serialized block
+            serialized_block = header_data + tx_count_data + tx_data
+            print(f"[BlockMetadata] SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
+            return serialized_block
+
         except Exception as e:
-            print(f"[BlockMetadata] ERROR: Failed to serialize block: {e}")
+            print(f"[BlockMetadata] ERROR: Failed to serialize block {block.index}: {e}")
             raise
 
 
