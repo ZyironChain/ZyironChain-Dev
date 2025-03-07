@@ -146,7 +146,6 @@ class GenesisBlockManager:
 
 
 
-
     def ensure_genesis_block(self):
         """
         Ensures the Genesis block exists in storage.
@@ -157,30 +156,39 @@ class GenesisBlockManager:
         try:
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Checking for existing Genesis block...")
 
-            # 🔹 First, try retrieving by Block Hash (Correct Approach)
+            # 🔹 First, try retrieving by Block Hash (Primary Method)
             stored_blocks = self.block_metadata.get_all_blocks()
-            if stored_blocks:
+            if stored_blocks and isinstance(stored_blocks, list) and len(stored_blocks) > 0:
                 genesis_data = stored_blocks[0]
-                if "hash" in genesis_data:
+
+                # ✅ Ensure block has a valid hash before using
+                if "hash" in genesis_data and isinstance(genesis_data["hash"], str) and len(genesis_data["hash"]) == 96:
                     print(f"[GenesisBlockManager.ensure_genesis_block] INFO: Using stored Genesis Block with hash: {genesis_data['hash']}")
                     return Block.from_dict(genesis_data)
+
+                print("[GenesisBlockManager.ensure_genesis_block] WARNING: Retrieved Genesis block is missing a valid hash.")
 
             # 🔹 If no block found, try retrieving by Coinbase Transaction ID (Genesis Only)
             stored_tx_id = self.block_metadata.get_transaction_id("GENESIS_COINBASE")
             if stored_tx_id:
                 print(f"[GenesisBlockManager.ensure_genesis_block] INFO: Using stored Coinbase TX ID: {stored_tx_id}")
-                stored_genesis_block = self.block_metadata.get_block_by_tx_id(stored_tx_id)  # ✅ Fallback
-                if stored_genesis_block:
+                stored_genesis_block = self.block_metadata.get_block_by_tx_id(stored_tx_id)
+
+                if stored_genesis_block and hasattr(stored_genesis_block, "hash"):
                     print(f"[GenesisBlockManager.ensure_genesis_block] SUCCESS: Loaded Genesis block with hash: {stored_genesis_block.hash}")
                     return stored_genesis_block
 
+                print("[GenesisBlockManager.ensure_genesis_block] WARNING: Retrieved Genesis block is invalid or missing.")
+
+            # 🔹 No valid Genesis block found, mining a new one...
             print("[GenesisBlockManager.ensure_genesis_block] WARNING: No valid Genesis block found, proceeding to mine a new one...")
             genesis_block = self.create_and_mine_genesis_block()
 
-            # ✅ Store Genesis Block
+            # ✅ Store Genesis Block in BlockMetadata
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Storing Genesis block in BlockMetadata...")
             self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
 
+            # ✅ Store Genesis Block in BlockStorage
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Storing Genesis block in BlockStorage...")
             self.block_storage.store_block(genesis_block, genesis_block.difficulty)
 
@@ -192,7 +200,6 @@ class GenesisBlockManager:
             print("[GenesisBlockManager.ensure_genesis_block] INFO: Purging corrupted chain data...")
             self.block_metadata.purge_chain()
             raise
-
 
 
 

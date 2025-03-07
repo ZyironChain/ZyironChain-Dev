@@ -107,6 +107,99 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.create_block_data_file] ERROR: Failed to write block to block.data file: {e}")
             raise
+    def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
+        """
+        Deserialize binary block data back into a Block object.
+        Ensures that the header exists before loading the block.
+        """
+        try:
+            header_format = ">I48s48sQI48s128s"
+            header_size = struct.calcsize(header_format)
+
+            # ✅ Ensure block has enough data for the header
+            if len(block_data) < header_size:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is too small to contain a valid header.")
+                return None
+
+            # ✅ Unpack header fields
+            try:
+                (block_height,
+                prev_block_hash,
+                merkle_root,
+                timestamp,
+                nonce,
+                difficulty_bytes,
+                miner_address_bytes) = struct.unpack(header_format, block_data[:header_size])
+            except struct.error as e:
+                print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Struct unpacking failed: {e}")
+                return None
+
+            difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
+            miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
+
+            # ✅ Ensure valid block header
+            if not isinstance(block_height, int) or block_height < 0:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Invalid block height.")
+                return None
+
+            if len(prev_block_hash) != 48 or len(merkle_root) != 48:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Invalid hash size for previous hash or Merkle root.")
+                return None
+
+            if timestamp <= 0:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Invalid timestamp.")
+                return None
+
+            if nonce < 0:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Invalid nonce value.")
+                return None
+
+            # ✅ Extract transaction count
+            tx_count_offset = header_size
+            if len(block_data) < tx_count_offset + 4:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is missing transaction count.")
+                return None
+
+            tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
+
+            # ✅ Extract transactions
+            tx_data = block_data[tx_count_offset + 4:]
+            tx_jsons = tx_data.split(b'\n')
+
+            transactions = []
+            for tx_json in tx_jsons:
+                if not tx_json.strip():
+                    continue
+                try:
+                    transactions.append(json.loads(tx_json.decode("utf-8")))
+                except json.JSONDecodeError as e:
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to decode transaction JSON: {e}")
+
+            # ✅ Construct block dictionary
+            block_dict = {
+                "header": {
+                    "index": block_height,
+                    "previous_hash": prev_block_hash.hex(),
+                    "merkle_root": merkle_root.hex(),
+                    "timestamp": timestamp,
+                    "nonce": nonce,
+                    "difficulty": difficulty_int,
+                    "miner_address": miner_address_str,
+                },
+                "transactions": transactions
+            }
+
+            # ✅ Ensure the block header exists before returning
+            if "header" not in block_dict or not isinstance(block_dict["header"], dict):
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block header is missing or malformed, skipping block load.")
+                return None
+
+            print(f"[BlockMetadata._deserialize_block_from_binary] SUCCESS: Block {block_height} deserialized successfully.")
+            return Block.from_dict(block_dict)
+
+        except Exception as e:
+            print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to deserialize block: {e}")
+            return None
 
 
     def _initialize_block_data_file(self):
@@ -149,36 +242,31 @@ class BlockMetadata:
         try:
             print(f"[BlockMetadata.store_block] INFO: Starting storage for Block {block.index}...")
 
-            # Step 1: Compute Merkle root if missing explicitly
+            # ✅ Step 1: Compute Merkle root if missing
             if not hasattr(block, "merkle_root") or not block.merkle_root:
                 print(f"[BlockMetadata.store_block] WARNING: Merkle root missing for Block {block.index}. Recomputing...")
                 block.merkle_root = block._compute_merkle_root()
                 print(f"[BlockMetadata.store_block] INFO: Merkle root computed: {block.merkle_root}.")
 
-            # Step 2: Explicitly preserve existing mined hash (NO recomputation)
+            # ✅ Step 2: Preserve explicitly mined hash (NO recomputation)
             print(f"[BlockMetadata.store_block] INFO: Using preserved mined hash {block.hash} for Block {block.index}.")
 
-            # Step 3: Serialize transactions
+            # ✅ Step 3: Serialize transactions
             print(f"[BlockMetadata.store_block] INFO: Serializing transactions for Block {block.index}...")
-            serialized_transactions = []
-            for tx in block.transactions:
-                if hasattr(tx, "to_dict"):
-                    serialized_transactions.append(tx.to_dict())
-                elif isinstance(tx, dict):
-                    serialized_transactions.append(tx)
-                else:
-                    raise TypeError(f"[BlockMetadata.store_block] ERROR: Transaction serialization failed: {tx}")
+            serialized_transactions = self._serialize_transactions(block.transactions)
 
-            # Extract coinbase transaction
+            # ✅ Step 4: Extract Coinbase Transaction details
             coinbase_tx = next(
                 (tx for tx in block.transactions if getattr(tx, 'tx_type', None) == "COINBASE"), None
             )
+
             miner_address = coinbase_tx.outputs[0].script_pub_key if coinbase_tx else block.miner_address
             reward_amount = coinbase_tx.outputs[0].amount if coinbase_tx else Constants.INITIAL_COINBASE_REWARD
-            total_fees = sum(Decimal(str(tx.get('fee', 0))) for tx in serialized_transactions)
+
+            total_fees = sum(Decimal(str(tx.get('fee', 0))) for tx in serialized_transactions if isinstance(tx, dict))
             print(f"[BlockMetadata.store_block] INFO: Total fees for Block {block.index}: {total_fees} ZYC.")
 
-            # Step 4: Prepare block metadata
+            # ✅ Step 5: Prepare block metadata
             print(f"[BlockMetadata.store_block] INFO: Preparing block metadata for Block {block.index}...")
             block_dict = {
                 "index": block.index,
@@ -199,30 +287,34 @@ class BlockMetadata:
                 "hash": block.hash,
                 "block_header": block_dict,
                 "transaction_count": len(serialized_transactions),
-                "block_size": len(json.dumps(block_dict).encode("utf-8")),
+                "block_size": len(json.dumps(block_dict, ensure_ascii=False).encode("utf-8")),
                 "data_file": self.current_block_file,
                 "data_offset": self.current_block_offset,
-                "tx_ids": [tx["tx_id"] for tx in serialized_transactions]
+                "tx_ids": [tx["tx_id"] for tx in serialized_transactions if isinstance(tx, dict)]
             }
 
-            # Step 5: Store metadata in LMDB
+            # ✅ Step 6: Store metadata in LMDB
             print(f"[BlockMetadata.store_block] INFO: Storing metadata in LMDB for Block {block.index}...")
             with self.block_metadata_db.env.begin(write=True) as txn:
                 lmdb_key = f"block:{block.hash}".encode("utf-8")
-                txn.put(lmdb_key, json.dumps(block_metadata).encode("utf-8"))
+                txn.put(lmdb_key, json.dumps(block_metadata, ensure_ascii=False).encode("utf-8"))
                 print(f"[BlockMetadata.store_block] INFO: Metadata stored in LMDB for Block {block.index}.")
 
-            # Step 6: Index transactions in txindex.lmdb
+            # ✅ Step 7: Index transactions in txindex.lmdb
             print(f"[BlockMetadata.store_block] INFO: Indexing transactions for Block {block.index}...")
             for tx in serialized_transactions:
-                tx_id = tx["tx_id"]
-                inputs = tx.get("inputs", [])
-                outputs = tx.get("outputs", [])
-                timestamp = tx.get("timestamp", int(time.time()))
-                self.tx_storage.store_transaction(tx_id, block.hash, inputs, outputs, timestamp)
-                print(f"[BlockMetadata.store_block] INFO: Indexed transaction {tx_id} for Block {block.index}.")
+                if isinstance(tx, dict) and "tx_id" in tx:
+                    tx_id = tx["tx_id"]
+                    inputs = tx.get("inputs", [])
+                    outputs = tx.get("outputs", [])
+                    timestamp = tx.get("timestamp", int(time.time()))
 
-            # Step 7: Append block data to block.data file
+                    self.tx_storage.store_transaction(tx_id, block.hash, inputs, outputs, timestamp)
+                    print(f"[BlockMetadata.store_block] INFO: Indexed transaction {tx_id} for Block {block.index}.")
+                else:
+                    print(f"[BlockMetadata.store_block] WARNING: Skipping invalid transaction format: {tx}")
+
+            # ✅ Step 8: Append block data to block.data file
             print(f"[BlockMetadata.store_block] INFO: Appending block data to block.data file...")
 
             block_bytes = json.dumps(block_dict, ensure_ascii=False).encode('utf-8')
@@ -237,7 +329,7 @@ class BlockMetadata:
                 block_file.flush()
                 print(f"[BlockMetadata.store_block] SUCCESS: Block {block.index} written to block.data at offset {offset_before_write}.")
 
-                # Step 8: Handle block file rollover
+                # ✅ Step 9: Handle block file rollover
                 current_file_size_mb = block_file.tell() / (1024 * 1024)
                 if current_file_size_mb >= Constants.BLOCK_DATA_FILE_SIZE_MB:
                     print(f"[BlockMetadata.store_block] INFO: File {current_file_path} reached size limit ({Constants.BLOCK_DATA_FILE_SIZE_MB} MB). New file will be created on next block.")
@@ -249,24 +341,28 @@ class BlockMetadata:
             raise
 
 
-    def _serialize_transactions(self, transactions: list):
+    def _serialize_transactions(self, transactions: list) -> list:
         """
-        Explicitly convert transactions into dictionary format, handling both Transaction objects and dicts.
-
-        :param transactions: List of transactions (Transaction instances or dictionaries).
-        :return: List of transaction dictionaries.
+        Convert transactions to dictionary format for serialization.
+        
+        Supports both Transaction objects (via .to_dict()) and existing dictionaries.
         """
         serialized_transactions = []
         for idx, tx in enumerate(transactions):
-            if hasattr(tx, "to_dict") and callable(getattr(tx, "to_dict")):
-                serialized_tx = tx.to_dict()
-                print(f"[BlockMetadata._serialize_transactions] INFO: Transaction at index {idx} serialized from object.")
-            elif isinstance(tx, dict):
-                serialized_tx = tx
-                print(f"[BlockMetadata._serialize_transactions] INFO: Transaction at index {idx} already a dictionary.")
-            else:
-                raise TypeError(f"[BlockMetadata._serialize_transactions] ERROR: Transaction at index {idx} is neither dict nor object with to_dict.")
-            serialized_transactions.append(serialized_tx)
+            try:
+                if hasattr(tx, "to_dict") and callable(tx.to_dict):
+                    serialized_tx = tx.to_dict()
+                    print(f"[BlockMetadata._serialize_transactions] INFO: Serialized transaction at index {idx} from object.")
+                elif isinstance(tx, dict):
+                    serialized_tx = tx
+                    print(f"[BlockMetadata._serialize_transactions] INFO: Serialized transaction at index {idx} from dictionary.")
+                else:
+                    raise TypeError(f"[BlockMetadata._serialize_transactions] ERROR: Transaction at index {idx} must be a dict or have a to_dict() method.")
+                
+                serialized_transactions.append(serialized_tx)
+            except Exception as e:
+                print(f"[BlockMetadata._serialize_transactions] ERROR: Failed to serialize transaction at index {idx}: {e}")
+                raise
         return serialized_transactions
 
 
@@ -773,13 +869,17 @@ class BlockMetadata:
                 file_size = os.path.getsize(self.current_block_file)
                 print(f"[BlockMetadata.get_all_blocks] INFO: File size of block.data: {file_size} bytes.")
 
-                # ✅ Read the global magic number (first 4 bytes only)
-                global_magic_number = f.read(4)
-                if global_magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
-                    print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid magic number {global_magic_number.hex()} at start of file. Expected {hex(Constants.MAGIC_NUMBER)}")
+                # ✅ Read and validate the global magic number (first 4 bytes only ONCE)
+                if file_size < 4:
+                    print("[BlockMetadata.get_all_blocks] ERROR: File too small to contain a valid magic number.")
                     return []
 
-                while True:
+                global_magic_number = f.read(4)
+                if global_magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
+                    print(f"[BlockMetadata.get_all_blocks] ERROR: Invalid global magic number {global_magic_number.hex()} at start of file. Expected {hex(Constants.MAGIC_NUMBER)}")
+                    return []
+
+                while f.tell() < file_size:
                     # ✅ Read block size
                     block_size_bytes = f.read(4)
                     if not block_size_bytes:
@@ -826,7 +926,6 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.get_all_blocks] ERROR: Failed to retrieve blocks: {e}")
             return []
-
 
 
     def _block_to_storage_format(self, block: Block) -> Dict:

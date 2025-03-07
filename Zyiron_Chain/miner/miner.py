@@ -275,6 +275,7 @@ class Miner:
         except Exception as e:
             print(f"[Miner._validate_coinbase] ERROR: Coinbase validation failed: {e}")
             return False
+        
     def mining_loop(self, network=None):
         """
         Continuous mining loop:
@@ -290,7 +291,7 @@ class Miner:
         # Ensure the Genesis block exists explicitly
         if not self.block_manager.chain:
             print(f"[Miner.mining_loop] WARNING: Blockchain is empty! Ensuring Genesis block exists on {network.upper()}...")
-            self.blockchain.ensure_genesis_block()
+            self.genesis_block_manager.ensure_genesis_block()  # Updated to use genesis_block_manager
             genesis_block = self.block_metadata.get_latest_block()
 
             if not genesis_block:
@@ -345,6 +346,7 @@ class Miner:
                 else:
                     print("[Miner.mining_loop] ERROR: No valid blocks found in the chain. Stopping mining.")
                 break
+
 
 
 

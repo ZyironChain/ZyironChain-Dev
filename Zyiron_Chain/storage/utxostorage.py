@@ -243,8 +243,8 @@ class UTXOStorage:
                             serialized_utxo = self._serialize_utxo(
                                 tx_id=tx.tx_id,
                                 output_index=idx,
-                                amount=output.amount,
-                                script_pub_key=output.script_pub_key,
+                                amount=Decimal(output.amount),
+                                script_pub_key=output.script_pub_key.encode('utf-8'),
                                 is_locked=output.locked,
                                 block_height=block.index,
                                 spent_status=False
@@ -264,6 +264,7 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage.update_utxos] ERROR: Failed updating UTXOs: {e}")
             raise
+
 
 
 
