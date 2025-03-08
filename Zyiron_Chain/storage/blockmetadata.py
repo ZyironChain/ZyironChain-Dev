@@ -21,7 +21,7 @@ from Zyiron_Chain.storage.tx_storage import TxStorage
 class BlockMetadata:
     """
     BlockMetadata is responsible for handling block metadata storage.
-    
+
     Responsibilities:
       - Store block headers (metadata) in LMDB.
       - Track block offsets and file information from the block.data file.
@@ -60,13 +60,35 @@ class BlockMetadata:
             # ✅ Initialize block data file with correct magic number
             self._initialize_block_data_file()
 
-            print("[BlockMetadata.__init__] SUCCESS: Initialized BlockMetadata with LMDB and TxStorage.")
+            # ✅ Ensure Transaction Indexing is Properly Initialized
+            self.txindex_db = None  # Ensure txindex_db starts as None
+            self.initialize_txindex()
+
+            print("[BlockMetadata.__init__] ✅ SUCCESS: Initialized BlockMetadata with LMDB and TxStorage.")
 
         except Exception as e:
-            print(f"[BlockMetadata.__init__] ERROR: Initialization failed: {e}")
+            print(f"[BlockMetadata.__init__] ❌ ERROR: Initialization failed: {e}")
             raise
 
+    def initialize_txindex(self):
+        """
+        Ensures the `txindex_db` is properly initialized.
+        - If already initialized, it does nothing.
+        - If missing, it initializes and creates the required structure.
+        """
+        try:
+            if self.txindex_db is not None:
+                print("[BlockMetadata.initialize_txindex] ✅ INFO: `txindex_db` is already initialized.")
+                return
 
+            print("[BlockMetadata.initialize_txindex] ⚠️ WARNING: `txindex_db` is missing. Initializing now...")
+            self.txindex_db = LMDBManager(Constants.DATABASES["txindex"])  # ✅ Initialize `txindex_db`
+            print("[BlockMetadata.initialize_txindex] ✅ SUCCESS: `txindex_db` initialized.")
+
+        except Exception as e:
+            print(f"[BlockMetadata.initialize_txindex] ❌ ERROR: Failed to initialize `txindex_db`: {e}")
+            raise
+        
     def get_block_metadata(self, block_hash: str):
         """Retrieve block metadata and deserialize if needed."""
         try:

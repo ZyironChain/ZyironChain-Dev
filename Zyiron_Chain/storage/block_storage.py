@@ -17,18 +17,14 @@ from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.utils.deserializer import Deserializer
 from Zyiron_Chain.storage.blockmetadata import BlockMetadata
 from Zyiron_Chain.storage.tx_storage import TxStorage
-class WholeBlockData:
-    """
-    WholeBlockData stores and retrieves the entire blockchain data.
-    
-    Responsibilities:
-      - Handles block.data storage and retrieval in binary.
-      - Writes a network-specific magic number (from Constants) at the start of the file.
-      - Maintains block offsets for efficient lookups.
-      - Uses single SHA3-384 hashing.
-      - Prints detailed progress and error messages.
-    """
 
+import os
+from threading import Lock
+
+import struct
+from threading import Lock
+
+class WholeBlockData:
     def __init__(self, tx_storage: TxStorage):
         """
         Initializes WholeBlockData with LMDB databases and ensures TxStorage is passed.
@@ -37,34 +33,82 @@ class WholeBlockData:
             print("[WholeBlockData.__init__] INFO: Initializing block storage...")
 
             if not tx_storage:
-                raise ValueError("[WholeBlockData.__init__] ERROR: TxStorage instance is required.")
+                raise ValueError("[WholeBlockData.__init__] ❌ ERROR: TxStorage instance is required.")
 
-            # ✅ Store TxStorage reference
+            # ✅ **Store TxStorage reference**
             self.tx_storage = tx_storage  
 
-            # ✅ Initialize LMDB databases for block metadata and transaction indexing
+            # ✅ **Initialize LMDB databases for block metadata and transaction indexing**
             self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
             self.txindex_db = LMDBManager(Constants.DATABASES["txindex"])
-            self.block_metadata = None  # ✅ Ensure `block_metadata` starts as None
+
+            # ✅ **Ensure `block_metadata` starts as None**
+            self.block_metadata = None  
+
+            # ✅ **Thread safety lock for writing**
+            self.write_lock = Lock()
+
+            # ✅ **Set up the blockchain storage directory & block.data file**
+            self._setup_block_storage()
+
+            print("[WholeBlockData.__init__] ✅ SUCCESS: Block storage initialized successfully.")
 
         except Exception as e:
-            print(f"[WholeBlockData.__init__] ERROR: Failed to initialize LMDB databases: {e}")
+            print(f"[WholeBlockData.__init__] ❌ ERROR: Failed to initialize block storage: {e}")
             raise
 
-        # ✅ Set up block.data file
+    def store_block_securely(self, block):
+        """
+        Store block with thread safety to prevent corruption.
+        Uses `write_lock` to ensure that only one thread writes at a time.
+        """
+        with self.write_lock:  # ✅ Prevents concurrent writes
+            self._write_to_block_data_securely(block)
+
+
+
+    
+
+    def _setup_block_storage(self):
+        """
+        Ensures the blockchain storage directory exists and initializes block.data.
+        """
         try:
             blockchain_storage_dir = os.path.join(os.getcwd(), "blockchain_storage")
             block_data_dir = os.path.join(blockchain_storage_dir, "block_data")
-            os.makedirs(block_data_dir, exist_ok=True)
+            os.makedirs(block_data_dir, exist_ok=True)  # ✅ Ensure directory exists
+
+            # ✅ **Set up block.data file paths**
             self.current_block_file = os.path.join(block_data_dir, "block.data")
             self.current_block_offset = 0
+
+            # ✅ **Initialize block data file if necessary**
             self._initialize_block_data_file()
 
-            print("[WholeBlockData.__init__] SUCCESS: Block storage initialized successfully.")
+        except Exception as e:
+            print(f"[WholeBlockData._setup_block_storage] ❌ ERROR: Failed to initialize block storage directory: {e}")
+            raise
+
+    def _write_to_block_data_securely(self, block):
+        """
+        Serialize and write block data to block.data file securely.
+        Ensures data integrity and prevents unnecessary magic number writes.
+        """
+        try:
+            with open(self.current_block_file, "ab") as f:
+                offset_before_write = f.tell()  # ✅ Save the starting offset
+
+                serialized_block = self._serialize_block_to_binary(block)
+                block_size_bytes = struct.pack(">I", len(serialized_block))
+
+                f.write(block_size_bytes + serialized_block)  # ✅ Prevents extra magic number writes
+                f.flush()
+
+                print(f"[WholeBlockData] ✅ Block {block.index} securely stored at offset {offset_before_write}.")
 
         except Exception as e:
-            print(f"[WholeBlockData.__init__] ERROR: Failed to initialize block storage: {e}")
-            raise
+            print(f"[WholeBlockData] ❌ ERROR: Failed to store block {block.index}: {e}")
+
 
 
     def block_meta(self):
@@ -212,76 +256,11 @@ class WholeBlockData:
             raise
 
 
-    def _serialize_block_to_binary(self, block: Block) -> bytes:
-        """
-        Serialize a Block into binary format.
-        Packs the header fields into fixed-length binary and appends transaction data.
-        """
-        try:
-            print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
-
-            block_dict = block.to_dict()
-            header = block_dict["header"]
-
-            # ✅ **Extract Block Header Fields**
-            block_height = int(header["index"])
-            prev_block_hash = bytes.fromhex(header["previous_hash"])
-            merkle_root = bytes.fromhex(header["merkle_root"])
-            timestamp = int(header["timestamp"])
-            nonce = int(header["nonce"])
-
-            # ✅ **Convert Difficulty Dynamically (Prefix with 1-byte Length + Difficulty Bytes)**
-            difficulty_bytes = int(header["difficulty"]).to_bytes(48, "big", signed=False).lstrip(b'\x00')
-            difficulty_length = len(difficulty_bytes)
-            difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes
-
-            # ✅ **Process Miner Address (Max 128 Bytes, Padded)**
-            miner_address_str = header["miner_address"]
-            miner_address_encoded = miner_address_str.encode("utf-8")
-            if len(miner_address_encoded) > 128:
-                raise ValueError("[WholeBlockData] ERROR: Miner address exceeds 128 bytes.")
-            miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
-
-            # ✅ **Pack Header Fields (Index, Previous Hash, Merkle Root, Timestamp, Nonce, Difficulty, Miner Address)**
-            header_format = f">I32s32sQI{len(difficulty_packed)}s128s"
-            header_data = struct.pack(
-                header_format,
-                block_height,
-                prev_block_hash,
-                merkle_root,
-                timestamp,
-                nonce,
-                difficulty_packed,
-                miner_address_padded
-            )
-
-            # ✅ **Serialize Transactions into Binary Format**
-            serialized_transactions = []
-            for tx in block_dict["transactions"]:
-                try:
-                    tx_bytes = json.dumps(tx, sort_keys=True).encode("utf-8")
-                    serialized_transactions.append(struct.pack(">I", len(tx_bytes)) + tx_bytes)  # Store each transaction with size prefix
-                except Exception as e:
-                    print(f"[WholeBlockData] ERROR: Failed to serialize transaction: {e}")
-
-            tx_data = b"".join(serialized_transactions)
-            tx_count = len(serialized_transactions)
-            tx_count_data = struct.pack(">I", tx_count)
-
-            # ✅ **Return Complete Serialized Block**
-            serialized_block = header_data + tx_count_data + tx_data
-            print(f"[WholeBlockData] SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
-            return serialized_block
-
-        except Exception as e:
-            print(f"[WholeBlockData] ERROR: Failed to serialize block {block.index}: {e}")
-            raise
-
-
-
+    
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
         """
         Deserialize binary block data back into a Block object.
+        Ensures valid structure, transactions, and header parsing.
         """
         try:
             print("[WholeBlockData] INFO: Starting block deserialization...")
@@ -333,7 +312,7 @@ class WholeBlockData:
                     transactions.append(json.loads(tx_bytes.decode("utf-8")))
 
                 except Exception as e:
-                    print(f"[WholeBlockData] ERROR: Failed to deserialize transaction {i} in block {block_height}: {e}")
+                    print(f"[WholeBlockData] ❌ ERROR: Failed to deserialize transaction {i} in block {block_height}: {e}")
 
                 i += 1
 
@@ -351,12 +330,77 @@ class WholeBlockData:
                 "transactions": transactions
             }
 
-            print(f"[WholeBlockData] SUCCESS: Block {block_height} deserialized successfully.")
+            print(f"[WholeBlockData] ✅ SUCCESS: Block {block_height} deserialized successfully.")
             return Block.from_dict(block_dict)
 
         except Exception as e:
-            print(f"[WholeBlockData] ERROR: Failed to deserialize block: {e}")
-            return None
+            print(f"[WholeBlockData] ❌ ERROR: Failed to deserialize block: {e}")
+            return None  
+
+    def _serialize_block_to_binary(self, block: Block) -> bytes:
+        """
+        Serialize a Block into binary format.
+        Packs the header fields into fixed-length binary and appends transaction data.
+        """
+        try:
+            print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
+
+            block_dict = block.to_dict()
+            header = block_dict["header"]
+
+            # ✅ **Extract Block Header Fields**
+            block_height = int(header["index"])
+            prev_block_hash = bytes.fromhex(header["previous_hash"])
+            merkle_root = bytes.fromhex(header["merkle_root"])
+            timestamp = int(header["timestamp"])
+            nonce = int(header["nonce"])
+
+            # ✅ **Convert Difficulty Dynamically (Prefix with 1-byte Length + Difficulty Bytes)**
+            difficulty_bytes = int(header["difficulty"]).to_bytes(48, "big", signed=False).lstrip(b'\x00')
+            difficulty_length = len(difficulty_bytes)
+            difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes
+
+            # ✅ **Process Miner Address (Max 128 Bytes, Padded)**
+            miner_address_str = header["miner_address"]
+            miner_address_encoded = miner_address_str.encode("utf-8")
+            if len(miner_address_encoded) > 128:
+                raise ValueError("[WholeBlockData] ❌ ERROR: Miner address exceeds 128 bytes.")
+            miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
+
+            # ✅ **Pack Header Fields (Index, Previous Hash, Merkle Root, Timestamp, Nonce, Difficulty, Miner Address)**
+            header_format = f">I32s32sQI{len(difficulty_packed)}s128s"
+            header_data = struct.pack(
+                header_format,
+                block_height,
+                prev_block_hash,
+                merkle_root,
+                timestamp,
+                nonce,
+                difficulty_packed,
+                miner_address_padded
+            )
+
+            # ✅ **Serialize Transactions into Binary Format**
+            serialized_transactions = []
+            for tx in block_dict["transactions"]:
+                try:
+                    tx_bytes = json.dumps(tx, sort_keys=True).encode("utf-8")
+                    serialized_transactions.append(struct.pack(">I", len(tx_bytes)) + tx_bytes)  # Store each transaction with size prefix
+                except Exception as e:
+                    print(f"[WholeBlockData] ❌ ERROR: Failed to serialize transaction: {e}")
+
+            tx_data = b"".join(serialized_transactions)
+            tx_count = len(serialized_transactions)
+            tx_count_data = struct.pack(">I", tx_count)
+
+            # ✅ **Return Complete Serialized Block**
+            serialized_block = header_data + tx_count_data + tx_data
+            print(f"[WholeBlockData] ✅ SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
+            return serialized_block
+
+        except Exception as e:
+            print(f"[WholeBlockData] ❌ ERROR: Failed to serialize block {block.index}: {e}")
+            raise  
 
 
     def get_block_from_data_file(self, offset: int) -> Optional[Block]:
