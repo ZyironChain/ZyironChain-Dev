@@ -101,7 +101,7 @@ class CoinbaseTx:
         """
         print(f"[CoinbaseTx.to_dict]  Serializing CoinbaseTx (tx_id: {self.tx_id})")
         return {
-            "tx_id": self.tx_id,  #  Retained for consistency
+            "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
             "reward": str(self.reward),
@@ -110,7 +110,8 @@ class CoinbaseTx:
             "timestamp": self.timestamp,
             "type": self.type,
             "fee": str(self.fee),
-            "size": self.size
+            "size": self.size,
+            "metadata": self.metadata  # ✅ Include metadata
         }
 
     @classmethod
@@ -120,17 +121,16 @@ class CoinbaseTx:
         """
         print(f"[CoinbaseTx.from_dict]  Deserializing CoinbaseTx from data...")
 
-        # Validate required fields
         required_fields = ["tx_id", "block_height", "miner_address", "reward"]
         for field in required_fields:
             if field not in data:
                 raise ValueError(f"[CoinbaseTx.from_dict]  Missing required field: {field}")
 
-        # Rebuild transaction object
         obj = cls(
             block_height=data["block_height"],
             miner_address=data["miner_address"],
-            reward=Decimal(data["reward"])
+            reward=Decimal(data["reward"]),
+            metadata=data.get("metadata", {})  # ✅ Restore metadata
         )
 
         obj.tx_id = data.get("tx_id", obj._generate_tx_id())
@@ -142,6 +142,7 @@ class CoinbaseTx:
 
         print(f"[CoinbaseTx.from_dict]  Successfully deserialized CoinbaseTx with tx_id: {obj.tx_id}")
         return obj
+
 
     @property
     def is_coinbase(self) -> bool:

@@ -73,23 +73,24 @@ class WholeBlockData:
         ✅ If `block_metadata` is missing, it initializes it with TxStorage automatically.
         """
         try:
-            # ✅ Ensure `block_metadata` is properly initialized
+            # ✅ **Ensure `block_metadata` is Properly Initialized**
             if not hasattr(self, "block_metadata") or self.block_metadata is None:
                 print("[WholeBlockData.block_meta] WARNING: `block_metadata` is missing. Initializing now...")
 
-                # ✅ Ensure `tx_storage` is available before passing it
+                # ✅ **Ensure `tx_storage` is Available Before Passing It**
                 if not hasattr(self, "tx_storage") or self.tx_storage is None:
-                    raise ValueError("[WholeBlockData.block_meta] ERROR: `tx_storage` is missing. Cannot initialize BlockMetadata.")
+                    print("[WholeBlockData.block_meta] ERROR: `tx_storage` is missing. Cannot initialize BlockMetadata.")
+                    return None
 
-                # ✅ Initialize BlockMetadata with TxStorage
+                # ✅ **Initialize BlockMetadata with TxStorage**
                 self.block_metadata = BlockMetadata(tx_storage=self.tx_storage)
                 print("[WholeBlockData.block_meta] SUCCESS: `BlockMetadata` initialized successfully.")
 
-            return self.block_metadata  # ✅ Always return the BlockMetadata instance
+            return self.block_metadata  # ✅ **Always Return the `BlockMetadata` Instance**
 
         except Exception as e:
             print(f"[WholeBlockData.block_meta] ERROR: Failed to initialize BlockMetadata: {e}")
-            raise
+            return None  # ✅ Prevents crashes by returning `None` in case of failure
 
 
 
@@ -104,10 +105,24 @@ class WholeBlockData:
         try:
             print(f"[WholeBlockData.store_block] INFO: Storing Block {block.index} with difficulty {difficulty}.")
 
-            # ✅ Ensure `BlockMetadata` exists before storing
+            # ✅ **Ensure `BlockMetadata` Exists Before Storing**
             block_metadata_instance = self.block_meta()
+            if not block_metadata_instance:
+                print("[WholeBlockData.store_block] ERROR: `BlockMetadata` is not initialized. Cannot store block.")
+                return
 
-            # ✅ Store the block correctly, ensuring no redundant magic numbers
+            # ✅ **Use `_serialize_block_to_binary()` Instead of `to_bytes()`**
+            block_bytes = self._serialize_block_to_binary(block)
+
+            # ✅ **Verify Block Size Before Writing**
+            block_size = len(block_bytes)
+            if block_size == 0:
+                print(f"[WholeBlockData.store_block] ERROR: Block {block.index} has invalid size. Skipping storage.")
+                return
+
+            print(f"[WholeBlockData.store_block] INFO: Block {block.index} size verified: {block_size} bytes.")
+
+            # ✅ **Store the Block Correctly**
             block_metadata_instance.store_block(block, difficulty)
 
             print(f"[WholeBlockData.store_block] SUCCESS: Block {block.index} stored successfully in block.data.")
@@ -119,32 +134,33 @@ class WholeBlockData:
 
 
 
-
     def _initialize_block_data_file(self):
         """Initialize block.data file with correct magic number only if it is missing."""
         try:
-            # ✅ Ensure block_data directory exists
+            # ✅ **Ensure Block Data Directory Exists**
             block_data_dir = Constants.DATABASES.get("block_data")
             if not block_data_dir:
                 print("[WholeBlockData._initialize_block_data_file] ERROR: Block data directory not found in Constants.DATABASES.")
                 return
             os.makedirs(block_data_dir, exist_ok=True)
 
-            # ✅ Set block data file path
+            # ✅ **Set Block Data File Path**
             self.current_block_file = os.path.join(block_data_dir, "block.data")
             print(f"[WholeBlockData] INFO: Block data file path set to: {self.current_block_file}")
 
-            # ✅ Check if file exists and is empty
-            file_is_new_or_empty = (not os.path.exists(self.current_block_file) or os.path.getsize(self.current_block_file) == 0)
+            # ✅ **Check if File Exists and is Empty**
+            file_exists = os.path.exists(self.current_block_file)
+            file_is_empty = (os.path.getsize(self.current_block_file) == 0) if file_exists else True
 
-            if file_is_new_or_empty:
+            # ✅ **Write Magic Number Only if File is Missing or Empty**
+            if not file_exists or file_is_empty:
                 with open(self.current_block_file, "wb") as f:
-                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))  # ✅ Write Magic Number ONLY if the file is new
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
                 print(f"[WholeBlockData] INFO: Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
             else:
                 print("[WholeBlockData] INFO: block.data file exists. Skipping magic number rewrite.")
 
-            # ✅ Validate magic number in existing file
+            # ✅ **Validate Magic Number in Existing File**
             with open(self.current_block_file, "rb") as f:
                 file_magic_number = struct.unpack(">I", f.read(4))[0]
                 if file_magic_number != Constants.MAGIC_NUMBER:
@@ -157,6 +173,7 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to initialize block storage: {e}")
             raise
+
 
 
 
@@ -206,26 +223,26 @@ class WholeBlockData:
             block_dict = block.to_dict()
             header = block_dict["header"]
 
-            # Extract block header fields
+            # ✅ **Extract Block Header Fields**
             block_height = int(header["index"])
             prev_block_hash = bytes.fromhex(header["previous_hash"])
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
 
-            # ✅ Convert difficulty dynamically (prefix with 1-byte length + difficulty bytes)
-            difficulty_bytes = int(header["difficulty"]).to_bytes(48, "big", signed=False).lstrip(b'\x00')  
+            # ✅ **Convert Difficulty Dynamically (Prefix with 1-byte Length + Difficulty Bytes)**
+            difficulty_bytes = int(header["difficulty"]).to_bytes(48, "big", signed=False).lstrip(b'\x00')
             difficulty_length = len(difficulty_bytes)
-            difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes  
+            difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes
 
-            # ✅ Process miner address (max 128 bytes, padded)
+            # ✅ **Process Miner Address (Max 128 Bytes, Padded)**
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
                 raise ValueError("[WholeBlockData] ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
 
-            # ✅ Pack header fields: block index, previous hash, merkle root, timestamp, nonce, difficulty, miner address
+            # ✅ **Pack Header Fields (Index, Previous Hash, Merkle Root, Timestamp, Nonce, Difficulty, Miner Address)**
             header_format = f">I32s32sQI{len(difficulty_packed)}s128s"
             header_data = struct.pack(
                 header_format,
@@ -238,7 +255,7 @@ class WholeBlockData:
                 miner_address_padded
             )
 
-            # ✅ Serialize transactions into binary format
+            # ✅ **Serialize Transactions into Binary Format**
             serialized_transactions = []
             for tx in block_dict["transactions"]:
                 try:
@@ -251,7 +268,7 @@ class WholeBlockData:
             tx_count = len(serialized_transactions)
             tx_count_data = struct.pack(">I", tx_count)
 
-            # ✅ Return complete serialized block
+            # ✅ **Return Complete Serialized Block**
             serialized_block = header_data + tx_count_data + tx_data
             print(f"[WholeBlockData] SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
             return serialized_block
@@ -261,32 +278,66 @@ class WholeBlockData:
             raise
 
 
+
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
         """
         Deserialize binary block data back into a Block object.
         """
         try:
-            header_format = ">I32s32sQI48s128s"
-            header_size = struct.calcsize(header_format)
-            (block_height,
-             prev_block_hash,
-             merkle_root,
-             timestamp,
-             nonce,
-             difficulty_bytes,
-             miner_address_bytes) = struct.unpack(header_format, block_data[:header_size])
+            print("[WholeBlockData] INFO: Starting block deserialization...")
+
+            # ✅ **Unpack Header Fields**
+            header_format = ">I32s32sQI"
+            base_header_size = struct.calcsize(header_format)
+            (
+                block_height,
+                prev_block_hash,
+                merkle_root,
+                timestamp,
+                nonce
+            ) = struct.unpack(header_format, block_data[:base_header_size])
+
+            # ✅ **Unpack Difficulty**
+            difficulty_length_offset = base_header_size
+            difficulty_length = struct.unpack(">B", block_data[difficulty_length_offset:difficulty_length_offset + 1])[0]
+            difficulty_offset = difficulty_length_offset + 1
+            difficulty_bytes = block_data[difficulty_offset:difficulty_offset + difficulty_length]
             difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
+
+            # ✅ **Unpack Miner Address**
+            miner_address_offset = difficulty_offset + difficulty_length
+            miner_address_bytes = block_data[miner_address_offset:miner_address_offset + 128]
             miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
-            tx_count_offset = header_size
+
+            # ✅ **Unpack Transaction Count**
+            tx_count_offset = miner_address_offset + 128
             tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
-            tx_data = block_data[tx_count_offset + 4:]
-            # Split transactions by newline
-            tx_jsons = tx_data.split(b'\n')
+            print(f"[WholeBlockData] INFO: Block {block_height} contains {tx_count} transactions.")
+
+            # ✅ **Unpack Transactions (Read Size-Prefixed Transactions)**
+            tx_data_offset = tx_count_offset + 4
             transactions = []
-            for tx_json in tx_jsons:
-                if not tx_json.strip():
-                    continue
-                transactions.append(json.loads(tx_json.decode("utf-8")))
+            i = 0
+
+            while i < tx_count:
+                try:
+                    # ✅ **Read Transaction Size First**
+                    tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
+                    tx_data_offset += 4
+
+                    # ✅ **Extract Transaction JSON Bytes**
+                    tx_bytes = block_data[tx_data_offset:tx_data_offset + tx_size]
+                    tx_data_offset += tx_size
+
+                    # ✅ **Deserialize Transaction JSON**
+                    transactions.append(json.loads(tx_bytes.decode("utf-8")))
+
+                except Exception as e:
+                    print(f"[WholeBlockData] ERROR: Failed to deserialize transaction {i} in block {block_height}: {e}")
+
+                i += 1
+
+            # ✅ **Reconstruct Block Dictionary**
             block_dict = {
                 "header": {
                     "index": block_height,
@@ -299,10 +350,14 @@ class WholeBlockData:
                 },
                 "transactions": transactions
             }
+
+            print(f"[WholeBlockData] SUCCESS: Block {block_height} deserialized successfully.")
             return Block.from_dict(block_dict)
+
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to deserialize block: {e}")
             return None
+
 
     def get_block_from_data_file(self, offset: int) -> Optional[Block]:
         """
@@ -312,37 +367,41 @@ class WholeBlockData:
         try:
             print(f"[WholeBlockData.get_block_from_data_file] INFO: Retrieving block at offset {offset}.")
 
-            # ✅ Ensure file exists before reading
+            # ✅ **Ensure File Exists Before Reading**
             if not os.path.exists(self.current_block_file):
                 print(f"[WholeBlockData.get_block_from_data_file] ERROR: block.data file not found: {self.current_block_file}")
                 return None
 
             file_size = os.path.getsize(self.current_block_file)
-            if offset < 4 or offset >= file_size:
+
+            # ✅ **Validate Offset Position**
+            if offset < 0 or offset >= file_size - 4:  # Ensure space for at least block size
                 print(f"[WholeBlockData.get_block_from_data_file] ERROR: Invalid offset {offset} for file size {file_size}.")
                 return None
 
             with open(self.current_block_file, "rb") as f:
                 f.seek(offset, os.SEEK_SET)
 
-                # ✅ Read block size (First 4 bytes)
+                # ✅ **Read Block Size (First 4 Bytes)**
                 block_size_bytes = f.read(4)
                 if len(block_size_bytes) != 4:
                     print(f"[WholeBlockData.get_block_from_data_file] ERROR: Failed to read block size at offset {offset}.")
                     return None
 
                 block_size = struct.unpack(">I", block_size_bytes)[0]
+
+                # ✅ **Ensure Block Size is Valid**
                 if block_size <= 0 or offset + 4 + block_size > file_size:
                     print(f"[WholeBlockData.get_block_from_data_file] ERROR: Invalid block size {block_size} at offset {offset}.")
                     return None
 
-                # ✅ Read full block data
+                # ✅ **Read Full Block Data**
                 block_data = f.read(block_size)
                 if len(block_data) != block_size:
                     print(f"[WholeBlockData.get_block_from_data_file] ERROR: Incomplete block data at offset {offset}. Expected {block_size}, got {len(block_data)}.")
                     return None
 
-                # ✅ Deserialize block
+                # ✅ **Deserialize Block**
                 block = self._deserialize_block_from_binary(block_data)
                 if not block:
                     print(f"[WholeBlockData.get_block_from_data_file] ERROR: Failed to deserialize block at offset {offset}.")
@@ -365,7 +424,7 @@ class WholeBlockData:
 
             all_blocks = []
 
-            # ✅ Retrieve all block metadata from LMDB
+            # ✅ **Retrieve All Block Metadata from LMDB**
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
@@ -373,7 +432,7 @@ class WholeBlockData:
                         try:
                             block_metadata = json.loads(value.decode("utf-8"))
 
-                            # ✅ Validate block metadata structure
+                            # ✅ **Validate Block Metadata Structure**
                             if not isinstance(block_metadata, dict):
                                 print(f"[WholeBlockData.get_latest_block] ERROR: Invalid block metadata (not dict): {block_metadata}")
                                 continue
@@ -389,31 +448,31 @@ class WholeBlockData:
                             print(f"[WholeBlockData.get_latest_block] ERROR: Corrupt block metadata in LMDB: {e}")
                             continue
 
-            # ✅ Ensure at least one valid block was found
+            # ✅ **Ensure at Least One Valid Block Was Found**
             if not all_blocks:
                 print("[WholeBlockData.get_latest_block] WARNING: No blocks found in LMDB. Blockchain may be empty.")
                 return None
 
-            # ✅ Find the block with the highest index
+            # ✅ **Find the Block with the Highest Index**
             latest_block_data = max(all_blocks, key=lambda b: b["block_header"]["index"], default=None)
             if not latest_block_data:
                 print("[WholeBlockData.get_latest_block] ERROR: Could not determine latest block.")
                 return None
 
-            # ✅ Validate block hash
+            # ✅ **Validate Block Hash**
             block_hash = latest_block_data.get("hash", Constants.ZERO_HASH)
             if not isinstance(block_hash, str) or not all(c in "0123456789abcdefABCDEF" for c in block_hash):
                 print(f"[WholeBlockData.get_latest_block] ERROR: Invalid block hash format: {block_hash}")
                 return None
 
-            # ✅ Validate required header fields
+            # ✅ **Validate Required Header Fields**
             required_keys = {"index", "previous_hash", "timestamp", "nonce", "difficulty"}
             header = latest_block_data["block_header"]
             if not required_keys.issubset(header):
                 print(f"[WholeBlockData.get_latest_block] ERROR: Incomplete block metadata: {latest_block_data}")
                 return None
 
-            # ✅ Validate timestamp
+            # ✅ **Validate Timestamp**
             try:
                 timestamp = int(header["timestamp"])
                 if timestamp <= 0:
@@ -422,7 +481,7 @@ class WholeBlockData:
                 print(f"[WholeBlockData.get_latest_block] ERROR: Invalid timestamp format: {e}")
                 return None
 
-            # ✅ Verify `block.data` file exists and contains valid magic number
+            # ✅ **Verify `block.data` File Exists and Contains Valid Magic Number**
             if not os.path.exists(self.current_block_file):
                 print(f"[WholeBlockData.get_latest_block] ERROR: block.data file not found: {self.current_block_file}")
                 return None
@@ -437,13 +496,18 @@ class WholeBlockData:
                     print(f"[WholeBlockData.get_latest_block] ERROR: Invalid magic number in block.data file: {hex(file_magic_number)}. Expected: {hex(Constants.MAGIC_NUMBER)}")
                     return None
 
-            # ✅ Retrieve block offset from LMDB
+            # ✅ **Retrieve Block Offset from LMDB and Validate**
             block_offset = latest_block_data.get("data_offset")
             if not isinstance(block_offset, int):
                 print("[WholeBlockData.get_latest_block] ERROR: Block data offset missing or invalid in LMDB.")
                 return None
 
-            # ✅ Retrieve full block data from block.data file
+            file_size = os.path.getsize(self.current_block_file)
+            if block_offset < 0 or block_offset >= file_size:
+                print(f"[WholeBlockData.get_latest_block] ERROR: Block offset {block_offset} exceeds file size {file_size}.")
+                return None
+
+            # ✅ **Retrieve Full Block Data from block.data File**
             print(f"[WholeBlockData.get_latest_block] INFO: Retrieving full block data from offset {block_offset}.")
             full_block = self.get_block_from_data_file(block_offset)
             if not full_block:
@@ -476,14 +540,17 @@ class WholeBlockData:
 
 
 
-    def get_total_mined_supply(self) -> Decimal:
+    def get_total_mined_supply(self) -> Optional[Decimal]:
         """
         Calculate the total mined coin supply by summing all Coinbase rewards from stored blocks.
         Caches the result in LMDB for fast future retrieval.
+        Returns None if no blocks exist instead of throwing an error.
         """
         try:
+            # ✅ **Retrieve Cached Supply from LMDB**
             with self.block_metadata_db.env.begin() as txn:
                 cached_supply = txn.get(b"total_mined_supply")
+
             if cached_supply:
                 try:
                     total_supply = Decimal(cached_supply.decode("utf-8"))
@@ -491,7 +558,11 @@ class WholeBlockData:
                     return total_supply
                 except (UnicodeDecodeError, ValueError) as decode_error:
                     print(f"[WholeBlockData] WARNING: Failed to decode cached total supply: {decode_error}")
+
             total_supply = Decimal("0")
+            blocks_found = False
+
+            # ✅ **Iterate Through Stored Blocks in LMDB**
             with self.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
@@ -499,58 +570,99 @@ class WholeBlockData:
                         try:
                             block_metadata = json.loads(value.decode("utf-8"))
                             transactions = block_metadata.get("tx_ids", [])
+
                             if transactions:
+                                blocks_found = True
                                 for tx_id in transactions:
                                     tx_key = f"tx:{tx_id}".encode("utf-8")
                                     tx_data = self.txindex_db.get(tx_key)
+
                                     if not tx_data:
                                         print(f"[WholeBlockData] WARNING: Missing transaction {tx_id} in txindex.")
                                         continue
+
                                     try:
                                         tx_details = json.loads(tx_data.decode("utf-8"))
                                         if tx_details.get("type") == "COINBASE":
                                             outputs = tx_details.get("outputs", [])
-                                            if outputs and isinstance(outputs, list):
+                                            if isinstance(outputs, list):
                                                 for output in outputs:
                                                     if "amount" in output:
                                                         total_supply += Decimal(str(output["amount"]))
                                     except json.JSONDecodeError as json_error:
                                         print(f"[WholeBlockData] ERROR: Failed to parse transaction data for {tx_id}: {json_error}")
                                         continue
+
                         except json.JSONDecodeError as e:
                             print(f"[WholeBlockData] ERROR: Failed to parse block metadata: {e}")
                             continue
+
+            # ✅ **Handle Empty Blockchain Case**
+            if not blocks_found:
+                print("[WholeBlockData] WARNING: No blocks found in LMDB. Returning None.")
+                return None
+
+            # ✅ **Cache Total Mined Supply for Faster Future Retrieval**
             with self.block_metadata_db.env.begin(write=True) as txn:
                 txn.put(b"total_mined_supply", str(total_supply).encode("utf-8"))
+
             print(f"[WholeBlockData] INFO: Total mined supply calculated & cached: {total_supply} ZYC")
             return total_supply
+
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to calculate total mined supply: {e}")
-            return Decimal("0")
+            return None
+
 
     def load_blockchain_data(self) -> List[Dict]:
         """Load blockchain data from LMDB, ensuring data integrity."""
         try:
             print("[WholeBlockData] INFO: Loading blockchain data from LMDB...")
+
+            # ✅ **Retrieve Blockchain Database**
             blockchain_db = self._get_database("block_metadata")
+            if not blockchain_db:
+                print("[WholeBlockData] ERROR: Block metadata database is missing. Returning empty chain.")
+                return []
+
             raw_blocks = blockchain_db.get_all_blocks()
+            if not raw_blocks:
+                print("[WholeBlockData] WARNING: No blocks found in LMDB. Blockchain may be empty.")
+                return []
+
             self.chain = []
+
+            # ✅ **Iterate Over Retrieved Blocks**
             for block in raw_blocks:
                 if isinstance(block, bytes):
                     try:
                         block = pickle.loads(block)
-                    except Exception as e:
-                        print(f"[WholeBlockData] ERROR: Failed to decode block: {e}")
+                    except pickle.UnpicklingError as e:
+                        print(f"[WholeBlockData] ERROR: Failed to deserialize block data: {e}")
                         continue
-                if "hash" not in block or not isinstance(block["hash"], str):
-                    print(f"[WholeBlockData] WARNING: Retrieved block missing 'hash': {block}")
+
+                # ✅ **Validate Block Structure**
+                if not isinstance(block, dict) or "hash" not in block or not isinstance(block["hash"], str):
+                    print(f"[WholeBlockData] WARNING: Retrieved block missing 'hash' or invalid structure: {block}")
                     continue
+
+                # ✅ **Catch JSON Decoding Errors in Transactions**
+                try:
+                    if "transactions" in block and isinstance(block["transactions"], bytes):
+                        block["transactions"] = json.loads(block["transactions"].decode("utf-8"))
+                except json.JSONDecodeError as e:
+                    print(f"[WholeBlockData] ERROR: Failed to decode transaction data for block {block['hash']}: {e}")
+                    continue
+
                 self.chain.append(block)
+
             print(f"[WholeBlockData] INFO: Successfully loaded {len(self.chain)} blocks from LMDB.")
             return self.chain
+
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to load blockchain data: {e}")
             return []
+
 
     def _get_database(self, db_key: str) -> LMDBManager:
         """Retrieve the LMDBManager instance for a given database key."""
@@ -564,37 +676,62 @@ class WholeBlockData:
             raise
 
     def get_all_blocks(self) -> List[Dict]:
-        """Retrieve all stored blocks from LMDB as a list of dictionaries."""
+        """Retrieve all stored blocks from LMDB as a list of dictionaries, ensuring metadata validation."""
         try:
+            print("[WholeBlockData.get_all_blocks] INFO: Retrieving all stored blocks from LMDB...")
+
+            # ✅ **Retrieve Blockchain Database**
             blockchain_db = self._get_database("block_metadata")
+            if not blockchain_db:
+                print("[WholeBlockData.get_all_blocks] ERROR: Block metadata database not found. Returning empty list.")
+                return []
+
             raw_blocks = blockchain_db.get_all_blocks()
+            if not raw_blocks:
+                print("[WholeBlockData.get_all_blocks] WARNING: No blocks found in LMDB. Returning empty list.")
+                return []
+
             decoded_blocks = []
+
+            # ✅ **Iterate Over Retrieved Blocks**
             for block in raw_blocks:
                 if isinstance(block, bytes):
                     try:
                         block = pickle.loads(block)
                     except Exception as e:
-                        print(f"[WholeBlockData] ERROR: Failed to decode block: {e}")
+                        print(f"[WholeBlockData.get_all_blocks] ERROR: Failed to decode block: {e}")
                         continue
-                if not all(k in block for k in ["hash", "header", "transactions"]):
-                    print(f"[WholeBlockData] WARNING: Block missing required fields: {block}")
+
+                # ✅ **Validate Block Metadata**
+                if not isinstance(block, dict) or not all(k in block for k in ["hash", "header", "transactions"]):
+                    print(f"[WholeBlockData.get_all_blocks] WARNING: Block missing required fields: {block}")
                     continue
-                if not isinstance(block["hash"], str):
-                    print(f"[WholeBlockData] WARNING: Invalid block hash format: {block}")
+
+                # ✅ **Ensure Block Hash is Valid**
+                if not isinstance(block["hash"], str) or len(block["hash"]) != 96:
+                    print(f"[WholeBlockData.get_all_blocks] WARNING: Invalid block hash format. Replacing with Merkle root.")
                     block["hash"] = block["header"].get("merkle_root", Constants.ZERO_HASH)
+
                 decoded_blocks.append(block)
+
+            # ✅ **Sort Blocks by Index**
             decoded_blocks.sort(key=lambda b: b["header"]["index"])
+
+            # ✅ **Verify Block Hash Continuity**
             prev_hash = Constants.ZERO_HASH
             for block in decoded_blocks:
                 if block["header"]["previous_hash"] != prev_hash:
-                    print(f"[WholeBlockData] ERROR: Chain discontinuity at block {block['header']['index']}")
+                    print(f"[WholeBlockData.get_all_blocks] ERROR: Chain discontinuity detected at block {block['header']['index']}. Returning empty list.")
                     return []
                 prev_hash = block["hash"]
-            print(f"[WholeBlockData] INFO: Retrieved {len(decoded_blocks)} valid blocks from storage.")
+
+            print(f"[WholeBlockData.get_all_blocks] SUCCESS: Retrieved {len(decoded_blocks)} valid blocks from storage.")
             return decoded_blocks
+
         except Exception as e:
-            print(f"[WholeBlockData] ERROR: Failed to retrieve blocks: {e}")
+            print(f"[WholeBlockData.get_all_blocks] ERROR: Failed to retrieve blocks: {e}")
             return []
+
 
     def _block_to_storage_format(self, block: Block) -> Dict:
         """

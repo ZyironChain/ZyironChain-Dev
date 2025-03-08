@@ -18,56 +18,73 @@ class PowManager:
     """
     def perform_pow(self, block):
         """
-        Executes the PoW hashing loop for the given block.
-        Continuously increments the block's nonce until the computed hash (converted
-        to an integer) is lower than the block's difficulty target.
+        Performs Proof-of-Work (PoW) by incrementing the nonce until a valid hash is found.
+        - Uses single SHA3-384 hashing.
+        - Ensures nonce increments correctly to prevent infinite loops.
+        - Prevents double mining of the Genesis block.
         """
-        start_time = time.time()
-        nonce = 0
-        attempts = 0
+        try:
+            print(f"[PowManager.perform_pow] INFO: Starting Proof-of-Work for block {block.index}...")
 
-        # Debug: Start PoW loop
-        print(f"[PowManager.perform_pow] START: Entering PoW loop for Block {block.index}. Target: {block.difficulty}")
+            # ✅ **Ensure Genesis Block is Not Mined Twice**
+            if block.index == 0:
+                existing_genesis = self.block_metadata.get_latest_block()
+                if existing_genesis and existing_genesis.index == 0:
+                    print(f"[PowManager.perform_pow] WARNING: Genesis block already exists with hash: {existing_genesis.hash}. Skipping mining.")
+                    return existing_genesis.hash, block.nonce, 0  # ✅ Return existing hash & prevent duplicate mining
 
-        while True:
-            block.header.nonce = nonce
-            block_data_bytes = block.calculate_hash().encode()
-            hash_bytes = Hashing.hash(block_data_bytes)
-            hash_int = int.from_bytes(hash_bytes, byteorder='big')
+            # ✅ **Initialize Variables**
+            nonce = 0
+            start_time = time.time()
 
-            # Debug: Print progress every 2 seconds
-            if attempts % 1000 == 0:  # Print every 1000 attempts to reduce noise
-                elapsed = int(time.time() - start_time)
-                print(f"[PowManager.perform_pow] Progress: Block {block.index} | Nonce: {nonce} | Attempts: {attempts} | Elapsed: {elapsed}s")
+            while True:
+                # ✅ **Update Block Nonce**
+                block.nonce = nonce
 
-            if hash_int < block.difficulty:
-                # Success: Block mined
-                elapsed = int(time.time() - start_time)
-                print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined with nonce {nonce}. Final hash: {hash_bytes.hex()} | Time: {elapsed}s")
-                return hash_bytes.hex(), nonce, attempts
+                # ✅ **Compute Hash**
+                block_hash = Hashing.hash(block.calculate_hash().encode()).hex()
 
-            nonce += 1
-        attempts += 1
+                # ✅ **Check if Hash Meets Difficulty Target**
+                if int(block_hash, 16) < block.difficulty:
+                    elapsed_time = time.time() - start_time
+                    print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined after {nonce} attempts in {elapsed_time:.2f} seconds.")
+                    return block_hash, nonce, nonce  # ✅ Return valid hash, nonce, and attempts
+
+                # ✅ **Increment Nonce**
+                nonce += 1
+
+                # ✅ **Log Progress Every 100,000 Nonce Increments**
+                if nonce % 100000 == 0:
+                    elapsed_time = time.time() - start_time
+                    print(f"[PowManager.perform_pow] INFO: Nonce {nonce}, Elapsed Time: {elapsed_time:.2f}s")
+
+        except Exception as e:
+            print(f"[PowManager.perform_pow] ERROR: Proof-of-Work failed: {e}")
+            return None, None, None
+
 
     def adjust_difficulty(self, storage_manager):
         """
         Adjusts mining difficulty based on actual versus expected block times.
-        
+
         Retrieves stored block metadata from the storage_manager, calculates the ratio
         of expected time (Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * TARGET_BLOCK_TIME) to
         the actual time taken, and clamps the adjustment ratio within allowed min/max factors.
-        
+
         Returns:
             int: The new difficulty target.
         """
         try:
+            print("[PowManager.adjust_difficulty] INFO: Initiating difficulty adjustment...")
+
             stored_blocks = storage_manager.get_all_blocks()
             num_blocks = len(stored_blocks)
+
             if num_blocks == 0:
                 print("[PowManager.adjust_difficulty] INFO: No blocks found; using Genesis Target.")
                 return Constants.GENESIS_TARGET
 
-            # Use the last block's difficulty
+            # ✅ **Use Last Block's Difficulty**
             last_block = stored_blocks[-1]
             if "header" not in last_block or "difficulty" not in last_block["header"]:
                 print("[PowManager.adjust_difficulty] ERROR: Last block is missing header or difficulty.")
@@ -80,27 +97,39 @@ class PowManager:
                 print(f"[PowManager.adjust_difficulty] ERROR: Failed to convert last difficulty: {e}")
                 return Constants.GENESIS_TARGET
 
+            # ✅ **Ensure Enough Blocks for Difficulty Adjustment**
             if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL:
                 print(f"[PowManager.adjust_difficulty] INFO: Insufficient blocks ({num_blocks}) for adjustment. Using last difficulty.")
                 return last_difficulty
 
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
+
+            # ✅ **Ensure Timestamps Exist and Are Valid**
             try:
-                last_timestamp = int(last_block["header"]["timestamp"])
-                first_timestamp = int(first_block["header"]["timestamp"])
+                last_timestamp = int(last_block["header"].get("timestamp", 0))
+                first_timestamp = int(first_block["header"].get("timestamp", 0))
             except (ValueError, TypeError) as e:
                 print(f"[PowManager.adjust_difficulty] ERROR: Invalid timestamp format: {e}")
                 return last_difficulty
 
-            actual_time = max(1, last_timestamp - first_timestamp)
+            if last_timestamp == 0 or first_timestamp == 0:
+                print("[PowManager.adjust_difficulty] ERROR: Missing timestamps in blocks. Cannot adjust difficulty.")
+                return last_difficulty
+
+            # ✅ **Calculate Actual vs. Expected Block Time**
+            actual_time = max(1, last_timestamp - first_timestamp)  # Prevent division errors
             expected_time = Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * Constants.TARGET_BLOCK_TIME
+
+            # ✅ **Calculate Difficulty Adjustment Ratio**
             ratio = expected_time / actual_time
             ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, ratio))
 
+            # ✅ **Apply Difficulty Adjustment**
             new_target = int(last_difficulty * ratio)
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+
             print(f"[PowManager.adjust_difficulty] SUCCESS: Adjusted difficulty to {hex(new_target)} "
-                  f"at block count {num_blocks} (Ratio: {ratio:.4f}).")
+                f"at block count {num_blocks} (Ratio: {ratio:.4f}).")
             return new_target
 
         except Exception as e:
@@ -114,21 +143,46 @@ class PowManager:
         Returns Constants.TARGET_BLOCK_TIME if insufficient blocks are present.
         """
         try:
+            print("[PowManager.get_average_block_time] INFO: Calculating average block time...")
+
             stored_blocks = storage_manager.get_all_blocks()
             num_blocks = len(stored_blocks)
+
+            # ✅ **Ensure Enough Blocks for Calculation**
             if num_blocks < Constants.DIFFICULTY_ADJUSTMENT_INTERVAL + 1:
                 print(f"[PowManager.get_average_block_time] WARNING: Only {num_blocks} blocks available. Using target block time.")
                 return Constants.TARGET_BLOCK_TIME
 
             times = []
             start_index = num_blocks - Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
+
+            # ✅ **Calculate Time Differences Between Blocks**
             for i in range(start_index + 1, num_blocks):
-                diff = stored_blocks[i]["header"]["timestamp"] - stored_blocks[i - 1]["header"]["timestamp"]
-                times.append(diff)
+                try:
+                    prev_timestamp = int(stored_blocks[i - 1]["header"].get("timestamp", 0))
+                    curr_timestamp = int(stored_blocks[i]["header"].get("timestamp", 0))
+
+                    if prev_timestamp == 0 or curr_timestamp == 0:
+                        print(f"[PowManager.get_average_block_time] ERROR: Block {i} has invalid timestamps. Skipping.")
+                        continue
+
+                    diff = max(1, curr_timestamp - prev_timestamp)  # ✅ Prevents division errors
+                    times.append(diff)
+
+                    print(f"[PowManager.get_average_block_time] INFO: Block {i} - Time Difference: {diff} sec")
+
+                except (ValueError, TypeError) as e:
+                    print(f"[PowManager.get_average_block_time] ERROR: Invalid timestamp format in block {i}: {e}")
+
+            # ✅ **Ensure a Valid Average Calculation**
             if not times:
+                print("[PowManager.get_average_block_time] ERROR: No valid timestamps found. Using target block time.")
                 return Constants.TARGET_BLOCK_TIME
+
             avg_time = sum(times) / len(times)
-            print(f"[PowManager.get_average_block_time] INFO: Average block time: {avg_time:.2f} sec (Target: {Constants.TARGET_BLOCK_TIME} sec).")
+
+            print(f"[PowManager.get_average_block_time] SUCCESS: Computed average block time: {avg_time:.2f} sec "
+                f"(Target: {Constants.TARGET_BLOCK_TIME} sec).")
             return avg_time
 
         except Exception as e:
