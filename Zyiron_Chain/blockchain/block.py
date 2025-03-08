@@ -133,42 +133,65 @@ class Block:
     def _compute_merkle_root(self) -> str:
         """
         Compute the Merkle root for the block's transactions using single SHA3-384 hashing.
-         - If no transactions, returns a hash of ZERO_HASH.
-         - Otherwise, builds a pairwise tree of transaction hashes.
+        - If no transactions, returns a hash of ZERO_HASH.
+        - Validates each transaction before hashing.
+        - Builds a pairwise tree of transaction hashes to derive the root.
         """
-        print("[Block._compute_merkle_root] Computing Merkle Root...")
+        try:
+            print("[Block._compute_merkle_root] INFO: Computing Merkle Root...")
 
-        if not self.transactions:
-            print("[Block._compute_merkle_root] No transactions; using ZERO_HASH.")
-            return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
-
-        # Convert each transaction to a hash
-        tx_hashes = []
-        for tx in self.transactions:
-            try:
-                # If the transaction has a to_dict, use it. Otherwise assume it's a dict already
-                tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
-                tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
-                tx_hash = Hashing.hash(tx_serialized)  # single-hash -> bytes
-                tx_hashes.append(tx_hash)
-            except Exception as e:
-                print(f"[Block._compute_merkle_root] ERROR: Could not serialize transaction: {e}")
+            # ✅ **Handle Empty Transaction List**
+            if not self.transactions or len(self.transactions) == 0:
+                print("[Block._compute_merkle_root] WARNING: No transactions found; using ZERO_HASH.")
                 return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
 
-        # Build the tree
-        while len(tx_hashes) > 1:
-            if len(tx_hashes) % 2 != 0:
-                tx_hashes.append(tx_hashes[-1])  # Duplicate the last one if odd
-            new_level = []
-            for i in range(0, len(tx_hashes), 2):
-                combined = tx_hashes[i] + tx_hashes[i + 1]
-                new_hash = Hashing.hash(combined)
-                new_level.append(new_hash)
-            tx_hashes = new_level
+            # ✅ **Convert Transactions to Hashes**
+            tx_hashes = []
+            for tx in self.transactions:
+                try:
+                    # ✅ Ensure transaction is serializable
+                    if hasattr(tx, "to_dict") and callable(tx.to_dict):
+                        tx_data = tx.to_dict()
+                    elif isinstance(tx, dict):
+                        tx_data = tx
+                    else:
+                        raise ValueError(f"Transaction {tx} is not in a valid dictionary format.")
 
-        merkle_root = tx_hashes[0].hex()
-        print(f"[Block._compute_merkle_root] Merkle Root is {merkle_root}")
-        return merkle_root
+                    # ✅ Serialize and hash the transaction
+                    tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
+                    tx_hash = Hashing.hash(tx_serialized)  # single-hash -> bytes
+                    tx_hashes.append(tx_hash)
+
+                except Exception as e:
+                    print(f"[Block._compute_merkle_root] ❌ ERROR: Failed to serialize transaction: {e}")
+
+            # ✅ **Ensure We Have Valid Transactions**
+            if not tx_hashes:
+                print("[Block._compute_merkle_root] ERROR: No valid transactions found. Using ZERO_HASH.")
+                return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
+
+            # ✅ **Build Merkle Tree**
+            while len(tx_hashes) > 1:
+                if len(tx_hashes) % 2 != 0:
+                    tx_hashes.append(tx_hashes[-1])  # ✅ Duplicate last hash if odd
+
+                new_level = []
+                for i in range(0, len(tx_hashes), 2):
+                    combined = tx_hashes[i] + tx_hashes[i + 1]
+                    new_hash = Hashing.hash(combined)
+                    new_level.append(new_hash)
+
+                tx_hashes = new_level  # Move to next Merkle tree level
+
+            # ✅ **Final Merkle Root**
+            merkle_root = tx_hashes[0].hex()
+            print(f"[Block._compute_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root}")
+            return merkle_root
+
+        except Exception as e:
+            print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
+            return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
+
 
     def to_dict(self) -> dict:
         """

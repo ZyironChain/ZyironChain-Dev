@@ -98,98 +98,113 @@ class Blockchain:
         else:
             print(f"[Blockchain.__init__] Loaded {len(self.chain)} blocks from storage.")
 
-    def load_chain_from_storage(self):
-        """
-        Load the blockchain from storage modules.
-        """
-        try:
-            print("[Blockchain.load_chain_from_storage] Loading chain from storage...")
-            self.chain = self.block_metadata.load_chain()
-            if not self.chain:
-                print("[Blockchain.load_chain_from_storage] WARNING: No blocks found in storage.")
-            else:
-                print(f"[Blockchain.load_chain_from_storage] SUCCESS: Loaded {len(self.chain)} blocks.")
-        except Exception as e:
-            print(f"[Blockchain.load_chain_from_storage] ERROR: Failed to load chain from storage: {e}")
+
 
     def load_chain_from_storage(self) -> list:
         """
-        Load the blockchain from storage into memory.
+        Load the blockchain from storage into memory with validation.
         
-        :return: List of loaded blocks or empty list if none are found.
+        :return: List of loaded blocks or an empty list if none are valid.
         """
         try:
-            print("[Blockchain.load_chain_from_storage] Loading chain from storage...")
+            print("[Blockchain.load_chain_from_storage] INFO: Loading chain from storage...")
+
+            # ✅ **Retrieve All Stored Blocks**
             stored_blocks = self.block_metadata.get_all_blocks()
-            
             if not stored_blocks:
-                print("[Blockchain.load_chain_from_storage] No blocks found in storage.")
-                return []  # Explicitly return empty list
-            
+                print("[Blockchain.load_chain_from_storage] WARNING: No blocks found in storage.")
+                return []  # ✅ Explicitly return an empty list if no blocks exist
+
+            loaded_blocks = []
             for block_data in stored_blocks:
-                block = Block.from_dict(block_data)
-                self.chain.append(block)
-            
-            print(f"[Blockchain.load_chain_from_storage] Loaded {len(self.chain)} blocks from storage.")
-            return self.chain
+                try:
+                    # ✅ **Ensure Block Data is Valid Before Processing**
+                    if not isinstance(block_data, dict) or "index" not in block_data or "hash" not in block_data:
+                        print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping corrupted block: {block_data}")
+                        continue
+
+                    # ✅ **Deserialize the Block Safely**
+                    block = Block.from_dict(block_data)
+                    if not self.validate_block(block):
+                        print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping invalid block at height {block.index}")
+                        continue  # Skip block if validation fails
+
+                    # ✅ **Successfully Add Valid Block**
+                    loaded_blocks.append(block)
+
+                except Exception as block_error:
+                    print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to process block: {block_error}")
+
+            print(f"[Blockchain.load_chain_from_storage] ✅ SUCCESS: Loaded {len(loaded_blocks)} valid blocks from storage.")
+            return loaded_blocks
 
         except Exception as e:
-            print(f"[Blockchain.load_chain_from_storage] ERROR: Failed to load chain from storage: {e}")
-            return []  # Explicitly return empty list even on error
+            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from storage: {e}")
+            return []  # ✅ Return an empty list on any failure
 
 
     def add_block(self, block: Block, is_genesis: bool = False) -> bool:
         """
-        Add a block to the blockchain.
-        - Validates the block before adding (unless genesis).
+        Add a block to the blockchain with full validation.
+        
+        - Validates the block before adding (except for genesis block).
         - Updates storage modules (block metadata, transactions, and UTXOs).
-        - Updates the in-memory chain.
-
+        - Ensures metadata integrity and correct versioning.
+        
         :param block: The block to add.
         :param is_genesis: Whether the block is the genesis block.
         :return: True if the block was added successfully, False otherwise.
         """
         try:
-            print(f"[Blockchain.add_block] Adding Block {block.index} to the chain...")
+            print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
-            # Validate the block explicitly (skip validation for genesis block)
-            if not is_genesis and not self.validate_block(block):
-                print(f"[Blockchain.add_block] ERROR: Block {block.index} failed validation.")
-                return False
+            # ✅ Validate Block Before Adding (Skip Validation for Genesis Block)
+            if not is_genesis:
+                if not self.validate_block(block):
+                    print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
+                    return False
 
-            # Store block metadata and full block data explicitly
+            # ✅ Ensure Block Version Matches Current Chain Version
+            if block.version != Constants.VERSION:
+                print(f"[Blockchain.add_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
+                return False  # Prevent adding incompatible blocks
+
+            # ✅ Store Block Metadata & Full Block Data
             self.block_metadata.store_block(block, block.difficulty)
 
-            # Explicitly store each transaction in txindex.lmdb
+            # ✅ Index Transactions in txindex.lmdb
             for tx in block.transactions:
-                tx_id = tx.tx_id if hasattr(tx, "tx_id") else tx.get("tx_id")
+                # Instead of using dictionary-style access, we now retrieve tx_id via attributes:
+                if isinstance(tx, dict):
+                    tx_id = tx.get("tx_id")
+                else:
+                    tx_id = getattr(tx, "tx_id", None)
+
+                if not tx_id:
+                    print(f"[Blockchain.add_block] ❌ ERROR: Missing tx_id in transaction. Skipping transaction in Block {block.index}.")
+                    continue
+
                 block_hash = block.hash
-
-                # Explicitly ensure inputs and outputs are dictionaries
-                inputs = [
-                    inp.to_dict() if hasattr(inp, "to_dict") else inp
-                    for inp in getattr(tx, "inputs", [])
-                ]
-
+                inputs = self._extract_inputs(tx)
                 outputs = self._extract_outputs(tx)
-
-                timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
+                timestamp = getattr(tx, "timestamp", int(time.time()))
 
                 self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
-                print(f"[Blockchain.add_block] INFO: Transaction {tx_id} indexed successfully.")
+                print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
 
-            # Explicitly update UTXOs in utxo.lmdb and utxo_history.lmdb
+            # ✅ Update UTXOs in utxo.lmdb and utxo_history.lmdb
             self.utxo_storage.update_utxos(block)
-            print(f"[Blockchain.add_block] INFO: UTXO database updated successfully.")
+            print(f"[Blockchain.add_block] ✅ INFO: UTXO database updated successfully.")
 
-            # Add block to in-memory chain
+            # ✅ Add Block to In-Memory Chain
             self.chain.append(block)
-            print(f"[Blockchain.add_block] SUCCESS: Block {block.index} added to the chain.")
+            print(f"[Blockchain.add_block] ✅ SUCCESS: Block {block.index} added to the chain.")
             return True
 
         except Exception as e:
-            print(f"[Blockchain.add_block] ERROR: Failed to add Block {block.index}: {e}")
+            print(f"[Blockchain.add_block] ❌ ERROR: Failed to add Block {block.index}: {e}")
             return False
+
 
     def _extract_outputs(self, tx) -> list:
         """
@@ -224,49 +239,80 @@ class Blockchain:
     def validate_block(self, block: Block) -> bool:
         """
         Validate a block before adding it to the blockchain.
+        
         - Checks proof-of-work.
-        - Ensures the block links to the previous block.
-        - Validates all transactions in the block.
+        - Ensures block links correctly to the previous block.
+        - Validates all transactions.
+        - Ensures metadata and version integrity.
 
         :param block: The block to validate.
         :return: True if the block is valid, False otherwise.
         """
         try:
-            print(f"[Blockchain.validate_block] Validating Block {block.index}...")
+            print(f"[Blockchain.validate_block] INFO: Validating Block {block.index}...")
 
-            # Check proof-of-work
-            if not self.pow_manager.validate_proof_of_work(block):
-                print(f"[Blockchain.validate_block] ERROR: Block {block.index} failed proof-of-work validation.")
+            # ✅ **Ensure Block Contains Required Metadata**
+            required_metadata_fields = ["index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"]
+            for field in required_metadata_fields:
+                if not hasattr(block, field):
+                    print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} is missing metadata field: {field}")
+                    return False
+
+            # ✅ **Ensure Block Version Matches Current Chain Version**
+            if block.version != Constants.VERSION:
+                print(f"[Blockchain.validate_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
                 return False
 
-            # Ensure the block links to the previous block
+            # ✅ **Validate Proof-of-Work**
+            if not self.pow_manager.validate_proof_of_work(block):
+                print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} failed proof-of-work validation.")
+                return False
+
+            # ✅ **Ensure Block Links to Previous Block Correctly**
             if len(self.chain) > 0:
                 last_block = self.chain[-1]
                 if block.previous_hash != last_block.hash:
-                    print(f"[Blockchain.validate_block] ERROR: Block {block.index} has an invalid previous hash.")
+                    print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} has an invalid previous hash.")
                     return False
 
-            # Validate all transactions in the block
+            # ✅ **Validate All Transactions in the Block**
             for tx in block.transactions:
                 if not self.transaction_manager.validate_transaction(tx):
-                    print(f"[Blockchain.validate_block] ERROR: Transaction {tx.tx_id} in Block {block.index} is invalid.")
+                    print(f"[Blockchain.validate_block] ❌ ERROR: Transaction {tx.tx_id} in Block {block.index} is invalid.")
                     return False
 
-            print(f"[Blockchain.validate_block] SUCCESS: Block {block.index} validated.")
+            print(f"[Blockchain.validate_block] ✅ SUCCESS: Block {block.index} validated.")
             return True
+
         except Exception as e:
-            print(f"[Blockchain.validate_block] ERROR: Failed to validate Block {block.index}: {e}")
+            print(f"[Blockchain.validate_block] ❌ ERROR: Failed to validate Block {block.index}: {e}")
             return False
+
 
     def get_latest_block(self) -> Optional[Block]:
         """
-        Retrieve the latest block in the blockchain.
-
-        :return: The latest block, or None if the chain is empty.
+        Retrieve the latest valid block in the blockchain.
+        
+        :return: The latest valid block, or None if the chain is empty or contains corruption.
         """
-        if self.chain:
-            return self.chain[-1]
-        return None
+        try:
+            if not self.chain:
+                print("[Blockchain.get_latest_block] INFO: No blocks found in the chain.")
+                return None
+
+            latest_block = self.chain[-1]
+
+            # ✅ **Ensure Latest Block is Valid Before Returning**
+            if not self.validate_block(latest_block):
+                print(f"[Blockchain.get_latest_block] ❌ ERROR: Latest block {latest_block.index} is invalid. Chain may be corrupted.")
+                return None
+
+            print(f"[Blockchain.get_latest_block] ✅ SUCCESS: Latest block {latest_block.index} retrieved.")
+            return latest_block
+
+        except Exception as e:
+            print(f"[Blockchain.get_latest_block] ❌ ERROR: Failed to retrieve latest block: {e}")
+            return None
 
     def validate_chain(self) -> bool:
         """

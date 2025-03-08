@@ -215,7 +215,9 @@ class BlockMetadata:
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
         """
         Deserialize binary block data back into a Block object.
-        Ensures that the header exists before loading the block.
+        - Ensures correct header structure.
+        - Properly extracts transaction count.
+        - Validates and reconstructs transactions before returning the block.
         """
         try:
             print("[BlockMetadata._deserialize_block_from_binary] INFO: Starting block deserialization...")
@@ -238,20 +240,31 @@ class BlockMetadata:
                     timestamp,
                     nonce
                 ) = struct.unpack(header_format, block_data[:base_header_size])
-
             except struct.error as e:
                 print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Struct unpacking failed: {e}")
                 return None
 
             # ✅ **Extract Difficulty Length and Difficulty Value**
             difficulty_length_offset = base_header_size
+            if len(block_data) < difficulty_length_offset + 1:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is missing difficulty length.")
+                return None
+
             difficulty_length = struct.unpack(">B", block_data[difficulty_length_offset:difficulty_length_offset + 1])[0]
             difficulty_offset = difficulty_length_offset + 1
+            if len(block_data) < difficulty_offset + difficulty_length:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is missing difficulty value.")
+                return None
+
             difficulty_bytes = block_data[difficulty_offset:difficulty_offset + difficulty_length]
             difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
 
             # ✅ **Extract Miner Address**
             miner_address_offset = difficulty_offset + difficulty_length
+            if len(block_data) < miner_address_offset + 128:
+                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is missing miner address.")
+                return None
+
             miner_address_bytes = block_data[miner_address_offset:miner_address_offset + 128]
             miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
 
@@ -279,17 +292,24 @@ class BlockMetadata:
                 return None
 
             tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
+            tx_data_offset = tx_count_offset + 4
 
             # ✅ **Extract Transactions (Use Size-Prefixed Encoding)**
-            tx_data_offset = tx_count_offset + 4
             transactions = []
-            i = 0
-
-            while i < tx_count:
+            for i in range(tx_count):
                 try:
-                    # ✅ **Read Transaction Size First**
+                    # ✅ **Ensure Transaction Size Exists**
+                    if tx_data_offset + 4 > len(block_data):
+                        print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Incomplete block data; missing transaction size at index {i}.")
+                        return None
+
                     tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
                     tx_data_offset += 4
+
+                    # ✅ **Ensure Sufficient Data Exists for the Transaction**
+                    if tx_data_offset + tx_size > len(block_data):
+                        print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Incomplete block data; missing transaction at index {i}.")
+                        return None
 
                     # ✅ **Extract Transaction JSON Bytes**
                     tx_bytes = block_data[tx_data_offset:tx_data_offset + tx_size]
@@ -300,34 +320,38 @@ class BlockMetadata:
 
                 except json.JSONDecodeError as e:
                     print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to decode transaction JSON at index {i}: {e}")
-
-                i += 1
+                    return None
+                except struct.error as e:
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Struct error in transaction size at index {i}: {e}")
+                    return None
 
             # ✅ **Construct Block Dictionary**
             block_dict = {
-                "header": {
-                    "index": block_height,
-                    "previous_hash": prev_block_hash.hex(),
-                    "merkle_root": merkle_root.hex(),
-                    "timestamp": timestamp,
-                    "nonce": nonce,
-                    "difficulty": difficulty_int,
-                    "miner_address": miner_address_str,
-                },
+                "index": block_height,
+                "previous_hash": prev_block_hash.hex(),
+                "merkle_root": merkle_root.hex(),
+                "timestamp": timestamp,
+                "nonce": nonce,
+                "difficulty": difficulty_int,
+                "miner_address": miner_address_str,
                 "transactions": transactions
             }
 
             # ✅ **Ensure Block Header Exists Before Returning**
-            if "header" not in block_dict or not isinstance(block_dict["header"], dict):
-                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block header is missing or malformed. Skipping block load.")
-                return None
+            required_keys = ["index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "miner_address"]
+            for key in required_keys:
+                if key not in block_dict:
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Block missing required field: {key}")
+                    return None
 
-            print(f"[BlockMetadata._deserialize_block_from_binary] SUCCESS: Block {block_height} deserialized successfully.")
+            print(f"[BlockMetadata._deserialize_block_from_binary] ✅ SUCCESS: Block {block_height} deserialized successfully.")
             return Block.from_dict(block_dict)
 
         except Exception as e:
             print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to deserialize block: {e}")
             return None
+
+
 
 
 
@@ -702,10 +726,21 @@ class BlockMetadata:
         """
         Serialize a Block into binary format.
         Packs the header fields into fixed-length binary and appends transaction data.
+
+        Args:
+            block (Block): The block to serialize.
+
+        Returns:
+            bytes: The serialized block in binary format.
+
+        Raises:
+            ValueError: If difficulty length or miner address exceeds the allowed size.
+            Exception: If serialization fails.
         """
         try:
             print(f"[BlockMetadata] INFO: Serializing Block {block.index} to binary.")
 
+            # Convert block to dictionary
             block_dict = block.to_dict()
             header = block_dict["header"]
 
@@ -715,21 +750,23 @@ class BlockMetadata:
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
-            difficulty_bytes = int(header["difficulty"]).to_bytes(128, "big", signed=False).lstrip(b"\x00")
 
-            # ✅ Dynamic Difficulty Length Storage
-            difficulty_length = len(difficulty_bytes)  # Length of difficulty field (1-128 bytes)
+            # Convert difficulty to bytes and strip leading zeros
+            difficulty_bytes = int(header["difficulty"]).to_bytes(128, "big", signed=False).lstrip(b"\x00")
+            difficulty_length = len(difficulty_bytes)
+
+            # Validate difficulty length
             if difficulty_length > 128:
                 raise ValueError(f"[BlockMetadata] ERROR: Difficulty length {difficulty_length} exceeds 128 bytes.")
 
-            # ✅ Process miner address (max 128 bytes, padded)
+            # Process miner address (max 128 bytes, padded)
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
                 raise ValueError("[BlockMetadata] ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
 
-            # ✅ Pack header fields with Dynamic Difficulty Length
+            # Pack header fields with dynamic difficulty length
             header_format = f">I48s48sQI B{difficulty_length}s 128s"
             header_data = struct.pack(
                 header_format,
@@ -738,33 +775,45 @@ class BlockMetadata:
                 merkle_root,
                 timestamp,
                 nonce,
-                difficulty_length,  # ✅ 1-byte difficulty length
-                difficulty_bytes,    # ✅ Dynamic difficulty size
+                difficulty_length,  # 1-byte difficulty length
+                difficulty_bytes,   # Dynamic difficulty size
                 miner_address_padded
             )
 
             print(f"[BlockMetadata] INFO: Difficulty stored as {difficulty_length} bytes.")
 
-            # ✅ Serialize transactions as JSON and encode as bytes
+            # Serialize transactions as JSON and encode as bytes
             tx_data_list = []
             for tx in block_dict["transactions"]:
                 try:
-                    tx_json = json.dumps(tx, sort_keys=True)
+                    if hasattr(tx, "to_dict"):  # Check if the transaction has a to_dict method
+                        tx_dict = tx.to_dict()
+                    elif isinstance(tx, dict):  # If it's already a dictionary, use it directly
+                        tx_dict = tx
+                    else:
+                        raise TypeError(f"[BlockMetadata] ERROR: Transaction is not serializable: {tx}")
+
+                    tx_json = json.dumps(tx_dict, sort_keys=True)
                     tx_data_list.append(tx_json)
                 except Exception as e:
                     print(f"[BlockMetadata] ERROR: Failed to serialize transaction: {e}")
+                    raise
 
+            # Combine transaction data
             tx_data = "\n".join(tx_data_list).encode("utf-8")
             tx_count = len(block_dict["transactions"])
             tx_count_data = struct.pack(">I", tx_count)
 
-            # ✅ Return complete serialized block
+            # Combine header, transaction count, and transaction data
             serialized_block = header_data + tx_count_data + tx_data
             print(f"[BlockMetadata] SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
             return serialized_block
 
+        except ValueError as ve:
+            print(f"[BlockMetadata] ❌ ERROR: Validation error during serialization: {ve}")
+            raise
         except Exception as e:
-            print(f"[BlockMetadata] ERROR: Failed to serialize block {block.index}: {e}")
+            print(f"[BlockMetadata] ❌ ERROR: Failed to serialize block {block.index}: {e}")
             raise
 
 
@@ -820,25 +869,18 @@ class BlockMetadata:
                     print(f"[BlockMetadata.get_block_from_data_file] ERROR: Failed to deserialize block at offset {offset}.")
                     return None
 
-                # ✅ **Check Block Header Integrity**
-                required_keys = ["index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"]
-                header = block.to_dict().get("header", {})
-
-                if not all(key in header for key in required_keys):
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Block header missing required fields: {header}")
-                    return None
-
                 # ✅ **Ensure Block Index Matches Offset Location**
-                if header["index"] == 0 and offset != 4:
+                if block.index == 0 and offset != 4:
                     print(f"[BlockMetadata.get_block_from_data_file] ERROR: Genesis block found at incorrect offset {offset}. Expected offset 4.")
                     return None
 
-                print(f"[BlockMetadata.get_block_from_data_file] SUCCESS: Successfully retrieved and validated Block {header['index']} from offset {offset}.")
+                print(f"[BlockMetadata.get_block_from_data_file] SUCCESS: Successfully retrieved and validated Block {block.index} from offset {offset}.")
                 return block
 
         except Exception as e:
             print(f"[BlockMetadata.get_block_from_data_file] ERROR: Failed to retrieve block from file: {e}")
             return None
+
 
 
 

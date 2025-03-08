@@ -111,7 +111,7 @@ class CoinbaseTx:
             "type": self.type,
             "fee": str(self.fee),
             "size": self.size,
-            "metadata": self.metadata  # ✅ Include metadata
+            "metadata": self.metadata  # Include metadata
         }
 
     @classmethod
@@ -123,40 +123,40 @@ class CoinbaseTx:
         - Ensures required fields are present.
         """
         try:
-            print(f"[CoinbaseTx.from_dict]  INFO: Deserializing CoinbaseTx from dictionary...")
+            print(f"[CoinbaseTx.from_dict] INFO: Deserializing CoinbaseTx from dictionary...")
+            expected_keys = {
+                "block_height", "miner_address", "reward", "tx_id",
+                "timestamp", "inputs", "outputs", "type", "size"
+            }
+            # Filter out only the expected keys
+            filtered_data = {k: data[k] for k in expected_keys if k in data}
 
-            # ✅ **Required Fields Validation**
-            required_fields = {"tx_id", "block_height", "miner_address", "reward"}
-            missing_fields = [field for field in required_fields if field not in data]
+            required_fields = {"block_height", "miner_address", "reward"}
+            missing_fields = [field for field in required_fields if field not in filtered_data]
             if missing_fields:
                 raise ValueError(f"[CoinbaseTx.from_dict] ❌ ERROR: Missing required fields: {missing_fields}")
 
-            # ✅ **Initialize CoinbaseTx Object**
+            # Create the CoinbaseTx object
             obj = cls(
-                block_height=data["block_height"],
-                miner_address=data["miner_address"],
-                reward=Decimal(data["reward"]),
-                metadata=data.get("metadata", {})  # ✅ Restore metadata if present
+                block_height=filtered_data["block_height"],
+                miner_address=filtered_data["miner_address"],
+                reward=Decimal(filtered_data["reward"])
             )
+            obj.tx_id = filtered_data.get("tx_id", obj._generate_tx_id())  # Generate TX ID if missing
+            obj.timestamp = filtered_data.get("timestamp", int(time.time()))  # Use current time if missing
+            obj.inputs = filtered_data.get("inputs", [])  # Default to empty list
+            obj.outputs = filtered_data.get("outputs", obj.outputs)  # Default from class if not provided
+            obj.type = filtered_data.get("type", "COINBASE")  # Default to "COINBASE"
+            obj.size = filtered_data.get("size", obj._estimate_size())  # Estimate size if missing
+            # Restore metadata safely
+            obj.metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
 
-            # ✅ **Ensure TX ID is Generated if Missing**
-            obj.tx_id = data.get("tx_id", obj._generate_tx_id())
-
-            # ✅ **Restore Optional Fields**
-            obj.timestamp = data.get("timestamp", int(time.time()))  # Use current timestamp if missing
-            obj.inputs = data.get("inputs", [])  # Default empty list if missing
-            obj.outputs = data.get("outputs", obj.outputs)  # Use class default if missing
-            obj.type = data.get("type", "COINBASE")  # Default transaction type
-            obj.size = data.get("size", obj._estimate_size())  # Auto-calculate size if missing
-
-            # ✅ **Log Success**
             print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id}")
             return obj
 
         except Exception as e:
             print(f"[CoinbaseTx.from_dict] ❌ ERROR: Failed to deserialize CoinbaseTx: {e}")
             return None
-
 
     @property
     def is_coinbase(self) -> bool:

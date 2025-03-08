@@ -361,6 +361,92 @@ class LMDBManager:
             print(f"[ERROR] Failed to store block {block_hash}: {e}")
             raise
 
+
+    def put(self, key: Union[str, bytes], value: dict, db=None):
+        """
+        Store a JSON-serialized value in LMDB by key.
+
+        Args:
+            key (Union[str, bytes]): The key to store.
+            value (dict): The data to store (must be JSON-serializable).
+            db: The database handle to use (defaults to self.blocks_db).
+
+        Returns:
+            bool: True if the data was stored successfully, False otherwise.
+        """
+        db_handle = db or self.blocks_db
+
+        # Validate key type
+        if not isinstance(key, (str, bytes)):
+            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
+            return False
+
+        # Convert key to bytes if it's a string
+        if isinstance(key, str):
+            key = key.encode("utf-8")
+
+        # Validate value type
+        if not isinstance(value, dict):
+            print(f"[LMDB ERROR] ❌ Invalid value type: {type(value)}. Expected dict.")
+            return False
+
+        try:
+            # Serialize value to JSON
+            value_json = json.dumps(value).encode("utf-8")
+        except (TypeError, ValueError) as e:
+            print(f"[LMDB ERROR] ❌ Failed to serialize value: {e}")
+            return False
+
+        try:
+            with self.env.begin(write=True, db=db_handle) as txn:
+                txn.put(key, value_json)
+            print(f"[LMDB INFO] ✅ Successfully stored key: {key.decode('utf-8') if isinstance(key, bytes) else key}")
+            return True
+        except Exception as e:
+            print(f"[LMDB ERROR] ❌ Failed to store key {key.decode('utf-8')}: {e}")
+            return False
+
+    def get(self, key: Union[str, bytes], db=None):
+        """
+        Retrieve a JSON-serialized value from LMDB by key.
+
+        Args:
+            key (Union[str, bytes]): The key to retrieve.
+            db: The database handle to use (defaults to self.blocks_db).
+
+        Returns:
+            dict: Deserialized JSON data, or None if the key is invalid or data is corrupted.
+        """
+        db_handle = db or self.blocks_db
+
+        # Validate key type
+        if not isinstance(key, (str, bytes)):
+            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
+            return None
+
+        # Convert key to bytes if it's a string
+        if isinstance(key, str):
+            key = key.encode("utf-8")
+
+        try:
+            with self.env.begin(db=db_handle) as txn:
+                value = txn.get(key)
+
+                if value is None:
+                    print(f"[LMDB WARNING] ⚠️ Key not found: {key.decode('utf-8') if isinstance(key, bytes) else key}")
+                    return None
+
+                # Validate and deserialize JSON data
+                try:
+                    return json.loads(value.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    print(f"[LMDB ERROR] ❌ Corrupt JSON data for key {key.decode('utf-8')}: {e}")
+                    return None
+
+        except Exception as e:
+            print(f"[LMDB ERROR] ❌ Failed to retrieve key {key.decode('utf-8')}: {e}")
+            return None
+    
     def get_all_blocks(self) -> list:
         """
         Retrieve all blocks stored in the 'blocks' DB.
