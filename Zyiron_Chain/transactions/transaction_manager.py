@@ -27,6 +27,8 @@ from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.storage.utxostorage import UTXOStorage
 from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+
+
 class TransactionManager:
     """
     Manages transaction creation, validation, and mempool operations
@@ -90,19 +92,35 @@ class TransactionManager:
         """Retrieve transaction data and deserialize if necessary."""
         data = self.tx_storage.get_transaction(tx_id)
         return Deserializer().deserialize(data) if data else None
-    def create_transaction(self, sender, recipient_address, amount, fee, transaction_type="STANDARD"):
+    def create_transaction(self, sender, recipient_address=None, amount=None, fee=None, transaction_type="STANDARD", **kwargs):
         """
         Create a new transaction.
+
+        Accepts either 'recipient_address' or (if missing) the legacy keyword 'recipient_script_pub_key'.
         
         :param sender: Sender's address.
-        :param recipient_address: Recipient's address.
+        :param recipient_address: Recipient's address. If None, the function checks kwargs for 'recipient_script_pub_key'.
         :param amount: Amount to send.
         :param fee: Transaction fee.
         :param transaction_type: Type of the transaction (default: "STANDARD").
-        :return: The created transaction.
+        :param kwargs: Additional keyword arguments.
+        :return: The created transaction as a dictionary.
         """
         try:
+            # Check for legacy parameter if recipient_address not provided
+            if recipient_address is None and "recipient_script_pub_key" in kwargs:
+                recipient_address = kwargs["recipient_script_pub_key"]
+                print("[TransactionManager.create_transaction] INFO: 'recipient_script_pub_key' found in kwargs; using it as recipient_address.")
+
+            if recipient_address is None:
+                raise ValueError("Recipient address must be provided.")
+
             print(f"[TransactionManager.create_transaction] Creating transaction from {sender} to {recipient_address}...")
+            
+            # Generate transaction ID using hashing of key transaction components
+            tx_data = f"{sender}{recipient_address}{amount}{fee}{transaction_type}"
+            tx_hash = Hashing.hash(tx_data.encode()).hex()
+            
             transaction = {
                 "sender": sender,
                 "recipient_address": recipient_address,
@@ -110,13 +128,16 @@ class TransactionManager:
                 "fee": fee,
                 "timestamp": int(time.time()),
                 "transaction_type": transaction_type,
-                "tx_id": Hashing.hash(f"{sender}{recipient_address}{amount}{fee}{transaction_type}".encode()).hex()
+                "tx_id": tx_hash
             }
+            
             print(f"[TransactionManager.create_transaction] SUCCESS: Transaction created with ID {transaction['tx_id']}.")
             return transaction
+
         except Exception as e:
             print(f"[TransactionManager.create_transaction] ERROR: Failed to create transaction: {e}")
             return None
+
 
 
     @property

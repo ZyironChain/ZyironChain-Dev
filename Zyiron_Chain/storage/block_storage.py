@@ -329,54 +329,66 @@ class WholeBlockData:
             # Unpack Header Fields
             header_format = ">I32s32sQI"
             base_header_size = struct.calcsize(header_format)
+            print(f"[WholeBlockData] INFO: Expected header size: {base_header_size} bytes.")
             if len(block_data) < base_header_size:
                 raise ValueError("Block data too short for header.")
             (block_height, prev_block_hash, merkle_root, timestamp, nonce) = struct.unpack(
                 header_format, block_data[:base_header_size]
             )
+            print(f"[WholeBlockData] INFO: Header unpacked: index={block_height}, timestamp={timestamp}, nonce={nonce}.")
 
             # Unpack Difficulty
             difficulty_length_offset = base_header_size
+            print(f"[WholeBlockData] INFO: Reading difficulty length at offset {difficulty_length_offset}.")
             if len(block_data) < difficulty_length_offset + 1:
                 raise ValueError("Block data too short for difficulty length.")
             difficulty_length = struct.unpack(
                 ">B", block_data[difficulty_length_offset:difficulty_length_offset + 1]
             )[0]
+            print(f"[WholeBlockData] INFO: Difficulty length: {difficulty_length} bytes.")
             difficulty_offset = difficulty_length_offset + 1
             if len(block_data) < difficulty_offset + difficulty_length:
                 raise ValueError("Block data too short for difficulty value.")
             difficulty_bytes = block_data[difficulty_offset:difficulty_offset + difficulty_length]
             difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
+            print(f"[WholeBlockData] INFO: Difficulty value unpacked: {difficulty_int}.")
 
             # Unpack Miner Address
             miner_address_offset = difficulty_offset + difficulty_length
+            print(f"[WholeBlockData] INFO: Reading miner address at offset {miner_address_offset}.")
             if len(block_data) < miner_address_offset + 128:
                 raise ValueError("Block data too short for miner address.")
             miner_address_bytes = block_data[miner_address_offset:miner_address_offset + 128]
             miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
+            print(f"[WholeBlockData] INFO: Miner address: {miner_address_str}.")
 
             # Unpack Transaction Count
             tx_count_offset = miner_address_offset + 128
+            print(f"[WholeBlockData] INFO: Reading transaction count at offset {tx_count_offset}.")
             if len(block_data) < tx_count_offset + 4:
                 raise ValueError("Block data too short for transaction count.")
             tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
-            print(f"[WholeBlockData] INFO: Block {block_height} contains {tx_count} transactions.")
+            print(f"[WholeBlockData] INFO: Block {block_height} claims {tx_count} transaction(s).")
 
             # Unpack Transactions (Size-Prefixed)
             tx_data_offset = tx_count_offset + 4
             transactions = []
             for i in range(tx_count):
-                # Check for transaction size field
+                print(f"[WholeBlockData] INFO: Processing transaction {i} at offset {tx_data_offset}.")
+                # Check for transaction size field (4 bytes)
                 if len(block_data) < tx_data_offset + 4:
-                    print(f"[WholeBlockData] ❌ ERROR: Not enough data to read size of transaction {i} in block {block_height}.")
-                    raise ValueError(f"Incomplete transaction size data at transaction {i}.")
+                    msg = f"Not enough data to read size of transaction {i} in block {block_height}."
+                    print(f"[WholeBlockData] ❌ ERROR: {msg}")
+                    raise ValueError(msg)
                 tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
+                print(f"[WholeBlockData] INFO: Transaction {i} size: {tx_size} bytes.")
                 tx_data_offset += 4
 
                 # Check that full transaction bytes are available
                 if len(block_data) < tx_data_offset + tx_size:
-                    print(f"[WholeBlockData] ❌ ERROR: Incomplete transaction data for transaction {i} in block {block_height}. Expected {tx_size} bytes.")
-                    raise ValueError(f"Incomplete transaction data at transaction {i}.")
+                    msg = f"Incomplete transaction data for transaction {i} in block {block_height}. Expected {tx_size} bytes."
+                    print(f"[WholeBlockData] ❌ ERROR: {msg}")
+                    raise ValueError(msg)
 
                 tx_bytes = block_data[tx_data_offset:tx_data_offset + tx_size]
                 tx_data_offset += tx_size
@@ -386,14 +398,15 @@ class WholeBlockData:
                     if "tx_id" not in tx_obj:
                         print(f"[WholeBlockData] ❌ ERROR: Transaction {i} in block {block_height} missing 'tx_id'. Skipping.")
                         continue
+                    print(f"[WholeBlockData] INFO: Transaction {i} deserialized successfully with tx_id: {tx_obj.get('tx_id')}.")
                     transactions.append(tx_obj)
                 except Exception as e:
                     print(f"[WholeBlockData] ❌ ERROR: Failed to deserialize transaction {i} in block {block_height}: {e}")
                     continue
 
-            # Check if the number of transactions read matches the expected count
+            # Verify that the expected number of transactions was deserialized
             if len(transactions) != tx_count:
-                raise ValueError(f"Expected {tx_count} transactions, but only deserialized {len(transactions)}.")
+                raise ValueError(f"Expected {tx_count} transactions, but deserialized {len(transactions)}.")
 
             # Reconstruct Block Dictionary
             block_dict = {
@@ -408,8 +421,7 @@ class WholeBlockData:
                 },
                 "transactions": transactions
             }
-
-            print(f"[WholeBlockData] ✅ SUCCESS: Block {block_height} deserialized successfully.")
+            print(f"[WholeBlockData] ✅ SUCCESS: Block {block_height} deserialized successfully with {len(transactions)} transaction(s).")
             return Block.from_dict(block_dict)
 
         except Exception as e:
@@ -419,10 +431,14 @@ class WholeBlockData:
 
 
 
+
     def _serialize_block_to_binary(self, block: Block) -> bytes:
         """
         Serialize a Block into binary format.
-        Packs the header fields into fixed-length binary and appends transaction data.
+        Packs fixed header fields (index, previous_hash, merkle_root, timestamp, nonce,
+        difficulty, and miner_address) and also packs extra header metadata (reward, fees, version)
+        as a JSON blob with a 4-byte length prefix. Finally, it appends transaction data,
+        each prefixed with its 4-byte size.
         """
         try:
             print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
@@ -432,32 +448,35 @@ class WholeBlockData:
             header = block_dict.get("header")
             if header is None:
                 raise ValueError("Block header is missing.")
+            print("[WholeBlockData] INFO: Block header retrieved successfully.")
 
-            # ✅ Extract Block Header Fields
+            # --- Fixed Header Fields ---
             block_height = int(header["index"])
             prev_block_hash = bytes.fromhex(header["previous_hash"])
             merkle_root = bytes.fromhex(header["merkle_root"])
             timestamp = int(header["timestamp"])
             nonce = int(header["nonce"])
+            print(f"[WholeBlockData] INFO: Fixed header fields - index: {block_height}, timestamp: {timestamp}, nonce: {nonce}.")
 
-            # ✅ Convert Difficulty Dynamically (Prefix with 1-byte Length + Difficulty Bytes)
-            # Use a fixed 48-byte field for difficulty and strip leading zeroes.
+            # Convert difficulty dynamically (using a fixed 48-byte field, strip leading zeroes)
             difficulty_value = int(header["difficulty"])
             difficulty_bytes = difficulty_value.to_bytes(48, "big", signed=False).lstrip(b'\x00')
             difficulty_length = len(difficulty_bytes)
             difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes
+            print(f"[WholeBlockData] INFO: Difficulty processed - length: {difficulty_length} bytes.")
 
-            # ✅ Process Miner Address (Ensure maximum of 128 bytes, padded with null bytes)
+            # Process miner address (ensure maximum of 128 bytes, padded with null bytes)
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
                 raise ValueError("[WholeBlockData] ❌ ERROR: Miner address exceeds 128 bytes.")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
+            print(f"[WholeBlockData] INFO: Miner address processed and padded.")
 
-            # ✅ Pack Header Fields (Format: index, previous hash, merkle root, timestamp, nonce, difficulty, miner address)
-            header_format = f">I32s32sQI{len(difficulty_packed)}s128s"
-            header_data = struct.pack(
-                header_format,
+            # Pack fixed header fields
+            fixed_header_format = f">I32s32sQI{len(difficulty_packed)}s128s"
+            fixed_header_data = struct.pack(
+                fixed_header_format,
                 block_height,
                 prev_block_hash,
                 merkle_root,
@@ -466,40 +485,55 @@ class WholeBlockData:
                 difficulty_packed,
                 miner_address_padded
             )
-            print(f"[WholeBlockData] INFO: Header packed with format {header_format}.")
+            print(f"[WholeBlockData] INFO: Fixed header packed with format {fixed_header_format}.")
 
-            # ✅ Serialize Transactions into Binary Format
+            # --- Extra Header Fields ---
+            # Extra header fields: reward, fees, and version.
+            extra_header = {
+                "reward": header.get("reward", ""),
+                "fees": header.get("fees", ""),
+                "version": header.get("version", "")
+            }
+            extra_header_json = json.dumps(extra_header, sort_keys=True).encode("utf-8")
+            extra_header_length = len(extra_header_json)
+            extra_header_data = struct.pack(">I", extra_header_length) + extra_header_json
+            print(f"[WholeBlockData] INFO: Extra header packed (length {extra_header_length} bytes).")
+
+            # --- Serialize Transactions ---
             serialized_transactions = []
             transactions = block_dict.get("transactions", [])
+            print(f"[WholeBlockData] INFO: Serializing {len(transactions)} transaction(s).")
             for idx, tx in enumerate(transactions):
                 try:
-                    # Ensure the transaction is serializable to JSON.
                     if hasattr(tx, "to_dict"):
                         tx_dict = tx.to_dict()
                     elif isinstance(tx, dict):
                         tx_dict = tx
                     else:
                         raise TypeError(f"Transaction at index {idx} is not serializable.")
-
                     tx_json = json.dumps(tx_dict, sort_keys=True).encode("utf-8")
                     tx_size = len(tx_json)
                     serialized_tx = struct.pack(">I", tx_size) + tx_json
                     serialized_transactions.append(serialized_tx)
+                    print(f"[WholeBlockData] INFO: Serialized transaction {idx}: size {tx_size} bytes.")
                 except Exception as e:
                     print(f"[WholeBlockData] ❌ ERROR: Failed to serialize transaction at index {idx}: {e}")
 
-            # Combine serialized transactions with a 4-byte count prefix.
             tx_count = len(serialized_transactions)
             tx_count_data = struct.pack(">I", tx_count)
             tx_data = b"".join(serialized_transactions)
+            print(f"[WholeBlockData] INFO: {tx_count} transaction(s) serialized.")
 
-            serialized_block = header_data + tx_count_data + tx_data
-            print(f"[WholeBlockData] ✅ SUCCESS: Block {block.index} serialized successfully. Size: {len(serialized_block)} bytes")
+            # --- Combine Everything ---
+            serialized_block = fixed_header_data + extra_header_data + tx_count_data + tx_data
+            print(f"[WholeBlockData] ✅ SUCCESS: Block {block.index} serialized successfully. Total size: {len(serialized_block)} bytes")
             return serialized_block
 
         except Exception as e:
             print(f"[WholeBlockData] ❌ ERROR: Failed to serialize block {block.index}: {e}")
             raise
+
+
 
 
     def get_block_from_data_file(self, offset: int):

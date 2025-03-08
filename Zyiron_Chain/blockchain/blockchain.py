@@ -31,6 +31,7 @@ from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # Hypothe
 # Constants might be needed for difficulty, chain name, etc.
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.miner.pow import PowManager
+from Zyiron_Chain.transactions.txout import TransactionOut 
 
 class Blockchain:
     """
@@ -103,33 +104,31 @@ class Blockchain:
     def load_chain_from_storage(self) -> list:
         """
         Load the blockchain from storage into memory with validation.
-        
-        :return: List of loaded blocks or an empty list if none are valid.
         """
         try:
             print("[Blockchain.load_chain_from_storage] INFO: Loading chain from storage...")
 
-            # ✅ **Retrieve All Stored Blocks**
+            # Retrieve all stored blocks
             stored_blocks = self.block_metadata.get_all_blocks()
             if not stored_blocks:
                 print("[Blockchain.load_chain_from_storage] WARNING: No blocks found in storage.")
-                return []  # ✅ Explicitly return an empty list if no blocks exist
+                return []  # Explicitly return an empty list
 
             loaded_blocks = []
             for block_data in stored_blocks:
                 try:
-                    # ✅ **Ensure Block Data is Valid Before Processing**
+                    # Ensure block data is valid before processing
                     if not isinstance(block_data, dict) or "index" not in block_data or "hash" not in block_data:
                         print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping corrupted block: {block_data}")
                         continue
 
-                    # ✅ **Deserialize the Block Safely**
+                    # Deserialize the block safely
                     block = Block.from_dict(block_data)
                     if not self.validate_block(block):
                         print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping invalid block at height {block.index}")
-                        continue  # Skip block if validation fails
+                        continue
 
-                    # ✅ **Successfully Add Valid Block**
+                    # Add valid block to the list
                     loaded_blocks.append(block)
 
                 except Exception as block_error:
@@ -140,7 +139,7 @@ class Blockchain:
 
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from storage: {e}")
-            return []  # ✅ Return an empty list on any failure
+            return []  # Return an empty list on any failure
 
 
     def add_block(self, block: Block, is_genesis: bool = False) -> bool:
@@ -158,23 +157,30 @@ class Blockchain:
         try:
             print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
-            # ✅ Validate Block Before Adding (Skip Validation for Genesis Block)
+            # Skip validation for the Genesis block
             if not is_genesis:
                 if not self.validate_block(block):
                     print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
                     return False
 
-            # ✅ Ensure Block Version Matches Current Chain Version
+            # Check block version compatibility
             if block.version != Constants.VERSION:
                 print(f"[Blockchain.add_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
                 return False  # Prevent adding incompatible blocks
 
-            # ✅ Store Block Metadata & Full Block Data
-            self.block_metadata.store_block(block, block.difficulty)
-
-            # ✅ Index Transactions in txindex.lmdb
+            # Ensure outputs are TransactionOut objects
             for tx in block.transactions:
-                # Instead of using dictionary-style access, we now retrieve tx_id via attributes:
+                tx.outputs = [
+                    TransactionOut(**output) if isinstance(output, dict) else output
+                    for output in tx.outputs
+                ]
+
+            # Store block metadata and full block data
+            self.block_metadata.store_block(block, block.difficulty)
+            print(f"[Blockchain.add_block] INFO: Block {block.index} metadata stored successfully.")
+
+            # Index transactions from the block
+            for tx in block.transactions:
                 if isinstance(tx, dict):
                     tx_id = tx.get("tx_id")
                 else:
@@ -188,15 +194,14 @@ class Blockchain:
                 inputs = self._extract_inputs(tx)
                 outputs = self._extract_outputs(tx)
                 timestamp = getattr(tx, "timestamp", int(time.time()))
-
                 self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
                 print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
 
-            # ✅ Update UTXOs in utxo.lmdb and utxo_history.lmdb
+            # Update UTXO storage with new UTXOs from the block
             self.utxo_storage.update_utxos(block)
             print(f"[Blockchain.add_block] ✅ INFO: UTXO database updated successfully.")
 
-            # ✅ Add Block to In-Memory Chain
+            # Append block to in-memory chain
             self.chain.append(block)
             print(f"[Blockchain.add_block] ✅ SUCCESS: Block {block.index} added to the chain.")
             return True
@@ -206,76 +211,130 @@ class Blockchain:
             return False
 
 
+
+
+
+    def _convert_tx_outputs(self, outputs) -> list:
+        """
+        New helper method to convert transaction outputs that are dictionaries
+        into proper TransactionOut objects.
+        
+        :param outputs: List of outputs (can be dicts or TransactionOut objects).
+        :return: List of TransactionOut objects.
+        """
+        converted_outputs = []
+        for idx, out in enumerate(outputs):
+            if isinstance(out, dict):
+                try:
+                    converted_out = TransactionOut.from_dict(out)
+                    print(f"[Blockchain._convert_tx_outputs] INFO: Converted output {idx} from dict to TransactionOut with tx_out_id: {converted_out.tx_out_id}.")
+                    converted_outputs.append(converted_out)
+                except Exception as e:
+                    print(f"[Blockchain._convert_tx_outputs] ERROR: Failed to convert output at index {idx}: {e}")
+            else:
+                # Assume it's already a TransactionOut object
+                converted_outputs.append(out)
+        return converted_outputs
+
+
+    def _extract_inputs(self, tx) -> list:
+        """
+        Helper method to extract transaction inputs in a consistent dictionary format.
+        
+        :param tx: Transaction instance or dictionary containing inputs.
+        :return: List of input dictionaries.
+        """
+        extracted_inputs = []
+        # Check if tx is a dict or an object
+        if isinstance(tx, dict):
+            inputs = tx.get("inputs", [])
+        else:
+            inputs = getattr(tx, "inputs", [])
+        print(f"[Blockchain._extract_inputs] INFO: Found {len(inputs)} input(s) in transaction.")
+        for idx, inp in enumerate(inputs):
+            if isinstance(inp, dict):
+                amount = inp.get("amount", 0)
+                previous_tx = inp.get("previous_tx", "")
+                output_index = inp.get("output_index", None)
+                print(f"[Blockchain._extract_inputs] INFO: Input {idx} (dict) - amount: {amount}, previous_tx: {previous_tx}, output_index: {output_index}.")
+            else:
+                amount = getattr(inp, "amount", 0)
+                previous_tx = getattr(inp, "previous_tx", "")
+                output_index = getattr(inp, "output_index", None)
+                print(f"[Blockchain._extract_inputs] INFO: Input {idx} (object) - amount: {amount}, previous_tx: {previous_tx}, output_index: {output_index}.")
+            extracted_inputs.append({
+                "amount": amount,
+                "previous_tx": previous_tx,
+                "output_index": output_index
+            })
+        print(f"[Blockchain._extract_inputs] INFO: Extraction complete. Total inputs extracted: {len(extracted_inputs)}.")
+        return extracted_inputs
+
     def _extract_outputs(self, tx) -> list:
         """
         Helper method to extract transaction outputs in a consistent dictionary format.
-
+        
         :param tx: Transaction instance or dictionary containing outputs.
         :return: List of output dictionaries.
         """
         extracted_outputs = []
-
-        outputs = getattr(tx, "outputs", [])
-        for out in outputs:
+        if isinstance(tx, dict):
+            outputs = tx.get("outputs", [])
+        else:
+            outputs = getattr(tx, "outputs", [])
+        print(f"[Blockchain._extract_outputs] INFO: Found {len(outputs)} output(s) in transaction.")
+        for idx, out in enumerate(outputs):
             if isinstance(out, dict):
                 amount = out.get("amount", 0)
                 script_pub_key = out.get("script_pub_key", "")
                 locked = out.get("locked", False)
+                print(f"[Blockchain._extract_outputs] INFO: Output {idx} (dict) - amount: {amount}, script_pub_key: {script_pub_key}, locked: {locked}.")
             else:
                 amount = getattr(out, "amount", 0)
                 script_pub_key = getattr(out, "script_pub_key", "")
                 locked = getattr(out, "locked", False)
-
+                print(f"[Blockchain._extract_outputs] INFO: Output {idx} (object) - amount: {amount}, script_pub_key: {script_pub_key}, locked: {locked}.")
             extracted_outputs.append({
                 "amount": amount,
                 "script_pub_key": script_pub_key,
                 "locked": locked
             })
-
+        print(f"[Blockchain._extract_outputs] INFO: Extraction complete. Total outputs extracted: {len(extracted_outputs)}.")
         return extracted_outputs
-
 
 
     def validate_block(self, block: Block) -> bool:
         """
         Validate a block before adding it to the blockchain.
-        
-        - Checks proof-of-work.
-        - Ensures block links correctly to the previous block.
-        - Validates all transactions.
-        - Ensures metadata and version integrity.
-
-        :param block: The block to validate.
-        :return: True if the block is valid, False otherwise.
         """
         try:
             print(f"[Blockchain.validate_block] INFO: Validating Block {block.index}...")
 
-            # ✅ **Ensure Block Contains Required Metadata**
+            # Ensure block contains required metadata
             required_metadata_fields = ["index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"]
             for field in required_metadata_fields:
                 if not hasattr(block, field):
                     print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} is missing metadata field: {field}")
                     return False
 
-            # ✅ **Ensure Block Version Matches Current Chain Version**
+            # Ensure block version matches current chain version
             if block.version != Constants.VERSION:
                 print(f"[Blockchain.validate_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
                 return False
 
-            # ✅ **Validate Proof-of-Work**
+            # Validate proof-of-work
             if not self.pow_manager.validate_proof_of_work(block):
                 print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} failed proof-of-work validation.")
                 return False
 
-            # ✅ **Ensure Block Links to Previous Block Correctly**
+            # Ensure block links correctly to previous block
             if len(self.chain) > 0:
                 last_block = self.chain[-1]
                 if block.previous_hash != last_block.hash:
                     print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} has an invalid previous hash.")
                     return False
 
-            # ✅ **Validate All Transactions in the Block**
+            # Validate all transactions in the block
             for tx in block.transactions:
                 if not self.transaction_manager.validate_transaction(tx):
                     print(f"[Blockchain.validate_block] ❌ ERROR: Transaction {tx.tx_id} in Block {block.index} is invalid.")
@@ -287,6 +346,7 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_block] ❌ ERROR: Failed to validate Block {block.index}: {e}")
             return False
+        
 
 
     def get_latest_block(self) -> Optional[Block]:

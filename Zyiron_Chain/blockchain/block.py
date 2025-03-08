@@ -62,6 +62,7 @@ class Block:
         - Ensures all required fields are present.
         - Computes the Merkle root and block hash.
         """
+        print(f"[Block.__init__] Initializing Block #{index}")
 
         # Basic fields
         self.index = index
@@ -88,12 +89,13 @@ class Block:
         self.merkle_root = self._compute_merkle_root()
         print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")
 
-        # ✅ **Fix: Ensure Block stores `tx_id` (from Coinbase transaction)**
+        # Assign Coinbase TX ID
         self.tx_id = self._get_coinbase_tx_id()
         print(f"[Block.__init__] Assigned Coinbase TX ID: {self.tx_id}")
 
-        # ✅ **Fix: Hash is now preserved after mining and not re-computed**
-        self.hash = None  # Will be assigned only when mined
+        # Hash is assigned only when mined
+        self.hash = None
+        print(f"[Block.__init__] Block initialized successfully.")
 
     def get_header(self) -> dict:
         """
@@ -115,6 +117,7 @@ class Block:
     @classmethod
     def from_bytes(cls, block_bytes):
         """Deserialize a block from bytes."""
+        print("[Block.from_bytes] Deserializing block from bytes.")
         data = Deserializer().deserialize(block_bytes)
         return cls.from_dict(data)
 
@@ -122,6 +125,7 @@ class Block:
         """
         Calculate the block's hash (silence detailed prints during mining)
         """
+        print("[Block.calculate_hash] Calculating block hash.")
         header_str = (
             f"{self.version}{self.index}{self.previous_hash}"
             f"{self.merkle_root}{self.timestamp}{self.nonce}"
@@ -140,16 +144,16 @@ class Block:
         try:
             print("[Block._compute_merkle_root] INFO: Computing Merkle Root...")
 
-            # ✅ **Handle Empty Transaction List**
+            # Handle Empty Transaction List
             if not self.transactions or len(self.transactions) == 0:
                 print("[Block._compute_merkle_root] WARNING: No transactions found; using ZERO_HASH.")
                 return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
 
-            # ✅ **Convert Transactions to Hashes**
+            # Convert Transactions to Hashes
             tx_hashes = []
             for tx in self.transactions:
                 try:
-                    # ✅ Ensure transaction is serializable
+                    # Ensure transaction is serializable
                     if hasattr(tx, "to_dict") and callable(tx.to_dict):
                         tx_data = tx.to_dict()
                     elif isinstance(tx, dict):
@@ -157,7 +161,7 @@ class Block:
                     else:
                         raise ValueError(f"Transaction {tx} is not in a valid dictionary format.")
 
-                    # ✅ Serialize and hash the transaction
+                    # Serialize and hash the transaction
                     tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
                     tx_hash = Hashing.hash(tx_serialized)  # single-hash -> bytes
                     tx_hashes.append(tx_hash)
@@ -165,15 +169,15 @@ class Block:
                 except Exception as e:
                     print(f"[Block._compute_merkle_root] ❌ ERROR: Failed to serialize transaction: {e}")
 
-            # ✅ **Ensure We Have Valid Transactions**
+            # Ensure We Have Valid Transactions
             if not tx_hashes:
                 print("[Block._compute_merkle_root] ERROR: No valid transactions found. Using ZERO_HASH.")
                 return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
 
-            # ✅ **Build Merkle Tree**
+            # Build Merkle Tree
             while len(tx_hashes) > 1:
                 if len(tx_hashes) % 2 != 0:
-                    tx_hashes.append(tx_hashes[-1])  # ✅ Duplicate last hash if odd
+                    tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd
 
                 new_level = []
                 for i in range(0, len(tx_hashes), 2):
@@ -183,7 +187,7 @@ class Block:
 
                 tx_hashes = new_level  # Move to next Merkle tree level
 
-            # ✅ **Final Merkle Root**
+            # Final Merkle Root
             merkle_root = tx_hashes[0].hex()
             print(f"[Block._compute_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root}")
             return merkle_root
@@ -191,7 +195,6 @@ class Block:
         except Exception as e:
             print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
             return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
-
 
     def to_dict(self) -> dict:
         """
@@ -212,9 +215,10 @@ class Block:
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
-            "tx_id": self.tx_id,  # ✅ Include Coinbase TX ID
+            "tx_id": self.tx_id,  # Include Coinbase TX ID
             "hash": self.hash
         }
+
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
         """
@@ -251,12 +255,13 @@ class Block:
             miner_address=data.get("miner_address")
         )
 
-        # ✅ **Fix: Restore `tx_id`**
+        # Restore `tx_id`
         block.tx_id = data.get("tx_id")
 
-        # ✅ **Fix: Ensure Hash Consistency**
+        # Ensure Hash Consistency
         block.hash = data.get("hash", block.calculate_hash())
 
+        print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
         return block
 
     def __repr__(self) -> str:
@@ -267,12 +272,14 @@ class Block:
             f"<Block index={self.index} hash={self.hash[:10]}... "
             f"prev={self.previous_hash[:10]}... merkle={self.merkle_root[:10]}...>"
         )
-    
+
     def _get_coinbase_tx_id(self) -> Optional[str]:
         """
         Retrieves the `tx_id` of the Coinbase transaction, if present.
         """
         for tx in self.transactions:
             if hasattr(tx, "tx_type") and tx.tx_type == "COINBASE":
-                return tx.tx_id  # ✅ Get `tx_id` from the Coinbase transaction
+                print(f"[Block._get_coinbase_tx_id] Found Coinbase TX with ID: {tx.tx_id}")
+                return tx.tx_id  # Get `tx_id` from the Coinbase transaction
+        print("[Block._get_coinbase_tx_id] No Coinbase TX found.")
         return None  # If no Coinbase TX exists

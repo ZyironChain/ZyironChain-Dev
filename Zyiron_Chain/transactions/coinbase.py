@@ -98,22 +98,23 @@ class CoinbaseTx:
     def to_dict(self) -> Dict:
         """
         Serialize the CoinbaseTx to a dictionary.
+        Includes all fields, including metadata.
         """
-        print(f"[CoinbaseTx.to_dict]  Serializing CoinbaseTx (tx_id: {self.tx_id})")
+        print(f"[CoinbaseTx.to_dict] Serializing CoinbaseTx (tx_id: {self.tx_id})")
         return {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
-            "reward": str(self.reward),
+            "reward": str(self.reward),  # Convert Decimal to string for serialization
             "inputs": self.inputs,
             "outputs": self.outputs,
             "timestamp": self.timestamp,
             "type": self.type,
-            "fee": str(self.fee),
+            "fee": str(self.fee),  # Convert Decimal to string for serialization
             "size": self.size,
             "metadata": self.metadata  # Include metadata
         }
-
+    
     @classmethod
     def from_dict(cls, data: Dict):
         """
@@ -124,13 +125,17 @@ class CoinbaseTx:
         """
         try:
             print(f"[CoinbaseTx.from_dict] INFO: Deserializing CoinbaseTx from dictionary...")
+
+            # Expected keys in the dictionary
             expected_keys = {
                 "block_height", "miner_address", "reward", "tx_id",
-                "timestamp", "inputs", "outputs", "type", "size"
+                "timestamp", "inputs", "outputs", "type", "size", "fee"
             }
+
             # Filter out only the expected keys
             filtered_data = {k: data[k] for k in expected_keys if k in data}
 
+            # Required fields for a valid CoinbaseTx
             required_fields = {"block_height", "miner_address", "reward"}
             missing_fields = [field for field in required_fields if field not in filtered_data]
             if missing_fields:
@@ -140,14 +145,18 @@ class CoinbaseTx:
             obj = cls(
                 block_height=filtered_data["block_height"],
                 miner_address=filtered_data["miner_address"],
-                reward=Decimal(filtered_data["reward"])
+                reward=Decimal(filtered_data["reward"])  # Convert string to Decimal
             )
+
+            # Restore optional fields
             obj.tx_id = filtered_data.get("tx_id", obj._generate_tx_id())  # Generate TX ID if missing
             obj.timestamp = filtered_data.get("timestamp", int(time.time()))  # Use current time if missing
             obj.inputs = filtered_data.get("inputs", [])  # Default to empty list
             obj.outputs = filtered_data.get("outputs", obj.outputs)  # Default from class if not provided
             obj.type = filtered_data.get("type", "COINBASE")  # Default to "COINBASE"
             obj.size = filtered_data.get("size", obj._estimate_size())  # Estimate size if missing
+            obj.fee = Decimal(filtered_data.get("fee", "0"))  # Convert string to Decimal
+
             # Restore metadata safely
             obj.metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
 
@@ -157,7 +166,6 @@ class CoinbaseTx:
         except Exception as e:
             print(f"[CoinbaseTx.from_dict] ❌ ERROR: Failed to deserialize CoinbaseTx: {e}")
             return None
-
     @property
     def is_coinbase(self) -> bool:
         """
