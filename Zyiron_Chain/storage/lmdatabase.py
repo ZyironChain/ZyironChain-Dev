@@ -36,7 +36,7 @@ from typing import Optional
 from Zyiron_Chain.blockchain.constants import Constants
 from typing import Union, List, Dict
 import json
-from Zyiron_Chain.utils.deserializer import Deserializer
+
 # Optional: If you need the "ParentConstants" folder, etc.
 
 class LMDBManager:
@@ -189,10 +189,7 @@ class LMDBManager:
                 "free_space": self.env.info()["map_size"]
                              - self.env.info()["last_pgno"] * self.env.info()["psize"]
             }
-    def get_data(self, key):
-        """Retrieve and deserialize any LMDB stored data."""
-        data = self.env.get(key.encode("utf-8"))
-        return Deserializer().deserialize(data) if data else None
+
     # -------------------------------------------------------------------------
     # Basic Key-Value retrieval. For more advanced usage, your StorageManager
     # might wrap these calls with domain logic.

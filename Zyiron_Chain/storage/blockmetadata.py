@@ -70,6 +70,60 @@ class BlockMetadata:
             print(f"[BlockMetadata.__init__] ❌ ERROR: Initialization failed: {e}")
             raise
 
+
+
+    def get_block_by_height(self, height: int) -> Optional[Block]:
+        """
+        Retrieve a block using its height from the LMDB database.
+
+        :param height: Block height to look up.
+        :return: The block if found and valid, or None if not found.
+        """
+        try:
+            print(f"[BlockMetadata.get_block_by_height] INFO: Searching for block at height {height}...")
+
+            with self.block_metadata_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    if key.startswith(b"block:"):
+                        try:
+                            block_metadata = json.loads(value.decode("utf-8"))
+
+                            # ✅ **Ensure metadata has a valid structure**
+                            if not isinstance(block_metadata, dict) or "block_header" not in block_metadata:
+                                print(f"[BlockMetadata.get_block_by_height] WARNING: Skipping invalid metadata entry: {key.decode()}")
+                                continue
+
+                            header = block_metadata["block_header"]
+
+                            # ✅ **Ensure block height matches the requested height**
+                            if "index" in header and header["index"] == height:
+                                print(f"[BlockMetadata.get_block_by_height] ✅ SUCCESS: Found block at height {height}. Validating integrity...")
+
+                                # ✅ **Check Block Hash Validity**
+                                block_hash = header.get("hash")
+                                if not block_hash or len(block_hash) != Constants.SHA3_384_HASH_SIZE:
+                                    print(f"[BlockMetadata.get_block_by_height] ❌ ERROR: Block {height} has an invalid hash.")
+                                    continue
+
+                                # ✅ **Verify Merkle Root Integrity**
+                                if "merkle_root" not in header or not isinstance(header["merkle_root"], str):
+                                    print(f"[BlockMetadata.get_block_by_height] ❌ ERROR: Block {height} has an invalid Merkle root.")
+                                    continue
+
+                                # ✅ **Convert Block Header to Block Object**
+                                return Block.from_dict(block_metadata["block_header"])
+
+                        except json.JSONDecodeError:
+                            print(f"[BlockMetadata.get_block_by_height] ❌ ERROR: Failed to parse block metadata for key {key.decode()}")
+
+            print(f"[BlockMetadata.get_block_by_height] WARNING: No valid block found at height {height}.")
+            return None
+
+        except Exception as e:
+            print(f"[BlockMetadata.get_block_by_height] ❌ ERROR: Failed to retrieve block by height {height}: {e}")
+            return None
+
     def initialize_txindex(self):
         """
         Ensures the `txindex_db` is properly initialized.
@@ -88,7 +142,7 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.initialize_txindex] ❌ ERROR: Failed to initialize `txindex_db`: {e}")
             raise
-        
+
     def get_block_metadata(self, block_hash: str):
         """Retrieve block metadata and deserialize if needed."""
         try:
@@ -318,19 +372,19 @@ class BlockMetadata:
 
     def store_block(self, block, difficulty):
         """
-        Store block metadata in LMDB, index transactions, and append full block data to block.data.
-
+        Stores a block in `block.data` and updates metadata in LMDB.
+        
         Steps:
         1. Compute Merkle root if missing.
         2. Preserve explicitly mined hash (NO recomputation).
-        3. Prepare detailed block metadata (miner address, reward, difficulty, fees, transactions).
+        3. Prepare detailed block metadata.
         4. Store block metadata in LMDB.
-        5. Index each transaction in txindex.lmdb.
-        6. Serialize and append entire block data (WITHOUT MAGIC NUMBER) to block.data.
-        7. Handle block file rollover based on Constants.BLOCK_DATA_FILE_SIZE_MB.
+        5. Index each transaction in `txindex.lmdb`.
+        6. Append entire block data to `block.data`.
+        7. Handle block file rollover.
         """
         try:
-            print(f"[BlockMetadata.store_block] INFO: Starting storage for Block {block.index}...")
+            print(f"[BlockMetadata.store_block] INFO: Storing Block {block.index}...")
 
             # ✅ **Step 1: Compute Merkle Root if Missing**
             if not hasattr(block, "merkle_root") or not block.merkle_root:
@@ -339,7 +393,7 @@ class BlockMetadata:
                 print(f"[BlockMetadata.store_block] INFO: Merkle root computed: {block.merkle_root}.")
 
             # ✅ **Step 2: Preserve Mined Hash Instead of Recomputing**
-            print(f"[BlockMetadata.store_block] INFO: Using preserved mined hash {block.hash} for Block {block.index}.")
+            print(f"[BlockMetadata.store_block] INFO: Using mined hash {block.hash} for Block {block.index}.")
 
             # ✅ **Step 3: Serialize Transactions**
             print(f"[BlockMetadata.store_block] INFO: Serializing transactions for Block {block.index}...")
@@ -373,13 +427,20 @@ class BlockMetadata:
                 "hash": block.hash  # ✅ **Preserves mined hash**
             }
 
+            # ✅ **Calculate Correct Data Offset**
+            with open(self.current_block_file, "ab") as block_file:
+                if block_file.tell() == 0:
+                    block_file.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                block_file.seek(0, os.SEEK_END)
+                block_offset = block_file.tell()
+
             block_metadata = {
                 "hash": block.hash,
                 "block_header": block_dict,
                 "transaction_count": len(serialized_transactions),
                 "block_size": len(json.dumps(block_dict, ensure_ascii=False).encode("utf-8")),
                 "data_file": self.current_block_file,
-                "data_offset": self.current_block_offset,
+                "data_offset": block_offset,  # ✅ Fix: Correct offset accounting for magic number
                 "tx_ids": [tx["tx_id"] for tx in serialized_transactions if isinstance(tx, dict)]
             }
 
@@ -390,7 +451,7 @@ class BlockMetadata:
                 txn.put(lmdb_key, json.dumps(block_metadata, ensure_ascii=False).encode("utf-8"))
                 print(f"[BlockMetadata.store_block] INFO: Metadata stored in LMDB for Block {block.index}.")
 
-            # ✅ **Step 7: Index Transactions in txindex.lmdb**
+            # ✅ **Step 7: Index Transactions in `txindex.lmdb`**
             print(f"[BlockMetadata.store_block] INFO: Indexing transactions for Block {block.index}...")
             for tx in serialized_transactions:
                 if isinstance(tx, dict) and "tx_id" in tx:
@@ -404,16 +465,15 @@ class BlockMetadata:
                 else:
                     print(f"[BlockMetadata.store_block] WARNING: Skipping invalid transaction format: {tx}")
 
-            # ✅ **Step 8: Append Block Data to block.data File**
+            # ✅ **Step 8: Append Block Data to `block.data`**
             print(f"[BlockMetadata.store_block] INFO: Appending block data to block.data file...")
 
             block_bytes = json.dumps(block_dict, ensure_ascii=False).encode('utf-8')
             block_size_bytes = struct.pack(">I", len(block_bytes))  # ✅ Fixes incorrect block size serialization
 
-            serialized_block_full = block_size_bytes + block_bytes  # ✅ **No magic number added**
+            serialized_block_full = block_size_bytes + block_bytes
 
-            current_file_path = self._get_current_block_file()
-            with open(current_file_path, "ab") as block_file:
+            with open(self.current_block_file, "ab") as block_file:
                 offset_before_write = block_file.tell()
                 block_file.write(serialized_block_full)
                 block_file.flush()
@@ -422,12 +482,12 @@ class BlockMetadata:
                 # ✅ **Step 9: Handle Block File Rollover**
                 current_file_size_mb = block_file.tell() / (1024 * 1024)
                 if current_file_size_mb >= Constants.BLOCK_DATA_FILE_SIZE_MB:
-                    print(f"[BlockMetadata.store_block] INFO: File {current_file_path} reached size limit ({Constants.BLOCK_DATA_FILE_SIZE_MB} MB). New file will be created on next block.")
+                    print(f"[BlockMetadata.store_block] INFO: File {self.current_block_file} reached size limit ({Constants.BLOCK_DATA_FILE_SIZE_MB} MB). New file will be created on next block.")
 
-            print(f"[BlockMetadata.store_block] SUCCESS: Block {block.index} fully stored and indexed successfully.")
+            print(f"[BlockMetadata.store_block] ✅ SUCCESS: Block {block.index} fully stored and indexed successfully.")
 
         except Exception as e:
-            print(f"[BlockMetadata.store_block] ERROR: Exception while storing Block {block.index}: {e}")
+            print(f"[BlockMetadata.store_block] ❌ ERROR: Exception while storing Block {block.index}: {e}")
             raise
 
 
@@ -524,25 +584,67 @@ class BlockMetadata:
 
     def validate_block_structure(self, block: Block) -> bool:
         """
-        Validate that a block contains all required fields and that its hash is correct.
+        Validate that a block contains all required fields, has a valid hash, and contains properly formatted transactions.
+        Also ensures metadata integrity and checks for version mismatches.
         """
-        required_fields = ["index", "hash", "header", "transactions", "merkle_root", "timestamp", "difficulty"]
-        if not isinstance(block, Block):
-            print(f"[BlockMetadata.validate_block_structure] ERROR: Invalid block type: {type(block)}")
+        try:
+            print(f"[BlockMetadata.validate_block_structure] INFO: Validating structure for Block {block.index}...")
+
+            # ✅ **Required Block Fields**
+            required_fields = {
+                "index", "hash", "header", "transactions", "merkle_root",
+                "timestamp", "difficulty", "previous_hash", "nonce", "version"
+            }
+
+            # ✅ **Ensure Block Object is Valid**
+            if not isinstance(block, Block):
+                print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Invalid block type: {type(block)}")
+                return False
+
+            # ✅ **Check for Missing Fields**
+            missing_fields = [field for field in required_fields if not hasattr(block, field)]
+            if missing_fields:
+                print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Block {block.index} is missing fields: {missing_fields}")
+                return False
+
+            # ✅ **Verify Block Hash Integrity**
+            calculated_hash = block.calculate_hash()
+            if block.hash != calculated_hash:
+                print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Block {block.index} has an invalid hash.\n"
+                    f"Expected: {calculated_hash}\n"
+                    f"Found: {block.hash}")
+                return False
+
+            # ✅ **Validate Transactions Structure**
+            if not isinstance(block.transactions, list) or not all(isinstance(tx, dict) for tx in block.transactions):
+                print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Block {block.index} contains invalid transactions.")
+                return False
+
+            # ✅ **Validate Metadata Structure**
+            if hasattr(block, "metadata") and block.metadata:
+                if not isinstance(block.metadata, dict):
+                    print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Metadata in Block {block.index} is not a valid dictionary.")
+                    return False
+
+                required_metadata_keys = {"name", "version", "created_by", "creation_date"}
+                missing_metadata = [key for key in required_metadata_keys if key not in block.metadata]
+
+                if missing_metadata:
+                    print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Metadata in Block {block.index} is missing fields: {missing_metadata}")
+                    return False
+
+            # ✅ **Check Version Compatibility**
+            if block.version != Constants.VERSION:
+                print(f"[BlockMetadata.validate_block_structure] ⚠️ WARNING: Block {block.index} version mismatch.\n"
+                    f"Expected: {Constants.VERSION}, Found: {block.version}")
+
+            print(f"[BlockMetadata.validate_block_structure] ✅ SUCCESS: Block {block.index} passed structure validation.")
+            return True
+
+        except Exception as e:
+            print(f"[BlockMetadata.validate_block_structure] ❌ ERROR: Block structure validation failed for Block {block.index}: {e}")
             return False
-        missing_fields = [field for field in required_fields if not hasattr(block, field)]
-        if missing_fields:
-            print(f"[BlockMetadata.validate_block_structure] ERROR: Block {block.index} is missing fields: {missing_fields}")
-            return False
-        calculated_hash = block.calculate_hash()
-        if block.hash != calculated_hash:
-            print(f"[BlockMetadata.validate_block_structure] ERROR: Block {block.index} has an invalid hash. Expected {calculated_hash}, got {block.hash}")
-            return False
-        if not isinstance(block.transactions, list) or not all(isinstance(tx, dict) for tx in block.transactions):
-            print(f"[BlockMetadata.validate_block_structure] ERROR: Block {block.index} contains invalid transactions.")
-            return False
-        print(f"[BlockMetadata.validate_block_structure] INFO: Block {block.index} passed structure validation.")
-        return True
+
 
     def load_chain(self) -> List[Dict]:
         """
@@ -1166,7 +1268,7 @@ class BlockMetadata:
 
 
 
-    def get_block_by_tx_id(self, tx_id: str):
+    def get_block_by_tx_id(self, tx_id: str) -> Optional[Block]:
         """
         Retrieve a block using a transaction ID from the txindex database.
 
@@ -1209,21 +1311,25 @@ class BlockMetadata:
                 return None
 
             block_header = block_metadata["block_header"]
-            required_keys = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"}
+            required_keys = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "hash"}
 
-            if not required_keys.issubset(block_header):
+            if not required_keys.issubset(block_header.keys()):
                 print(f"[BlockMetadata.get_block_by_tx_id] ERROR: Block metadata missing required fields: {block_header}")
                 return None
 
-            # ✅ **Return Deserialized Block**
-            block = Block.from_dict(block_header)
-            print(f"[BlockMetadata.get_block_by_tx_id] SUCCESS: Retrieved Block {block.index} containing transaction {tx_id}.")
+            # ✅ **Validate Block Hash Integrity**
+            if not isinstance(block_header["hash"], str) or len(block_header["hash"]) != Constants.SHA3_384_HASH_SIZE:
+                print(f"[BlockMetadata.get_block_by_tx_id] ❌ ERROR: Block {block_header['index']} has an invalid hash format.")
+                return None
+
+            # ✅ **Convert Block Header to Block Object**
+            block = Block.from_dict(block_metadata["block_header"])
+            print(f"[BlockMetadata.get_block_by_tx_id] ✅ SUCCESS: Retrieved Block {block.index} containing transaction {tx_id}.")
             return block
 
         except Exception as e:
-            print(f"[BlockMetadata.get_block_by_tx_id] ERROR: Failed to retrieve block by transaction ID {tx_id}: {e}")
+            print(f"[BlockMetadata.get_block_by_tx_id] ❌ ERROR: Failed to retrieve block by transaction ID {tx_id}: {e}")
             return None
-
 
 
     def get_transaction_id(self, tx_label: str) -> str:

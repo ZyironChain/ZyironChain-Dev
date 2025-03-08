@@ -112,16 +112,21 @@ class Constants:
     BLOCKCHAIN_HALVING_BLOCK_HEIGHT = 420_480  # 📉 **Halving every ~4 years (~5 min block time)**
     COIN = Decimal("0.00000001")  # ✅ Smallest currency unit
 
-    # 🔹 **Maximum Block Size**
+    # 🔹 **Maximum Block Size Settings**
     MAX_BLOCK_SIZE_SETTINGS = {
-        "mainnet": (1 * 1024 * 1024, 10 * 1024 * 1024),  # 1 MB initial, 10 MB max
-        "testnet": (1 * 1024 * 1024, 10 * 1024 * 1024),  # 1 MB initial, 10 MB max
-        "regnet": (1 * 1024 * 1024, 2 * 1024 * 1024)     # 1 MB initial, 2 MB max
+        "mainnet": (0, 10 * 1024 * 1024),  # ✅ 0MB to 10MB
+        "testnet": (0, 10 * 1024 * 1024),  # ✅ 0MB to 10MB
+        "regnet": (0, 2 * 1024 * 1024)     # ✅ 0MB to 2MB (for rapid block testing)
     }
-    MIN_BLOCK_SIZE_BYTES, MAX_BLOCK_SIZE_BYTES = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
 
-    # Explicitly set the initial block size to the minimum value
-    INITIAL_BLOCK_SIZE_MB = MIN_BLOCK_SIZE_BYTES / (1024 * 1024)
+    # ✅ **Apply Network-Specific Block Size Limits**
+    BLOCK_SIZE_RANGE = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
+    MIN_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[0]
+    MAX_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[1]
+
+    # ✅ **Explicitly Set Initial Block Size**
+    INITIAL_BLOCK_SIZE_MB = (MIN_BLOCK_SIZE_BYTES / (1024 * 1024)) if MIN_BLOCK_SIZE_BYTES > 0 else 0  # ✅ Ensures valid computation
+
 
     MAX_TIME_DRIFT = 7200
 

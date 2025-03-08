@@ -14,7 +14,6 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.blockchain.block import Block
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
-from Zyiron_Chain.utils.deserializer import Deserializer
 from Zyiron_Chain.storage.blockmetadata import BlockMetadata
 from Zyiron_Chain.storage.tx_storage import TxStorage
 
@@ -90,25 +89,21 @@ class WholeBlockData:
             raise
 
     def _write_to_block_data_securely(self, block):
-        """
-        Serialize and write block data to block.data file securely.
-        Ensures data integrity and prevents unnecessary magic number writes.
-        """
+        """Serialize and write block data to block.data file securely."""
         try:
             with open(self.current_block_file, "ab") as f:
-                offset_before_write = f.tell()  # ✅ Save the starting offset
-
+                offset_before_write = f.tell()
                 serialized_block = self._serialize_block_to_binary(block)
+
+                # ✅ Store block size as 4-byte integer (max 4GB)
                 block_size_bytes = struct.pack(">I", len(serialized_block))
 
-                f.write(block_size_bytes + serialized_block)  # ✅ Prevents extra magic number writes
+                f.write(block_size_bytes + serialized_block)
                 f.flush()
 
                 print(f"[WholeBlockData] ✅ Block {block.index} securely stored at offset {offset_before_write}.")
-
         except Exception as e:
             print(f"[WholeBlockData] ❌ ERROR: Failed to store block {block.index}: {e}")
-
 
 
     def block_meta(self):
@@ -141,7 +136,11 @@ class WholeBlockData:
 
     def store_block(self, block: Block, difficulty: int):
         """
-        Stores a block using `BlockMetadata.store_block()`, ensuring correct storage without redundant magic numbers.
+        Stores a block in `block.data`, ensuring:
+        - Blocks are appended **AFTER** the magic number.
+        - Block size is validated (0MB - 10MB).
+        - Block metadata is stored correctly.
+        - No redundant magic numbers are written.
 
         :param block: The block to store.
         :param difficulty: The difficulty target of the block.
@@ -152,7 +151,7 @@ class WholeBlockData:
             # ✅ **Ensure `BlockMetadata` Exists Before Storing**
             block_metadata_instance = self.block_meta()
             if not block_metadata_instance:
-                print("[WholeBlockData.store_block] ERROR: `BlockMetadata` is not initialized. Cannot store block.")
+                print("[WholeBlockData.store_block] ❌ ERROR: `BlockMetadata` is not initialized. Cannot store block.")
                 return
 
             # ✅ **Use `_serialize_block_to_binary()` Instead of `to_bytes()`**
@@ -161,30 +160,49 @@ class WholeBlockData:
             # ✅ **Verify Block Size Before Writing**
             block_size = len(block_bytes)
             if block_size == 0:
-                print(f"[WholeBlockData.store_block] ERROR: Block {block.index} has invalid size. Skipping storage.")
+                print(f"[WholeBlockData.store_block] ❌ ERROR: Block {block.index} has invalid size (0 bytes). Skipping storage.")
                 return
 
-            print(f"[WholeBlockData.store_block] INFO: Block {block.index} size verified: {block_size} bytes.")
+            if block_size > Constants.MAX_BLOCK_SIZE_BYTES:
+                print(f"[WholeBlockData.store_block] ❌ ERROR: Block {block.index} exceeds max size ({block_size} bytes). Skipping storage.")
+                return
 
-            # ✅ **Store the Block Correctly**
+            print(f"[WholeBlockData.store_block] ✅ INFO: Block {block.index} size verified: {block_size} bytes.")
+
+            # ✅ **Append Block to `block.data` Correctly**
+            with open(self.current_block_file, "ab") as f:
+                offset_before_write = f.tell()
+                
+                # ✅ **Ensure Magic Number is Written Only Once**
+                if offset_before_write == 0:
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                    print(f"[WholeBlockData.store_block] ✅ INFO: Magic number {hex(Constants.MAGIC_NUMBER)} written to block.data.")
+
+                # ✅ **Store Block Size + Block Data**
+                block_size_bytes = struct.pack(">I", block_size)
+                f.write(block_size_bytes + block_bytes)
+                f.flush()
+
+                print(f"[WholeBlockData.store_block] ✅ SUCCESS: Block {block.index} stored at offset {offset_before_write}.")
+
+            # ✅ **Store Block Metadata**
             block_metadata_instance.store_block(block, difficulty)
-
-            print(f"[WholeBlockData.store_block] SUCCESS: Block {block.index} stored successfully in block.data.")
+            print(f"[WholeBlockData.store_block] ✅ SUCCESS: Block {block.index} fully stored and indexed.")
 
         except Exception as e:
-            print(f"[WholeBlockData.store_block] ERROR: Failed to store block {block.index}: {e}")
+            print(f"[WholeBlockData.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
             raise
 
 
 
 
     def _initialize_block_data_file(self):
-        """Initialize block.data file with correct magic number only if it is missing."""
+        """Initialize block.data file with correct magic number only if missing, and ensure correct offset handling."""
         try:
             # ✅ **Ensure Block Data Directory Exists**
             block_data_dir = Constants.DATABASES.get("block_data")
             if not block_data_dir:
-                print("[WholeBlockData._initialize_block_data_file] ERROR: Block data directory not found in Constants.DATABASES.")
+                print("[WholeBlockData._initialize_block_data_file] ❌ ERROR: Block data directory not found in Constants.DATABASES.")
                 return
             os.makedirs(block_data_dir, exist_ok=True)
 
@@ -194,29 +212,34 @@ class WholeBlockData:
 
             # ✅ **Check if File Exists and is Empty**
             file_exists = os.path.exists(self.current_block_file)
-            file_is_empty = (os.path.getsize(self.current_block_file) == 0) if file_exists else True
+            file_is_empty = os.path.getsize(self.current_block_file) == 0 if file_exists else True
 
             # ✅ **Write Magic Number Only if File is Missing or Empty**
             if not file_exists or file_is_empty:
                 with open(self.current_block_file, "wb") as f:
-                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
-                print(f"[WholeBlockData] INFO: Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
+                    f.write(struct.pack(">I", Constants.MAGIC_NUMBER))  # ✅ Write magic number
+                print(f"[WholeBlockData] ✅ INFO: Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
             else:
                 print("[WholeBlockData] INFO: block.data file exists. Skipping magic number rewrite.")
 
             # ✅ **Validate Magic Number in Existing File**
             with open(self.current_block_file, "rb") as f:
                 file_magic_number = struct.unpack(">I", f.read(4))[0]
-                if file_magic_number != Constants.MAGIC_NUMBER:
-                    print(f"[WholeBlockData] ERROR: Invalid magic number in block.data file: {hex(file_magic_number)}. "
-                        f"Expected: {hex(Constants.MAGIC_NUMBER)}")
-                    return
 
-            print("[WholeBlockData] SUCCESS: Block storage initialized and validated successfully.")
+            if file_magic_number != Constants.MAGIC_NUMBER:
+                print(f"[WholeBlockData] ❌ ERROR: Invalid magic number in block.data file: {hex(file_magic_number)} "
+                    f"(Expected: {hex(Constants.MAGIC_NUMBER)}).")
+                print("[WholeBlockData] ❌ WARNING: Storage corruption detected. Manual intervention required!")
+                return
+
+            # ✅ **Ensure Offset Starts After Magic Number**
+            self.current_block_offset = 4
+            print(f"[WholeBlockData] ✅ SUCCESS: Block storage initialized with offset {self.current_block_offset}.")
 
         except Exception as e:
-            print(f"[WholeBlockData] ERROR: Failed to initialize block storage: {e}")
+            print(f"[WholeBlockData] ❌ ERROR: Failed to initialize block storage: {e}")
             raise
+
 
 
 
@@ -403,60 +426,74 @@ class WholeBlockData:
             raise  
 
 
-    def get_block_from_data_file(self, offset: int) -> Optional[Block]:
+    def get_block_from_data_file(self, offset: int):
         """
-        Retrieve a block from the block.data file using its offset.
-        Ensures proper structure reading: [size][block].
+        Retrieve a block from block.data using its offset.
+        Ensures block size validity and header integrity before reading the block.
         """
         try:
-            print(f"[WholeBlockData.get_block_from_data_file] INFO: Retrieving block at offset {offset}.")
+            print(f"[WholeBlockData.get_block_from_data_file] INFO: Attempting to retrieve block at offset {offset}.")
 
-            # ✅ **Ensure File Exists Before Reading**
+            # ✅ **Check if File Exists Before Reading**
             if not os.path.exists(self.current_block_file):
-                print(f"[WholeBlockData.get_block_from_data_file] ERROR: block.data file not found: {self.current_block_file}")
+                print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: block.data file not found: {self.current_block_file}")
                 return None
 
             file_size = os.path.getsize(self.current_block_file)
+            print(f"[WholeBlockData.get_block_from_data_file] INFO: File size of block.data: {file_size} bytes.")
 
-            # ✅ **Validate Offset Position**
-            if offset < 0 or offset >= file_size - 4:  # Ensure space for at least block size
-                print(f"[WholeBlockData.get_block_from_data_file] ERROR: Invalid offset {offset} for file size {file_size}.")
+            # ✅ **Ensure Offset is Correct (Skip Magic Number)**
+            if offset < 4:  # Blocks should not be read before offset 4 (first 4 bytes are the magic number)
+                print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Invalid offset {offset}. Adjusting to 4.")
+                offset = 4
+
+            # ✅ **Ensure Offset is Within File Size**
+            if offset + 4 > file_size:  # Ensure enough space for block size read
+                print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Invalid offset {offset} for file size {file_size}.")
                 return None
 
             with open(self.current_block_file, "rb") as f:
-                f.seek(offset, os.SEEK_SET)
+                f.seek(offset)
 
                 # ✅ **Read Block Size (First 4 Bytes)**
                 block_size_bytes = f.read(4)
                 if len(block_size_bytes) != 4:
-                    print(f"[WholeBlockData.get_block_from_data_file] ERROR: Failed to read block size at offset {offset}.")
+                    print("[WholeBlockData.get_block_from_data_file] ❌ ERROR: Failed to read block size from file.")
                     return None
 
                 block_size = struct.unpack(">I", block_size_bytes)[0]
+                print(f"[WholeBlockData.get_block_from_data_file] INFO: Block size read as {block_size} bytes.")
 
-                # ✅ **Ensure Block Size is Valid**
-                if block_size <= 0 or offset + 4 + block_size > file_size:
-                    print(f"[WholeBlockData.get_block_from_data_file] ERROR: Invalid block size {block_size} at offset {offset}.")
+                # ✅ **Validate Block Size (0MB - 10MB)**
+                if block_size > 10 * 1024 * 1024:
+                    print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Invalid block size {block_size}. Maximum allowed is 10MB.")
+                    return None
+
+                # ✅ **Ensure Full Block Data Exists**
+                if offset + 4 + block_size > file_size:
+                    print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Incomplete block at offset {offset}. Expected {block_size} bytes.")
                     return None
 
                 # ✅ **Read Full Block Data**
                 block_data = f.read(block_size)
                 if len(block_data) != block_size:
-                    print(f"[WholeBlockData.get_block_from_data_file] ERROR: Incomplete block data at offset {offset}. Expected {block_size}, got {len(block_data)}.")
+                    print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Read {len(block_data)} bytes, expected {block_size}.")
                     return None
 
                 # ✅ **Deserialize Block**
                 block = self._deserialize_block_from_binary(block_data)
                 if not block:
-                    print(f"[WholeBlockData.get_block_from_data_file] ERROR: Failed to deserialize block at offset {offset}.")
+                    print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Failed to deserialize block at offset {offset}.")
                     return None
 
-                print(f"[WholeBlockData.get_block_from_data_file] SUCCESS: Retrieved Block {block.index} (Hash: {block.hash}) from offset {offset}.")
+                print(f"[WholeBlockData.get_block_from_data_file] ✅ SUCCESS: Retrieved Block {block.index} from offset {offset}.")
                 return block
 
         except Exception as e:
-            print(f"[WholeBlockData.get_block_from_data_file] ERROR: Exception retrieving block from data file: {e}")
+            print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Failed to retrieve block from file: {e}")
             return None
+
+
 
     def get_latest_block(self) -> Optional[Block]:
         """
