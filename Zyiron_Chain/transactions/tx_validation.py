@@ -46,16 +46,13 @@ class TXValidation:
         """
         print(f"[TXVALIDATION] Validating potential Coinbase transaction with tx_id: {getattr(tx, 'tx_id', 'UNKNOWN')}")
         
-        # Basic checks for required attributes
         if not hasattr(tx, "tx_id") or not isinstance(tx.tx_id, str):
             print("[TXVALIDATION ERROR] Coinbase transaction missing or invalid 'tx_id'.")
             return False
 
-        # Re-hash the tx_id to ensure single-hash match
         single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
         print(f"[TXVALIDATION] Single hashed coinbase tx_id: {single_hashed_tx_id[:24]}...")
 
-        # Check core coinbase properties
         if not (isinstance(tx, CoinbaseTx)
                 and len(tx.inputs) == 0
                 and len(tx.outputs) == 1
@@ -63,9 +60,6 @@ class TXValidation:
                 and Decimal(tx.fee) == Decimal("0")):
             print("[TXVALIDATION ERROR] Coinbase transaction does not meet required structure.")
             return False
-
-        # Optionally ensure single-hashed tx_id matches original if you want a strict check:
-        # e.g., `if single_hashed_tx_id != tx.tx_id: ...` or skip it if not needed.
 
         print(f"[TXVALIDATION] Coinbase transaction {tx.tx_id} validated successfully.")
         return True
@@ -84,7 +78,6 @@ class TXValidation:
             max_supply = getattr(Constants, "MAX_SUPPLY", None)
             min_fee = getattr(Constants, "MIN_TRANSACTION_FEE", None)
 
-            # Check presence of required constants
             if halving_interval is None or initial_reward is None or min_fee is None:
                 print("[TXVALIDATION ERROR] Missing required constants for block reward calculation.")
                 return Decimal("0")
@@ -93,28 +86,14 @@ class TXValidation:
             initial_reward = Decimal(initial_reward)
             min_fee = Decimal(min_fee)
 
-            # Get the chain length from block_manager
-            if not hasattr(self.block_manager, "chain") or not isinstance(self.block_manager.chain, list):
-                print("[TXVALIDATION ERROR] block_manager has no valid 'chain'.")
-                return Decimal("0")
-
             current_height = len(self.block_manager.chain)
             halvings = max(0, current_height // halving_interval)
             reward = initial_reward / (2 ** halvings)
 
-            # Retrieve total mined supply from block_metadata
-            try:
-                total_mined = self.block_metadata.get_total_mined_supply()
-            except Exception as e:
-                print(f"[TXVALIDATION ERROR] Could not retrieve total mined supply: {e}")
+            total_mined = self.block_metadata.get_total_mined_supply()
+            if max_supply is not None and total_mined >= Decimal(max_supply):
+                print("[TXVALIDATION] Max supply reached. Block reward is 0 (only fees).")
                 return Decimal("0")
-
-            # If we have reached or exceeded max supply
-            if max_supply is not None:
-                max_supply = Decimal(max_supply)
-                if total_mined >= max_supply:
-                    print("[TXVALIDATION] Max supply reached. Block reward is 0 (only fees).")
-                    return Decimal("0")
 
             final_reward = max(reward, min_fee)
             print(f"[TXVALIDATION] Computed block reward: {final_reward} (Total mined: {total_mined}/{max_supply})")
@@ -137,31 +116,26 @@ class TXValidation:
             tx_id = getattr(transaction, "tx_id", "UNKNOWN")
             print(f"[TXVALIDATION] Validating fee for transaction {tx_id}.")
 
-            # 1) Calculate transaction size
             tx_size = self._calculate_transaction_size(transaction)
             if tx_size < 0:
                 print("[TXVALIDATION ERROR] Failed to compute transaction size. Fee validation aborted.")
                 return False
             print(f"[TXVALIDATION] Computed transaction size: {tx_size} bytes.")
 
-            # 2) Gather input and output sums
             input_sum = sum(Decimal(inp.amount) for inp in transaction.inputs if hasattr(inp, "amount"))
             output_sum = sum(Decimal(out.amount) for out in transaction.outputs if hasattr(out, "amount"))
             actual_fee = input_sum - output_sum
             print(f"[TXVALIDATION] Actual fee from I/O: {actual_fee}")
 
-            # 3) Use FeeModel to get required fee
-            # (We pass some placeholder block_size or we can pass an actual block size in MB)
             required_fee = self.fee_model.calculate_fee(
-                block_size=Constants.MAX_BLOCK_SIZE_BYTES,  # Or a real block size in MB
+                block_size=Constants.MAX_BLOCK_SIZE_BYTES,
                 payment_type=transaction.type,
-                amount=input_sum,      # e.g., total input
+                amount=input_sum,
                 tx_size=tx_size
             )
 
             print(f"[TXVALIDATION] Required fee from FeeModel: {required_fee}")
 
-            # 4) Compare actual fee vs. required fee
             if actual_fee < required_fee:
                 print(f"[TXVALIDATION WARNING] Insufficient fee for transaction {tx_id}. Required: {required_fee}, Provided: {actual_fee}")
                 return False
@@ -173,9 +147,6 @@ class TXValidation:
             print(f"[TXVALIDATION ERROR] Fee validation failed for transaction: {e}")
             return False
 
-    # -------------------------------------------------------------------------
-    # OPTIONAL: A local method to compute transaction size if not done elsewhere
-    # -------------------------------------------------------------------------
     def _calculate_transaction_size(self, tx: Any) -> int:
         """
         Compute transaction size using single SHA3-384 hashing approach
@@ -184,22 +155,12 @@ class TXValidation:
         :return: Size in bytes, or -1 on error.
         """
         try:
-            # Ensure we have a string-based tx_id
             if hasattr(tx, "tx_id") and isinstance(tx.tx_id, bytes):
                 tx.tx_id = tx.tx_id.decode("utf-8")
 
-            # We do a simple approach: hash the JSON representation
-            # plus some base fields. You can do more advanced logic if needed.
             to_serialize = tx.to_dict() if hasattr(tx, "to_dict") else {}
             serialized = json.dumps(to_serialize, sort_keys=True).encode("utf-8")
-
-            # Then measure length
             size_in_bytes = len(serialized)
-
-            # Optionally do a single SHA3-384 hashing if you want to incorporate it in size logic
-            # e.g., hashed = hashlib.sha3_384(serialized).digest() 
-            # but typically you'd just measure the length.
-
             return size_in_bytes
 
         except Exception as e:

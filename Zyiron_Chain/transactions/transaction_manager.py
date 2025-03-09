@@ -92,12 +92,13 @@ class TransactionManager:
         """Retrieve transaction data and deserialize if necessary."""
         data = self.tx_storage.get_transaction(tx_id)
         return Deserializer().deserialize(data) if data else None
+    
     def create_transaction(self, sender, recipient_address=None, amount=None, fee=None, transaction_type="STANDARD", **kwargs):
         """
         Create a new transaction.
 
         Accepts either 'recipient_address' or (if missing) the legacy keyword 'recipient_script_pub_key'.
-        
+
         :param sender: Sender's address.
         :param recipient_address: Recipient's address. If None, the function checks kwargs for 'recipient_script_pub_key'.
         :param amount: Amount to send.
@@ -107,7 +108,11 @@ class TransactionManager:
         :return: The created transaction as a dictionary.
         """
         try:
-            # Check for legacy parameter if recipient_address not provided
+            # Validate sender using the wallet manager
+            if not self.wallet_manager.validate_address(sender):
+                raise ValueError("Invalid sender address")
+
+            # Check for legacy parameter if recipient_address is not provided
             if recipient_address is None and "recipient_script_pub_key" in kwargs:
                 recipient_address = kwargs["recipient_script_pub_key"]
                 print("[TransactionManager.create_transaction] INFO: 'recipient_script_pub_key' found in kwargs; using it as recipient_address.")
@@ -116,11 +121,11 @@ class TransactionManager:
                 raise ValueError("Recipient address must be provided.")
 
             print(f"[TransactionManager.create_transaction] Creating transaction from {sender} to {recipient_address}...")
-            
-            # Generate transaction ID using hashing of key transaction components
+
+            # Generate transaction ID by hashing key components
             tx_data = f"{sender}{recipient_address}{amount}{fee}{transaction_type}"
             tx_hash = Hashing.hash(tx_data.encode()).hex()
-            
+
             transaction = {
                 "sender": sender,
                 "recipient_address": recipient_address,
@@ -130,7 +135,7 @@ class TransactionManager:
                 "transaction_type": transaction_type,
                 "tx_id": tx_hash
             }
-            
+
             print(f"[TransactionManager.create_transaction] SUCCESS: Transaction created with ID {transaction['tx_id']}.")
             return transaction
 

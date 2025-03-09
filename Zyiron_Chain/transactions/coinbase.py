@@ -19,7 +19,7 @@ class CoinbaseTx:
     """
 
     def __init__(self, block_height: int, miner_address: str, reward: Decimal = None):
-        print(f"[CoinbaseTx.__init__]  Initializing Coinbase Transaction for Block {block_height}...")
+        print(f"[CoinbaseTx.__init__] Initializing Coinbase Transaction for Block {block_height}...")
 
         # Assign core attributes
         self.block_height = block_height
@@ -31,7 +31,7 @@ class CoinbaseTx:
 
         # Generate unique transaction ID (SHA3-384 hash)
         self.tx_id = self._generate_tx_id()
-        print(f"[CoinbaseTx.__init__]  Transaction ID (tx_id) generated: {self.tx_id}")
+        print(f"[CoinbaseTx.__init__] Transaction ID (tx_id) generated: {self.tx_id}")
 
         # Coinbase transactions have **no inputs**
         self.inputs = []
@@ -49,9 +49,9 @@ class CoinbaseTx:
 
         # Estimate transaction size
         self.size = self._estimate_size()
-        print(f"[CoinbaseTx.__init__]  Transaction size estimated: {self.size} bytes")
+        print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
 
-        print(f"[CoinbaseTx.__init__]  CoinbaseTx successfully initialized for miner: {miner_address}")
+        print(f"[CoinbaseTx.__init__] CoinbaseTx successfully initialized for miner: {miner_address}")
 
     def _calculate_reward(self, block_height: int) -> Decimal:
         """
@@ -61,7 +61,7 @@ class CoinbaseTx:
         halvings = block_height // Constants.BLOCKCHAIN_HALVING_BLOCK_HEIGHT
         reward = Decimal(Constants.INITIAL_COINBASE_REWARD) / (2 ** halvings)
         calculated_reward = max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
-        print(f"[CoinbaseTx._calculate_reward]  Reward for Block {block_height}: {calculated_reward} ZYC")
+        print(f"[CoinbaseTx._calculate_reward] Reward for Block {block_height}: {calculated_reward} ZYC")
         return calculated_reward
 
     def _generate_tx_id(self) -> str:
@@ -76,7 +76,7 @@ class CoinbaseTx:
         tx_data = f"{prefix}{self.block_height}-{self.timestamp}-{self.miner_address}-{self.reward}"
         tx_id = hashlib.sha3_384(tx_data.encode()).hexdigest()
 
-        print(f"[CoinbaseTx._generate_tx_id]  Generated tx_id: {tx_id}")
+        print(f"[CoinbaseTx._generate_tx_id] Generated tx_id: {tx_id}")
         return tx_id
 
     def _estimate_size(self) -> int:
@@ -114,6 +114,7 @@ class CoinbaseTx:
             "size": self.size,
             "metadata": self.metadata  # Include metadata
         }
+
     
     @classmethod
     def from_dict(cls, data: Dict):
@@ -166,6 +167,7 @@ class CoinbaseTx:
         except Exception as e:
             print(f"[CoinbaseTx.from_dict] ❌ ERROR: Failed to deserialize CoinbaseTx: {e}")
             return None
+
     @property
     def is_coinbase(self) -> bool:
         """

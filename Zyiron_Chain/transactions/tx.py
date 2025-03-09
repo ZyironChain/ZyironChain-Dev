@@ -111,7 +111,7 @@ class Transaction:
 
     def _calculate_size(self) -> int:
         """
-        Estimate transaction size based on inputs, outputs, and minimal metadata.
+        Estimate transaction size based on inputs, outputs, and standardized metadata.
         For non-coinbase transactions, require at least one input and one output.
         For coinbase, require at least one output.
         """
@@ -125,18 +125,31 @@ class Transaction:
                 raise ValueError("Coinbase transaction must have at least one output.")
 
         try:
-            input_size = sum(len(str(inp.to_dict())) for inp in self.inputs)
-            output_size = sum(len(str(out.to_dict())) for out in self.outputs)
-            meta_size = len(self.tx_id) + len(str(self.timestamp)) + len(self.hash)
+            # Calculate the size of the input fields
+            input_size = sum(len(inp.to_dict()) for inp in self.inputs)
+            
+            # Calculate the size of the output fields
+            output_size = sum(len(out.to_dict()) for out in self.outputs)
+            
+            # Calculate metadata size based on standardized data structure
+            # Metadata includes fixed-length fields like tx_id, hash, and timestamp
+            meta_size = len(self.tx_id) + len(self.hash) + 8  # 8 bytes for timestamp
+            
+            # Total transaction size is the sum of all components
             total_size = input_size + output_size + meta_size
+            
+            # If size exceeds maximum block size, clamp it to the max allowed size
             if total_size > Constants.MAX_BLOCK_SIZE_BYTES:
                 print(f"[TRANSACTION _calculate_size WARN] Transaction size {total_size} exceeds max block size {Constants.MAX_BLOCK_SIZE_BYTES}. Clamping.")
                 total_size = Constants.MAX_BLOCK_SIZE_BYTES
+            
+            # Print and return the computed size
             print(f"[TRANSACTION _calculate_size INFO] Computed size: {total_size} bytes for {self.tx_id}")
             return total_size
         except Exception as e:
             print(f"[TRANSACTION _calculate_size ERROR] {e}")
             return 0
+
 
     def _calculate_fee(self) -> Decimal:
         """
@@ -201,12 +214,12 @@ class Transaction:
             "tx_id": self.tx_id,
             "inputs": [inp.to_dict() for inp in self.inputs],
             "outputs": [out.to_dict() for out in self.outputs],
-            "timestamp": round(self.timestamp, 6),
+            "timestamp": int(self.timestamp),  # Convert timestamp to integer
             "type": self.type,
-            "tx_type": self.type,  # Additional field for binary serializers
-            "fee": str(self.fee),
+            "tx_type": self.type,  # For standardized serialization
+            "fee": str(self.fee),  # Fee as a string for consistency
             "size": self.size,
-            "hash": self.hash
+            "hash": self.hash,  # Transaction hash
         }
 
     def store_transaction(self):

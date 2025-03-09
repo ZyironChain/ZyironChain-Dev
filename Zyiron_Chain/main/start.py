@@ -65,7 +65,14 @@ class Start:
         # 4. Initialize Block Storage & Metadata ✅ Pass TxStorage
         detailed_print("Initializing block storage and metadata...")
         self.block_storage = WholeBlockData(tx_storage=self.tx_storage)  # ✅ FIXED
-        self.block_metadata = BlockMetadata(tx_storage=self.tx_storage)
+
+        # ✅ Ensure BlockMetadata Receives Shared LMDB Instances
+        self.block_metadata = BlockMetadata(
+            block_metadata_db=self.block_storage.block_metadata_db,
+            txindex_db=self.block_storage.txindex_db,
+            tx_storage=self.tx_storage,
+            current_block_file=self.block_storage.current_block_file
+        )
 
         # 5. Initialize Wallet Storage & Mempool Storage
         self.wallet_index = WalletStorage()
@@ -74,9 +81,10 @@ class Start:
         # 6. Initialize UTXO Storage ✅ Ensure LMDB paths exist
         utxo_db_path = Constants.DATABASES.get("utxo")
         utxo_history_path = Constants.DATABASES.get("utxo_history")
+
         detailed_print(f"Initializing LMDB managers for UTXO at {utxo_db_path} and UTXO history at {utxo_history_path}...")
-        utxo_db = LMDBManager(utxo_db_path)
-        utxo_history_db = LMDBManager(utxo_history_path)
+        utxo_db = LMDBManager(utxo_db_path)  # ✅ CORRECT
+        utxo_history_db = LMDBManager(utxo_history_path)  # ✅ FIXED, NO NESTED INSTANTIATION
 
         # 7. Initialize UTXO Manager ✅ Pass LMDB and Peer Constants
         from Zyiron_Chain.network.peerconstant import PeerConstants
@@ -87,7 +95,7 @@ class Start:
         # 8. Initialize UTXO Storage ✅
         self.utxo_storage = UTXOStorage(
             utxo_db=utxo_db,
-            utxo_history_db=utxo_history_db,
+            utxo_history_db=utxo_history_db,  # ✅ Corrected Reference
             utxo_manager=utxo_manager
         )
         detailed_print("UTXOStorage initialized successfully.")
@@ -151,7 +159,6 @@ class Start:
             mempool_storage=self.mempool_storage,
             genesis_block_manager=self.genesis_block_manager
         )
-
 
     def load_blockchain(self):
         detailed_print("Loading blockchain data from storage...")

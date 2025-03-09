@@ -16,7 +16,7 @@ class TransactionIn:
     def __init__(self, tx_out_id: str, script_sig: str):
         """
         Initialize a Transaction Input.
-        
+
         :param tx_out_id: The UTXO being referenced.
         :param script_sig: The unlocking script (signature).
         """
@@ -36,7 +36,7 @@ class TransactionIn:
     def to_dict(self) -> Dict[str, str]:
         """
         Convert the Transaction Input to a dictionary format.
-        
+
         :return: Dictionary representation of the transaction input.
         """
         return {
@@ -48,7 +48,7 @@ class TransactionIn:
     def from_dict(cls, data: Dict) -> "TransactionIn":
         """
         Create a TransactionIn instance from a dictionary.
-        
+
         :param data: Dictionary containing transaction input data.
         :return: A TransactionIn instance.
         """
@@ -60,24 +60,24 @@ class TransactionIn:
         if missing_fields:
             print(f"[TransactionIn from_dict ERROR] Missing required fields: {', '.join(missing_fields)}")
             raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
-        
+
         tx_out_id = data.get("tx_out_id", "").strip()
         script_sig = data.get("script_sig", "").strip()
-        
+
         if not tx_out_id:
             print("[TransactionIn from_dict WARN] tx_out_id missing, using ZERO_HASH as fallback.")
             tx_out_id = Constants.ZERO_HASH
         if not script_sig:
             print("[TransactionIn from_dict ERROR] script_sig must be a non-empty string.")
             raise ValueError("script_sig must be a non-empty string.")
-        
+
         print(f"[TransactionIn from_dict INFO] Parsed TransactionIn from dict: tx_out_id={tx_out_id}")
         return cls(tx_out_id=tx_out_id, script_sig=script_sig)
 
     def validate(self) -> bool:
         """
         Validates the Transaction Input format and integrity.
-        
+
         :return: True if the input is valid, False otherwise.
         """
         # Ensure tx_out_id is a valid string and not the ZERO_HASH (unless it's for a coinbase transaction)
@@ -97,14 +97,3 @@ class TransactionIn:
 
         print(f"[TransactionIn VALIDATION INFO] Validation successful for tx_out_id={self.tx_out_id}")
         return True
-
-
-
-    @classmethod
-    def from_dict(cls, data: Dict) -> "TransactionIn":
-        """Deserialize a TransactionIn from a dictionary."""
-        deserialized_data = Deserializer().deserialize(data)
-        return cls(
-            tx_out_id=deserialized_data["tx_out_id"],
-            script_sig=deserialized_data["script_sig"]
-        )

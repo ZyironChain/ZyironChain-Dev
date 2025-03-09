@@ -123,16 +123,20 @@ class Block:
 
     def calculate_hash(self) -> str:
         """
-        Calculate the block's hash (silence detailed prints during mining)
+        Calculate the block's hash and return only the final hash.
         """
-        print("[Block.calculate_hash] Calculating block hash.")
         header_str = (
             f"{self.version}{self.index}{self.previous_hash}"
             f"{self.merkle_root}{self.timestamp}{self.nonce}"
             f"{self.difficulty}{self.miner_address}"
         )
         header_bytes = header_str.encode("utf-8")
-        return Hashing.hash(header_bytes).hex()
+        block_hash = Hashing.hash(header_bytes).hex()
+        
+        # ✅ REMOVED EXCESSIVE PRINTING
+        return block_hash
+
+
 
     def _compute_merkle_root(self) -> str:
         """
@@ -201,6 +205,13 @@ class Block:
         Serialize the block to a dictionary, including all fields.
         """
         print("[Block.to_dict] Serializing block to dictionary.")
+
+        # Ensure difficulty is stored as a 64-byte hex string
+        difficulty_hex = self.difficulty.to_bytes(64, "big", signed=False).hex()
+
+        # Ensure miner address is 128 bytes (padded)
+        miner_address_padded = self.miner_address.ljust(128, '\x00')
+
         return {
             "header": {
                 "version": self.version,
@@ -209,8 +220,11 @@ class Block:
                 "merkle_root": self.merkle_root,
                 "timestamp": self.timestamp,
                 "nonce": self.nonce,
-                "difficulty": self.difficulty,
-                "miner_address": self.miner_address,
+                "difficulty": difficulty_hex,
+                "miner_address": miner_address_padded,
+                "transaction_signature": self.transaction_signature.hex() if hasattr(self, "transaction_signature") else "00" * 48,
+                "reward": getattr(self, "reward", 0),
+                "fees": getattr(self, "fees", 0),
             },
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
@@ -219,6 +233,7 @@ class Block:
             "hash": self.hash
         }
 
+
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
         """
@@ -226,11 +241,18 @@ class Block:
         Expects data with 'index', 'previous_hash', 'transactions', 'timestamp', etc.
         """
         print("[Block.from_dict] Reconstructing block from dict.")
+
         # Basic validation
-        required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce"]
+        required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce", "difficulty", "miner_address"]
         for field in required_fields:
-            if field not in data:
+            if field not in data["header"]:
                 raise ValueError(f"[Block.from_dict] ERROR: Missing required field '{field}'.")
+
+        # Convert difficulty back to integer from 64-byte hex string
+        difficulty_int = int.from_bytes(bytes.fromhex(data["header"]["difficulty"]), "big", signed=False)
+
+        # Ensure miner address is trimmed to 128 bytes
+        miner_address_clean = data["header"]["miner_address"].rstrip("\x00")
 
         # Rebuild transaction objects if needed
         rebuilt_transactions = []
@@ -246,23 +268,28 @@ class Block:
                 rebuilt_transactions.append(Transaction.from_dict(tx_data))
 
         block = cls(
-            index=data["index"],
-            previous_hash=data["previous_hash"],
+            index=data["header"]["index"],
+            previous_hash=data["header"]["previous_hash"],
             transactions=rebuilt_transactions,
-            timestamp=data["timestamp"],
-            nonce=data["nonce"],
-            difficulty=data.get("difficulty", Constants.GENESIS_TARGET),
-            miner_address=data.get("miner_address")
+            timestamp=data["header"]["timestamp"],
+            nonce=data["header"]["nonce"],
+            difficulty=difficulty_int,
+            miner_address=miner_address_clean
         )
 
-        # Restore `tx_id`
+        # Restore additional fields
         block.tx_id = data.get("tx_id")
+        block.transaction_signature = bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))
+        block.reward = data["header"].get("reward", 0)
+        block.fees = data["header"].get("fees", 0)
+        block.version = data["header"].get("version", 1)  # Default version
 
         # Ensure Hash Consistency
         block.hash = data.get("hash", block.calculate_hash())
 
         print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
         return block
+
 
     def __repr__(self) -> str:
         """

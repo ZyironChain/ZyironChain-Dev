@@ -39,7 +39,6 @@ class TransactionFactory:
         print(f"[TransactionFactory.create_transaction] START: Creating transaction of type '{tx_type.name}'.")
 
         # Validate transaction type using Constants mapping
-        # (Ensure it exists in TRANSACTION_MEMPOOL_MAP, or handle default)
         if tx_type.name not in Constants.TRANSACTION_MEMPOOL_MAP:
             raise ValueError(f"[TransactionFactory.create_transaction] ERROR: Invalid transaction type: {tx_type.name}")
 
@@ -80,14 +79,7 @@ class TransactionFactory:
         )
 
         # If your Transaction class supports "fee" or "confirmations_required", set them
-        # For example:
-        # transaction.fee = fee
-        # transaction.confirmations_required = some_value
-        # But that depends on your actual Transaction class definition
-
-        # For demonstration, let's assume there's an attribute "confirmations_required"
         required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(tx_type.name.upper(), 8)
-        # If your Transaction class does not have "confirmations_required", remove this:
         if hasattr(transaction, "confirmations_required"):
             transaction.confirmations_required = required_confirmations
 
