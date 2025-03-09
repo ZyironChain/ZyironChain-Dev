@@ -523,3 +523,9 @@ class LMDBManager:
         except Exception as e:
             print(f"[LMDB ERROR] ❌ Unexpected error while storing transaction {tx_id}: {e}")
             raise
+
+    def close(self):
+        """Close the LMDB environment."""
+        if hasattr(self, 'env'):
+            self.env.close()
+        print("[LMDBManager] Database environment closed.")

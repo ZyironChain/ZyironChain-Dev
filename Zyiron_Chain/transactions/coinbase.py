@@ -35,17 +35,21 @@ class CoinbaseTx:
 
         # Coinbase transactions have **no inputs**
         self.inputs = []
-        
+
         # Define outputs (miner reward)
+        # Notice that each output is just a dict, so this is JSON-serializable.
         self.outputs = [{
             "address": miner_address,
             "amount": float(self.reward),
             "script_pub_key": miner_address
         }]
-        
+
         # Define transaction type and fee
         self.type = "COINBASE"
         self.fee = Decimal("0")
+
+        # Initialize an optional metadata field (to avoid KeyErrors if not set externally).
+        self.metadata = {}
 
         # Estimate transaction size
         self.size = self._estimate_size()
@@ -69,6 +73,7 @@ class CoinbaseTx:
         Generate a unique transaction ID using single SHA3-384 hashing.
         Uses a prefix from Constants if available.
         """
+        # Attempt to get a prefix from TRANSACTION_MEMPOOL_MAP for COINBASE
         prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get("COINBASE", {}).get("prefixes", [])
         prefix = prefixes[0] if prefixes else "COINBASE-"
 
@@ -98,24 +103,23 @@ class CoinbaseTx:
     def to_dict(self) -> Dict:
         """
         Serialize the CoinbaseTx to a dictionary.
-        Includes all fields, including metadata.
+        Includes all fields, including metadata, so everything is JSON-serializable.
         """
         print(f"[CoinbaseTx.to_dict] Serializing CoinbaseTx (tx_id: {self.tx_id})")
         return {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
-            "reward": str(self.reward),  # Convert Decimal to string for serialization
-            "inputs": self.inputs,
-            "outputs": self.outputs,
+            "reward": str(self.reward),      # Convert Decimal to string for serialization
+            "inputs": self.inputs,           # Already a list of dicts
+            "outputs": self.outputs,         # List of dicts, so it's JSON-serializable
             "timestamp": self.timestamp,
             "type": self.type,
-            "fee": str(self.fee),  # Convert Decimal to string for serialization
+            "fee": str(self.fee),            # Convert Decimal to string
             "size": self.size,
-            "metadata": self.metadata  # Include metadata
+            "metadata": self.metadata        # Ensure it's a dict to be JSON-serializable
         }
 
-    
     @classmethod
     def from_dict(cls, data: Dict):
         """
@@ -152,14 +156,16 @@ class CoinbaseTx:
             # Restore optional fields
             obj.tx_id = filtered_data.get("tx_id", obj._generate_tx_id())  # Generate TX ID if missing
             obj.timestamp = filtered_data.get("timestamp", int(time.time()))  # Use current time if missing
-            obj.inputs = filtered_data.get("inputs", [])  # Default to empty list
-            obj.outputs = filtered_data.get("outputs", obj.outputs)  # Default from class if not provided
-            obj.type = filtered_data.get("type", "COINBASE")  # Default to "COINBASE"
-            obj.size = filtered_data.get("size", obj._estimate_size())  # Estimate size if missing
-            obj.fee = Decimal(filtered_data.get("fee", "0"))  # Convert string to Decimal
+            obj.inputs = filtered_data.get("inputs", [])    # Default to empty list
+            obj.outputs = filtered_data.get("outputs", obj.outputs)
+            obj.type = filtered_data.get("type", "COINBASE")
+            obj.size = filtered_data.get("size", obj._estimate_size())
+            obj.fee = Decimal(filtered_data.get("fee", "0"))
 
             # Restore metadata safely
-            obj.metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
+            # If the 'metadata' field is present in the original data, use it if it's a dict, else default to {}
+            potential_metadata = data.get("metadata", {})
+            obj.metadata = potential_metadata if isinstance(potential_metadata, dict) else {}
 
             print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id}")
             return obj

@@ -201,15 +201,12 @@ class Block:
             return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
 
     def to_dict(self) -> dict:
-        """
-        Serialize the block to a dictionary, including all fields.
-        """
         print("[Block.to_dict] Serializing block to dictionary.")
 
-        # Ensure difficulty is stored as a 64-byte hex string
+        # ✅ Ensure difficulty is stored as a 64-byte hex string
         difficulty_hex = self.difficulty.to_bytes(64, "big", signed=False).hex()
 
-        # Ensure miner address is 128 bytes (padded)
+        # ✅ Ensure miner address is always 128 bytes (padded with NULL)
         miner_address_padded = self.miner_address.ljust(128, '\x00')
 
         return {
@@ -220,8 +217,8 @@ class Block:
                 "merkle_root": self.merkle_root,
                 "timestamp": self.timestamp,
                 "nonce": self.nonce,
-                "difficulty": difficulty_hex,
-                "miner_address": miner_address_padded,
+                "difficulty": difficulty_hex,  # ✅ Store as a hex string
+                "miner_address": miner_address_padded,  # ✅ Ensure consistent padding
                 "transaction_signature": self.transaction_signature.hex() if hasattr(self, "transaction_signature") else "00" * 48,
                 "reward": getattr(self, "reward", 0),
                 "fees": getattr(self, "fees", 0),
@@ -229,32 +226,29 @@ class Block:
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
-            "tx_id": self.tx_id,  # Include Coinbase TX ID
+            "tx_id": self.tx_id,
             "hash": self.hash
         }
 
 
+
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
-        """
-        Reconstruct a Block from a dictionary. Merges block+header fields.
-        Expects data with 'index', 'previous_hash', 'transactions', 'timestamp', etc.
-        """
         print("[Block.from_dict] Reconstructing block from dict.")
 
-        # Basic validation
+        # ✅ Validate required fields
         required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce", "difficulty", "miner_address"]
         for field in required_fields:
             if field not in data["header"]:
                 raise ValueError(f"[Block.from_dict] ERROR: Missing required field '{field}'.")
 
-        # Convert difficulty back to integer from 64-byte hex string
+        # ✅ Convert difficulty back to integer from 64-byte hex string
         difficulty_int = int.from_bytes(bytes.fromhex(data["header"]["difficulty"]), "big", signed=False)
 
-        # Ensure miner address is trimmed to 128 bytes
+        # ✅ Ensure miner address is trimmed to 128 bytes
         miner_address_clean = data["header"]["miner_address"].rstrip("\x00")
 
-        # Rebuild transaction objects if needed
+        # ✅ Rebuild transaction objects
         rebuilt_transactions = []
         for tx_data in data.get("transactions", []):
             if not isinstance(tx_data, dict):
@@ -273,22 +267,28 @@ class Block:
             transactions=rebuilt_transactions,
             timestamp=data["header"]["timestamp"],
             nonce=data["header"]["nonce"],
-            difficulty=difficulty_int,
+            difficulty=difficulty_int,  # ✅ Ensure difficulty is an integer
             miner_address=miner_address_clean
         )
 
-        # Restore additional fields
         block.tx_id = data.get("tx_id")
         block.transaction_signature = bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))
         block.reward = data["header"].get("reward", 0)
         block.fees = data["header"].get("fees", 0)
         block.version = data["header"].get("version", 1)  # Default version
 
-        # Ensure Hash Consistency
+        # ✅ Ensure Hash Consistency
         block.hash = data.get("hash", block.calculate_hash())
 
         print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
         return block
+
+
+
+
+
+
+
 
 
     def __repr__(self) -> str:

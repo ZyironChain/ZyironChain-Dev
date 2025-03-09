@@ -14,7 +14,7 @@ class Constants:
     """
 
     # 🔹 **Versioning & Network Configuration**
-    VERSION = "1.0.0"
+    VERSION = "1.00"
 
     # 🔹 **Network Configuration**
     AVAILABLE_NETWORKS = ["mainnet", "testnet", "regnet"]

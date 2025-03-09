@@ -263,14 +263,16 @@ class WholeBlockData:
 
 
     def _initialize_block_data_file(self):
-        """Initialize block.data file with correct magic number only if missing, and ensure correct offset handling."""
+        """
+        Initialize `block.data` file with the correct magic number if missing, and ensure correct offset handling.
+        """
         try:
             print(f"[WholeBlockData._initialize_block_data_file] INFO: Block data file path set to: {self.current_block_file}")
 
             # ✅ **Ensure Block Data Directory Exists**
-            block_data_dir = Constants.DATABASES.get("block_data")
+            block_data_dir = os.path.dirname(self.current_block_file)
             if not block_data_dir:
-                print("[WholeBlockData._initialize_block_data_file] ❌ ERROR: Block data directory not found in Constants.DATABASES.")
+                print("[WholeBlockData._initialize_block_data_file] ❌ ERROR: Block data directory not found.")
                 return
             os.makedirs(block_data_dir, exist_ok=True)
 
@@ -301,6 +303,7 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData._initialize_block_data_file] ❌ ERROR: Failed to initialize block storage: {e}")
             raise
+
 
 
 
@@ -474,7 +477,7 @@ class WholeBlockData:
             block_dict = block.to_dict()
             header = block_dict.get("header")
             if header is None:
-                raise ValueError("Block header is missing.")
+                raise ValueError("[WholeBlockData] ❌ ERROR: Block header is missing.")
             print("[WholeBlockData] INFO: Block header retrieved successfully.")
 
             # --- Standardized Fixed Header Fields ---
@@ -485,14 +488,14 @@ class WholeBlockData:
             nonce = int(header["nonce"])
             print(f"[WholeBlockData] INFO: Fixed header fields - index: {block_height}, timestamp: {timestamp}, nonce: {nonce}.")
 
-            # Convert difficulty to a **fixed 64-byte field**, strip leading zeroes
-            difficulty_value = int(header["difficulty"])
-            difficulty_bytes = difficulty_value.to_bytes(64, "big", signed=False).lstrip(b'\x00')
+            # ✅ **Fix: Convert difficulty from hex properly**
+            difficulty_value = int(header["difficulty"], 16)  # Convert from hex string
+            difficulty_bytes = difficulty_value.to_bytes(64, "big", signed=False).rjust(64, b'\x00')  # Ensure 64 bytes
             difficulty_length = len(difficulty_bytes)
             difficulty_packed = struct.pack(">B", difficulty_length) + difficulty_bytes
             print(f"[WholeBlockData] INFO: Difficulty processed - length: {difficulty_length} bytes.")
 
-            # Process miner address (ensure **128 bytes**, padded with null bytes)
+            # ✅ **Fix: Ensure Miner Address is 128 bytes**
             miner_address_str = header["miner_address"]
             miner_address_encoded = miner_address_str.encode("utf-8")
             if len(miner_address_encoded) > 128:
@@ -500,15 +503,23 @@ class WholeBlockData:
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
             print(f"[WholeBlockData] INFO: Miner address processed and padded.")
 
-            # Add **Transaction Signature** (48 bytes)
+            # ✅ **Fix: Ensure Transaction Signature is Always 48 Bytes**
             transaction_signature = bytes.fromhex(header["transaction_signature"]) if "transaction_signature" in header else b"\x00" * 48
 
             # --- Extra Header Fields ---
-            reward = int(header.get("reward", 0))
-            fees_collected = int(header.get("fees", 0))
-            block_version = int(header.get("version", 1))  # Default to version 1
+            reward = int(float(header.get("reward", "0")))
+            fees_collected = int(float(header.get("fees", "0")))
 
-            # Pack fixed header fields
+            # ✅ **Fix: Convert block version safely**
+            version_raw = header.get("version", "1.0.0")  # Default version if missing
+            try:
+                block_version = int(float(version_raw))  # Convert '1.0.0' -> 1
+            except ValueError:
+                print(f"[WholeBlockData] ❌ ERROR: Invalid block version format '{version_raw}', defaulting to 1.")
+                block_version = 1  # Fallback to 1 if invalid
+            print(f"[WholeBlockData] INFO: Block version processed: {block_version}")
+
+            # ✅ **Fix: Pack the header fields correctly**
             fixed_header_format = ">I48s48sQI B64s 128s 48s Q Q I"
             fixed_header_data = struct.pack(
                 fixed_header_format,
@@ -541,24 +552,25 @@ class WholeBlockData:
                     else:
                         raise TypeError(f"Transaction at index {idx} is not serializable.")
 
-                    tx_json = json.dumps(tx_dict, sort_keys=True).encode("utf-8")
+                    # ✅ **Fix: Ensure all transactions are JSON-encoded properly**
+                    tx_json = json.dumps(tx_dict, ensure_ascii=False, sort_keys=True).encode("utf-8")
                     tx_size = len(tx_json)
 
-                    # **Prefix each transaction with its size (4 bytes)**
+                    # ✅ **Prefix each transaction with its size (4 bytes)**
                     serialized_tx = struct.pack(">I", tx_size) + tx_json
                     serialized_transactions.append(serialized_tx)
                     print(f"[WholeBlockData] INFO: Serialized transaction {idx}: size {tx_size} bytes.")
                 except Exception as e:
                     print(f"[WholeBlockData] ❌ ERROR: Failed to serialize transaction at index {idx}: {e}")
 
-            # Transaction Count (4 bytes) + Transactions (Size-Prefixed)
+            # ✅ **Pack Transaction Count (4 bytes) + Transactions (Size-Prefixed)**
             tx_count = len(serialized_transactions)
             tx_count_data = struct.pack(">I", tx_count)
             tx_data = b"".join(serialized_transactions)
 
             print(f"[WholeBlockData] INFO: {tx_count} transaction(s) serialized.")
 
-            # --- Combine Everything ---
+            # ✅ **Combine Everything into Final Block Binary Format**
             serialized_block = fixed_header_data + tx_count_data + tx_data
             print(f"[WholeBlockData] ✅ SUCCESS: Block {block.index} serialized successfully. Total size: {len(serialized_block)} bytes")
             return serialized_block
@@ -566,6 +578,9 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData] ❌ ERROR: Failed to serialize block {block.index}: {e}")
             raise
+
+
+
 
 
 
@@ -979,3 +994,35 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData] ERROR: Failed to format block for storage: {e}")
             return {}
+
+
+    def purge_chain(self):
+        """
+        Purge corrupted blockchain data by resetting LMDB storage and block data files.
+        """
+        try:
+            print("[WholeBlockData.purge_chain] 🚨 WARNING: Purging corrupted blockchain data...")
+
+            # ✅ **Close LMDB databases before deletion**
+            self.block_metadata_db.close()
+            self.txindex_db.close()
+
+            # ✅ **Delete LMDB Storage & Block Data Files**
+            for db_path in [Constants.DATABASES["block_metadata"], Constants.DATABASES["txindex"], self.current_block_file]:
+                if os.path.exists(db_path):
+                    os.remove(db_path)
+                    print(f"[WholeBlockData.purge_chain] INFO: Deleted {db_path}")
+
+            # ✅ **Reinitialize Storage**
+            self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
+            self.txindex_db = LMDBManager(Constants.DATABASES["txindex"])
+
+            # ✅ **Recreate block.data with the correct magic number**
+            with open(self.current_block_file, "wb") as f:
+                f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+            print(f"[WholeBlockData.purge_chain] INFO: Recreated block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
+
+            print("[WholeBlockData.purge_chain] ✅ SUCCESS: Blockchain storage reset.")
+        
+        except Exception as e:
+            print(f"[WholeBlockData.purge_chain] ❌ ERROR: Failed to purge blockchain data: {e}")
