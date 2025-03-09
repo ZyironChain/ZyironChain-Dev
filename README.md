@@ -1,174 +1,167 @@
 # Zyiron Chain - Post-Quantum Payment System
-Version: 1.0 (Development)
+### Version: 1.0 (Development)
 
-# Vision & Mission
-Zyiron Chain aims to be the most secure, efficient, and democratic payment system in the crypto space. It addresses key challenges such as PQC security, transaction efficiency, and governance that aligns with the community's best interests.
+## 🔹 Vision & Mission
+Zyiron Chain is designed to be the most secure, efficient, and community-driven payment system. By leveraging post-quantum cryptography (PQC), efficient blockchain storage, and decentralized governance, it ensures robust security, seamless payments, and network scalability.
 
-# Blockchain Overview
-Zyiron Chain is a Post-Quantum Cryptography (PQC) resistant blockchain utilizing SHA3-384 for hashing and Falcon 1024 for digital signatures. It is structured into three layers:
+---
 
-Layer 1: Protocol Layer – Handles block creation, consensus (PoW with SHA3-384), and transaction validation.( what is being worked on the core protcol)
-Layer 2: Instant Payments – Facilitates low-latency payments with multi-hop routing and batching. (under development)
-Layer 3: Governance – A democratic system for upgrades, dispute resolution, and community voting (under development).
+## 🔹 Blockchain Overview
+Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 1024** for digital signatures, making it quantum-resistant. It is structured into threetwo layers:
+
+1️⃣ **Layer 1: Core Protocol** – Handles block creation, PoW consensus, and transaction validation.
+2️⃣ **Layer 2: Instant Payments** – Supports multi-hop routing and batching for low-latency payments.
 
 
-# Key Features
-✅ Quantum-Resistant Security: SHA3-384 hashing & Falcon 1024 signatures.
+> **Current Status:** Layer 1 is fully implemented, and being debugged while Layer 2 is till under active development.
 
-✅ Three-Layer Architecture: Separation of core, payments, and governance.
+---
 
-✅ Instant Payments: Multi-hop routing for fast transactions.
+## 🔹 Key Features
+✅ **Quantum-Resistant Security**: SHA3-384 hashing & Falcon 512 signatures.
+✅ **Three-Layer Architecture**: Separation of core, payments, and governance.
+✅ **Instant Payments**: Multi-hop routing for fast transactions.
+✅ **Smart Transactions**: Programmable logic for automated transactions.
+✅ **Decentralized Governance**: Community-driven blockchain upgrades.
+✅ **Dynamic Block Sizes**: 1MB-10MB per block, depending on network traffic.
+✅ **Two Mempools**:
+   - **Standard Mempool** → Regular & Instant Transactions.
+   - **Smart Mempool** → Smart Contract Transactions.
+✅ **Proof-of-Work Consensus**: SHA3-384 PoW with dynamic difficulty adjustments.
+✅ **Max Supply**: 77,777,777 ZYC,ƶ no havling fixed block reward a 7 ZYC,ƶ utill max supply is mined 
+   - **Smart Fund** 
+✅ **Optimized Storage System**:
+   - **LMDB**: Stores UTXOs, mempool, transactions, orphan blocks, fees, and analytics.
+   - **TinyDB**: Manages node configurations & session data.
+   - **block.data**: Full blockchain stored in indexed 512mb binary files.
 
-✅ Smart Transactions: Programmable logic for automated transactions.
+---
 
-✅ Decentralized Governance: Community-driven blockchain upgrades.
-
-✅ Dynamic Block Sizes: 1-10MB per block, depending on network traffic.
-
-✅ Two Mempools:
-
-✅ Standard Mempool → For regular and instant transactions.
-
-✅Smart Mempool → For smart contract payments.
-
-✅ Proof-of-Work Consensus: SHA3-384 PoW with 5-minute block times.
-
-✅ Max Supply: 84,096,000 ZYC with halving every 420,480 blocks (~4 years).
-
-✅ Governance Minting: Community can vote to mint up to 2x the total supply every 50 years with 90% approval.
-
-✅ 3-Tier Tax Model:
-Governance Fund
-Smart Fund
-Contributors Fund
-
-✅ Database Architecture (Now fully using LMDB & TinyDB for storage):
-LMDB stores UTXOs, mempool, transaction indexes, orphan blocks, fee stats, analytics.
-TinyDB stores node configurations & session data.
-block.data files store full blockchain data (1GB per file with magic numbers for easy retrieval).
-
-✅ File-Based Blockchain Storage:
-
-Blocks stored in block.data files 
-Fast lookup via LMDB indexing.
-1GB limit per block.data file, auto-rotates.
-Updated Code Structure
+## 🔹 Updated Code Structure
 The project is modular and divided into key components:
 
-# Accounts and More 
-1️⃣ Account & Wallet Management
-wallet.py – Manages Falcon-based keys, transaction signing, and wallet interactions.
-key_manager.py – Generates and secures Falcon keys with 
+### 🔹 **Accounts & Wallet Management**
+1️⃣ **`wallet.py`** – Manages Falcon-based keys, signing, and wallet interactions.
+2️⃣ **`key_manager.py`** – Generates and secures Falcon keys.
 
+### 🔹 **Blockchain Core**
+3️⃣ **`block.py`** – Defines block structure, validation, and mining operations.
+4️⃣ **`blockchain.py`** – Manages the chain, storage, and validation processes.
+5️⃣ **`block_manager.py`** – Handles block indexing in LMDB.
+6️⃣ **`blockheader.py`** – Separates block header logic.
 
-2️⃣ Blockchain Core
-block.py – Defines block structure, validation, and PoW mining.
-blockchain.py – Main blockchain logic, manages block creation, storage, and validation.
-block_manager.py – Handles block storage and indexing in LMDB.
-blockheader.py – Separates block header logic.
+### 🔹 **Mempool & Transaction Handling**
+7️⃣ **`standardmempool.py`** – Handles standard and instant transactions.
+8️⃣ **`smartmempool.py`** – Manages smart contract transactions.
+9️⃣ **`transaction_manager.py`** – Routes transactions to the correct mempool.
+🔟 **`fees.py`** – Implements dynamic fee scaling based on congestion.
 
+### 🔹 **Payment Channels & Multi-Hop Routing**
+1️⃣1️⃣ **`payment_channel.py`** – Manages HTLC-based off-chain transactions.
+1️⃣2️⃣ **`multihop.py`** – Implements multi-hop routing for faster payments.
 
-3️⃣ Mempools & Transaction Handling
-standardmempool.py – Manages Standard & Instant Payments.
-smartmempool.py – Handles Smart Transactions & priority processing.
-transaction_manager.py – Routes transactions to the correct mempool.
-transaction_services.py – Provides fee calculation, validation, and processing.
-fees.py – Implements dynamic fee scaling based on congestion.
+### 🔹 **Database & Storage**
+1️⃣3️⃣ **`block_storage.py`** – Stores full blocks in `block.data`.
+1️⃣4️⃣ **`blockmetadata.py`** – Stores LMDB-based block headers.
+1️⃣5️⃣ **`tx_storage.py`** – Manages indexed transaction storage.
+1️⃣6️⃣ **`utxostorage.py`** – Stores UTXOs with LMDB.
+1️⃣7️⃣ **`lmdatabase.py`** – Manages blockchain-related LMDB interactions.
 
-4️⃣ Payment Channels & Multi-Hop Routing
-payment_channel.py – Handles HTLC-based off-chain transactions.
-multihop.py – Implements multi-hop routing for faster payments.
+### 🔹 **Mining & Proof-of-Work**
+1️⃣8️⃣ **`miner.py`** – Implements SHA3-384 mining with dynamic difficulty.
+1️⃣9️⃣ **`pow.py`** – Manages Proof-of-Work calculations.
 
-5️⃣ Database & Storage
-storage_manager.py – Manages block storage, UTXOs, mempool, and analytics.
-poc.py – Point-of-Contact that routes data to the correct storage layer.
+### 🔹 **Governance & Dispute Resolution**
+2️⃣0️⃣ **`dispute.py`** – Smart contract logic for resolving disputes.
+2️⃣1️⃣ **`governance.py`** – (Planned) On-chain voting & protocol upgrades.
 
-6️⃣ Mining & PoW
-miner.py – SHA3-384 mining with dynamic difficulty adjustment.
-coinbase.py – Handles block rewards and miner payouts.
+---
 
-7️⃣ Governance & Dispute Resolution
-dispute.py – Smart contract for resolving transaction disputes.
-governance.py – (Planned) Manages on-chain voting & protocol upgrades.
-Getting Started
+## 🔹 Getting Started
 
-# 1️⃣ Install Dependencies
-
+### 1️⃣ **Install Dependencies**
+```bash
 pip install -r requirements.txt
+```
 
-# 2️⃣ Run the Blockchain
-
+### 2️⃣ **Run the Blockchain**
+```bash
 python blockchain.py
-(Genesis Block will be created automatically if not found.)
+```
+*Genesis Block will be created automatically if not found.*
 
-# 3️⃣ Generate Falcon Keys
-
+### 3️⃣ **Generate Falcon Keys**
+```bash
 python key_manager.py
-(Interactive menu for key generation & management.)
+```
+*Interactive menu for key generation & management.*
 
-# How to Contribute
-1️⃣ Clone the Repository
+---
 
+## 🔹 How to Contribute
+
+### 1️⃣ Clone the Repository
+```bash
 git clone https://github.com/ZyironChain/ZyironChain-Dev.git
-2️⃣ Create a New Branch
+```
 
+### 2️⃣ Create a New Branch
+```bash
 git checkout -b feature-branch
-3️⃣ Commit & Push
+```
 
+### 3️⃣ Commit & Push
+```bash
+git add .
+git commit -m "Your commit message"
+git push origin feature-branch
+```
 
-4️⃣ Submit a Pull Request
-All contributions must go through Pull Requests (PRs) and be reviewed.
+### 4️⃣ Submit a Pull Request
+*All contributions must go through Pull Requests (PRs) and be reviewed.*
 
-# 🔒Branch Protection Rules:
+#### 🔒 **Branch Protection Rules:**
+- No direct pushes to `main` – PR approval required.
+- At least **1 approval required** before merging.
+- Auto-merge is disabled – Maintainers review each PR.
 
-No direct pushes to main – PR approval required.
-At least 1 approval required before merging.
-Auto-merge is disabled – Maintainers review each PR.
-
-#🔒 **Repository Access Policy**
-
+#### 🔒 **Repository Access Policy**
 - **You must request approval before contributing.**
-  
-- Send an email to **zyironchain@gmail.com**
-  
-- or contact @Zyiron_Chain on Telegram.
-
-- Provide your GitHub username and reason for contributing.
-  
+- Send an email to **zyironchain@gmail.com** or contact **@Zyiron_Chain** on Telegram.
+- Provide your **GitHub username** and reason for contributing.
 - Only approved contributors will be granted push/pull access.
 
+---
 
+## 🔹 Contact for PR Approval
+📩 **Email:** zyironchain@gmail.com
+📷 **Instagram:** @zyironchain
+💬 **Telegram:** @Zyiron_Chain
 
-# 5️⃣ Contact for PR Approval
+---
 
-Email: zyironchain@gmail.com
+## 🔹 Development Roadmap
 
-Instagram: @zyironchain
+✅ **Built:**
+- Core Blockchain (Block, Transactions, Mempools, Mining)
+- SHA3-384 Proof-of-Work
+- Instant & Smart Transactions
+- LMDB & File-Based Storage
 
-Telegram: @Zyiron_Chain
+🛠 **Needs Work:**
+- P2P Networking
+- Custodial Wallets (BIP39 Mnemonic Support)
+- HTLC Smart Contracts for Instant Pay
+- Block Explorer & Analytics APIs
+- Code Debugging & Security Audits
+- Multi-Hop Payment Optimization
 
-# Development Roadmap
-Zyiron Chain is 60% complete. The core is functional, but key areas still need development:
+---
 
-# ✅ Built:
+## 🔹 Final Thoughts
+🔹 Zyiron Chain is **secure, scalable, and truly decentralized**.
+🔹 **Community involvement is key** – anyone can contribute.
+🔹 Have questions? Email **zyironchain@gmail.com** or request a Zoom call.
 
-Core Blockchain (Block, Transactions, Mempools, Mining)
-POW
-Instant & Smart Transactions
-LMDB & File-Based Storage
-🛠 Needs Work:
-
-# P2P Networking
-Custodial Wallets BIP 39 MEMOPHRASE 
-HTLC Smart Contracts for Instant Pay
-Block Explorer & Analytics APIs
-Code Debugging & Security Audits
-Automated Fee Scaling
-Multi-Hop Payment Optimization
-Final Thoughts
-🔹 Zyiron Chain is designed to be secure, scalable, and truly decentralized.
-🔹 Community involvement is key – anyone can contribute.
-🔹 Have questions? Email zyironchain@gmail.com or request a Zoom call.
-
-🚀 Join us in building the future of decentralized payments! 🚀
+🚀 **Join us in building the future of decentralized payments!** 🚀
 
