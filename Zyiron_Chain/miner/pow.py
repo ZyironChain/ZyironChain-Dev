@@ -41,11 +41,11 @@ class PowManager:
                 # ✅ **Update Block Nonce**
                 block.nonce = nonce
 
-                # ✅ **Compute Hash**
-                block_hash = Hashing.hash(block.calculate_hash().encode()).hex()
+                # ✅ **Compute Hash (Stored as Bytes)**
+                block_hash = Hashing.hash(block.calculate_hash().encode())  # ✅ Store as bytes
 
                 # ✅ **Check if Hash Meets Difficulty Target**
-                if int(block_hash, 16) < block.difficulty:
+                if int.from_bytes(block_hash, "big") < block.difficulty:
                     elapsed_time = time.time() - start_time
                     print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined after {nonce} attempts in {elapsed_time:.2f} seconds.")
                     return block_hash, nonce, nonce  # ✅ Return valid hash, nonce, and attempts
@@ -61,6 +61,7 @@ class PowManager:
         except Exception as e:
             print(f"[PowManager.perform_pow] ERROR: Proof-of-Work failed: {e}")
             return None, None, None
+
 
 
     def adjust_difficulty(self, storage_manager):
@@ -136,6 +137,9 @@ class PowManager:
             print(f"[PowManager.adjust_difficulty] ERROR: Unexpected error during difficulty adjustment: {e}")
             return Constants.GENESIS_TARGET
 
+
+
+
     def get_average_block_time(self, storage_manager):
         """
         Computes the rolling average block time over the last N blocks,
@@ -167,24 +171,20 @@ class PowManager:
                         continue
 
                     diff = max(1, curr_timestamp - prev_timestamp)  # ✅ Prevents division errors
-                    times.append(diff)
+                    if diff > 7200:  # ✅ Ensure timestamp validation within 7200s drift
+                        print(f"[PowManager.get_average_block_time] ERROR: Block {i} timestamp drift exceeds 7200s. Skipping.")
+                        continue
 
-                    print(f"[PowManager.get_average_block_time] INFO: Block {i} - Time Difference: {diff} sec")
+                    times.append(diff)
 
                 except (ValueError, TypeError) as e:
                     print(f"[PowManager.get_average_block_time] ERROR: Invalid timestamp format in block {i}: {e}")
 
-            # ✅ **Ensure a Valid Average Calculation**
-            if not times:
-                print("[PowManager.get_average_block_time] ERROR: No valid timestamps found. Using target block time.")
-                return Constants.TARGET_BLOCK_TIME
-
-            avg_time = sum(times) / len(times)
-
-            print(f"[PowManager.get_average_block_time] SUCCESS: Computed average block time: {avg_time:.2f} sec "
-                f"(Target: {Constants.TARGET_BLOCK_TIME} sec).")
+            avg_time = sum(times) / len(times) if times else Constants.TARGET_BLOCK_TIME
+            print(f"[PowManager.get_average_block_time] SUCCESS: Computed average block time: {avg_time:.2f} sec.")
             return avg_time
 
         except Exception as e:
             print(f"[PowManager.get_average_block_time] ERROR: Failed to calculate average block time: {e}")
             return Constants.TARGET_BLOCK_TIME
+

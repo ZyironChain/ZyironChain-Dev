@@ -47,14 +47,15 @@ class Block:
       - block hash (calculated from all header fields)
     """
 
+
     def __init__(
         self,
         index: int,
-        previous_hash: str,
+        previous_hash: bytes,
         transactions: List,
         timestamp: int = None,
         nonce: int = 0,
-        difficulty: int = None,
+        difficulty: bytes = None,
         miner_address: str = None
     ):
         """
@@ -64,39 +65,40 @@ class Block:
         """
         print(f"[Block.__init__] Initializing Block #{index}")
 
-        # Basic fields
+        # ✅ **Ensure previous_hash is bytes**
         self.index = index
-        self.previous_hash = previous_hash
-        self.transactions = transactions or []
-        self.miner_address = miner_address
+        self.previous_hash = previous_hash if isinstance(previous_hash, bytes) else bytes.fromhex(previous_hash)
 
-        # Difficulty & timestamp
-        self.difficulty = difficulty if difficulty is not None else Constants.GENESIS_TARGET
+        # ✅ **Ensure difficulty is bytes**
+        self.difficulty = difficulty if isinstance(difficulty, bytes) else difficulty.to_bytes(48, 'big')
+
+        self.transactions = transactions or []
+        self.miner_address = miner_address.ljust(128, "\x00").encode() if miner_address else b"\x00" * 128  # ✅ Ensure consistent 128-byte padding
         self.nonce = nonce
         self.timestamp = int(timestamp) if timestamp else int(time.time())
 
-        # Version from constants
+        # ✅ **Version from constants**
         self.version = Constants.VERSION
 
         print(f"[Block.__init__] Creating Block #{self.index}")
-        print(f" - Previous Hash: {self.previous_hash}")
-        print(f" - Difficulty: {hex(self.difficulty)}")
-        print(f" - Miner Address: {self.miner_address}")
+        print(f" - Previous Hash: {self.previous_hash.hex()}")
+        print(f" - Difficulty: {hex(int.from_bytes(self.difficulty, 'big'))}")  # ✅ Convert bytes to int for printing
+        print(f" - Miner Address: {self.miner_address.decode().strip()}")
         print(f" - Timestamp: {self.timestamp}")
         print(f" - Nonce: {self.nonce}")
 
-        # Compute the Merkle root
+        # ✅ **Compute the Merkle root**
         self.merkle_root = self._compute_merkle_root()
-        print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")
+        print(f"[Block.__init__] Merkle Root computed: {self.merkle_root.hex()}")
 
-        # Assign Coinbase TX ID
+        # ✅ **Assign Coinbase TX ID**
         self.tx_id = self._get_coinbase_tx_id()
         print(f"[Block.__init__] Assigned Coinbase TX ID: {self.tx_id}")
 
-        # Hash is assigned only when mined
+        # ✅ **Hash is assigned only when mined**
         self.hash = None
         print(f"[Block.__init__] Block initialized successfully.")
-
+              
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, i.e. the data
@@ -123,18 +125,19 @@ class Block:
 
     def calculate_hash(self) -> str:
         """
-        Calculate the block's hash and return only the final hash.
+        Calculate the block's hash using single SHA3-384.
         """
-        header_str = (
-            f"{self.version}{self.index}{self.previous_hash}"
-            f"{self.merkle_root}{self.timestamp}{self.nonce}"
-            f"{self.difficulty}{self.miner_address}"
+        header_bytes = (
+            self.version.to_bytes(4, 'big') +
+            self.index.to_bytes(8, 'big') +
+            self.previous_hash +
+            self.merkle_root +
+            self.timestamp.to_bytes(8, 'big') +
+            self.nonce.to_bytes(8, 'big') +
+            self.difficulty +
+            self.miner_address
         )
-        header_bytes = header_str.encode("utf-8")
-        block_hash = Hashing.hash(header_bytes).hex()
-        
-        # ✅ Removed print statement to avoid excessive logging
-        return block_hash
+        return Hashing.hash(header_bytes).hex()  # ✅ Properly hash bytes
 
 
 
@@ -150,25 +153,18 @@ class Block:
             print("[Block._compute_merkle_root] INFO: Computing Merkle Root...")
 
             # Handle Empty Transaction List
-            if not self.transactions or len(self.transactions) == 0:
+            if not self.transactions:
                 print("[Block._compute_merkle_root] WARNING: No transactions found; using ZERO_HASH.")
-                return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
+                return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # ✅ Always return a hex string
 
             # Convert Transactions to Hashes
             tx_hashes = []
             for tx in self.transactions:
                 try:
                     # Ensure transaction is serializable
-                    if hasattr(tx, "to_dict") and callable(tx.to_dict):
-                        tx_data = tx.to_dict()
-                    elif isinstance(tx, dict):
-                        tx_data = tx
-                    else:
-                        raise ValueError(f"Transaction {tx} is not in a valid dictionary format.")
-
-                    # Serialize and hash the transaction
+                    tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
                     tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
-                    tx_hash = Hashing.hash(tx_serialized)  # single-hash -> bytes
+                    tx_hash = Hashing.hash(tx_serialized).hex()  # ✅ Ensure it returns a hex string
                     tx_hashes.append(tx_hash)
 
                 except Exception as e:
@@ -184,16 +180,11 @@ class Block:
                 if len(tx_hashes) % 2 != 0:
                     tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd
 
-                new_level = []
-                for i in range(0, len(tx_hashes), 2):
-                    combined = tx_hashes[i] + tx_hashes[i + 1]
-                    new_hash = Hashing.hash(combined)
-                    new_level.append(new_hash)
-
+                new_level = [Hashing.hash((tx_hashes[i] + tx_hashes[i + 1]).encode()).hex() for i in range(0, len(tx_hashes), 2)]
                 tx_hashes = new_level  # Move to next Merkle tree level
 
             # Final Merkle Root
-            merkle_root = tx_hashes[0].hex()
+            merkle_root = tx_hashes[0]  # ✅ Ensure it remains a hex string
             print(f"[Block._compute_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root}")
             return merkle_root
 
@@ -201,25 +192,24 @@ class Block:
             print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
             return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
 
+
+
     def to_dict(self) -> dict:
+        """
+        Serialize block to a dictionary with standardized field formatting.
+        """
         print("[Block.to_dict] Serializing block to dictionary.")
-
-        # ✅ Ensure difficulty is stored as a 64-byte hex string
-        difficulty_hex = self.difficulty.to_bytes(64, "big", signed=False).hex()
-
-        # ✅ Ensure miner address is always 128 bytes (padded with NULL)
-        miner_address_padded = self.miner_address.ljust(128, '\x00')
 
         return {
             "header": {
                 "version": self.version,
                 "index": self.index,
-                "previous_hash": self.previous_hash,
-                "merkle_root": self.merkle_root,
+                "previous_hash": self.previous_hash.hex(),  # ✅ Ensure bytes are stored as hex
+                "merkle_root": self.merkle_root.hex(),  # ✅ Ensure bytes are stored as hex
                 "timestamp": self.timestamp,
                 "nonce": self.nonce,
-                "difficulty": difficulty_hex,  # ✅ Store as a hex string
-                "miner_address": miner_address_padded,  # ✅ Ensure consistent padding
+                "difficulty": self.difficulty.hex(),  # ✅ Store difficulty as a hex string
+                "miner_address": self.miner_address.decode().strip(),  # ✅ Convert bytes to string and strip padding
                 "transaction_signature": self.transaction_signature.hex() if hasattr(self, "transaction_signature") else "00" * 48,
                 "reward": getattr(self, "reward", 0),
                 "fees": getattr(self, "fees", 0),
@@ -232,10 +222,11 @@ class Block:
         }
 
 
-
-
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
+        """
+        Deserialize a block from a dictionary.
+        """
         print("[Block.from_dict] Reconstructing block from dict.")
 
         # ✅ Validate required fields
@@ -244,11 +235,15 @@ class Block:
             if field not in data["header"]:
                 raise ValueError(f"[Block.from_dict] ERROR: Missing required field '{field}'.")
 
-        # ✅ Convert difficulty back to integer from 64-byte hex string
-        difficulty_int = int.from_bytes(bytes.fromhex(data["header"]["difficulty"]), "big", signed=False)
+        # ✅ Convert difficulty back to bytes from hex
+        difficulty_bytes = bytes.fromhex(data["header"]["difficulty"])
+
+        # ✅ Ensure previous_hash and merkle_root are properly decoded from hex
+        previous_hash_bytes = bytes.fromhex(data["header"]["previous_hash"])
+        merkle_root_bytes = bytes.fromhex(data["header"]["merkle_root"])
 
         # ✅ Ensure miner address is trimmed to 128 bytes
-        miner_address_clean = data["header"]["miner_address"].rstrip("\x00")
+        miner_address_clean = data["header"]["miner_address"].ljust(128, "\x00").encode()
 
         # ✅ Rebuild transaction objects
         rebuilt_transactions = []
@@ -265,12 +260,12 @@ class Block:
 
         block = cls(
             index=data["header"]["index"],
-            previous_hash=data["header"]["previous_hash"],
+            previous_hash=previous_hash_bytes,  # ✅ Ensure previous_hash is bytes
             transactions=rebuilt_transactions,
             timestamp=data["header"]["timestamp"],
             nonce=data["header"]["nonce"],
-            difficulty=difficulty_int,  # ✅ Ensure difficulty is an integer
-            miner_address=miner_address_clean
+            difficulty=difficulty_bytes,  # ✅ Ensure difficulty is bytes
+            miner_address=miner_address_clean  # ✅ Ensure miner_address is bytes
         )
 
         block.tx_id = data.get("tx_id")
@@ -284,7 +279,6 @@ class Block:
 
         print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
         return block
-
 
 
 

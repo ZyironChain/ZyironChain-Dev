@@ -137,24 +137,21 @@ class Miner:
             min_size_bytes = Constants.MIN_BLOCK_SIZE_BYTES
             max_size_bytes = Constants.MAX_BLOCK_SIZE_BYTES
 
-            min_size_mb = min_size_bytes / (1024 * 1024)
-            max_size_mb = max_size_bytes / (1024 * 1024)
-
             min_tx_count = 1000
             max_tx_count = 50000
 
-            # ✅ **Dynamically Adjust Block Size**
+            # ✅ **Dynamically Adjust Block Size in Bytes**
             if tx_count <= min_tx_count:
-                new_size_mb = min_size_mb
+                new_size_bytes = min_size_bytes
             elif tx_count >= max_tx_count:
-                new_size_mb = max_size_mb
+                new_size_bytes = max_size_bytes
             else:
                 scale = (tx_count - min_tx_count) / (max_tx_count - min_tx_count)
-                new_size_mb = min_size_mb + (max_size_mb - min_size_mb) * scale
+                new_size_bytes = min_size_bytes + (max_size_bytes - min_size_bytes) * scale
 
             # ✅ **Allocate Block Space Based on Constants**
-            standard_allocation_mb = new_size_mb * Constants.BLOCK_ALLOCATION_STANDARD
-            smart_allocation_mb = new_size_mb * Constants.BLOCK_ALLOCATION_SMART
+            standard_allocation_bytes = new_size_bytes * Constants.BLOCK_ALLOCATION_STANDARD
+            smart_allocation_bytes = new_size_bytes * Constants.BLOCK_ALLOCATION_SMART
 
             # ✅ **Separate Transactions by Type**
             standard_txs, smart_txs = [], []
@@ -164,40 +161,41 @@ class Miner:
                     print(f"[Miner._calculate_block_size] WARNING: Skipping invalid transaction: {tx}")
                     continue
 
-                tx_id_str = tx.tx_id.decode("utf-8") if isinstance(tx.tx_id, bytes) else tx.tx_id
+                tx_id_bytes = tx.tx_id if isinstance(tx.tx_id, bytes) else tx.tx_id.encode()
 
-                if any(tx_id_str.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"]):
+                if any(tx_id_bytes.startswith(prefix.encode()) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"]):
                     standard_txs.append(tx)
-                elif any(tx_id_str.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["SMART"]["prefixes"]):
+                elif any(tx_id_bytes.startswith(prefix.encode()) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["SMART"]["prefixes"]):
                     smart_txs.append(tx)
 
-            # ✅ **Calculate Total Transaction Sizes (MB)**
-            total_standard_size_mb = sum(tx.size for tx in standard_txs if hasattr(tx, "size")) / (1024 * 1024)
-            total_smart_size_mb = sum(tx.size for tx in smart_txs if hasattr(tx, "size")) / (1024 * 1024)
+            # ✅ **Calculate Total Transaction Sizes (Bytes)**
+            total_standard_size_bytes = sum(tx.size for tx in standard_txs if hasattr(tx, "size"))
+            total_smart_size_bytes = sum(tx.size for tx in smart_txs if hasattr(tx, "size"))
 
             print(f"[Miner._calculate_block_size] INFO: Standard TXs: {len(standard_txs)}, Smart TXs: {len(smart_txs)}")
-            print(f"[Miner._calculate_block_size] INFO: Total Standard TX Size: {total_standard_size_mb:.2f} MB")
-            print(f"[Miner._calculate_block_size] INFO: Total Smart TX Size: {total_smart_size_mb:.2f} MB")
+            print(f"[Miner._calculate_block_size] INFO: Total Standard TX Size: {total_standard_size_bytes} bytes")
+            print(f"[Miner._calculate_block_size] INFO: Total Smart TX Size: {total_smart_size_bytes} bytes")
 
             # ✅ **Ensure Allocations Do Not Exceed Limits**
-            if total_standard_size_mb > standard_allocation_mb:
-                print(f"[Miner._calculate_block_size] WARNING: Standard transactions exceed allocation ({total_standard_size_mb:.2f} MB). Limiting to {standard_allocation_mb:.2f} MB.")
-                total_standard_size_mb = standard_allocation_mb
+            if total_standard_size_bytes > standard_allocation_bytes:
+                print(f"[Miner._calculate_block_size] WARNING: Standard transactions exceed allocation ({total_standard_size_bytes} bytes). Limiting to {standard_allocation_bytes} bytes.")
+                total_standard_size_bytes = standard_allocation_bytes
 
-            if total_smart_size_mb > smart_allocation_mb:
-                print(f"[Miner._calculate_block_size] WARNING: Smart transactions exceed allocation ({total_smart_size_mb:.2f} MB). Limiting to {smart_allocation_mb:.2f} MB.")
-                total_smart_size_mb = smart_allocation_mb
+            if total_smart_size_bytes > smart_allocation_bytes:
+                print(f"[Miner._calculate_block_size] WARNING: Smart transactions exceed allocation ({total_smart_size_bytes} bytes). Limiting to {smart_allocation_bytes} bytes.")
+                total_smart_size_bytes = smart_allocation_bytes
 
-            final_block_size_mb = total_standard_size_mb + total_smart_size_mb
+            final_block_size_bytes = total_standard_size_bytes + total_smart_size_bytes
 
             # ✅ **Set Final Block Size Within Allowed Bounds**
-            self.current_block_size = max(min_size_mb, min(final_block_size_mb, max_size_mb))
+            self.current_block_size = max(min_size_bytes, min(final_block_size_bytes, max_size_bytes))
 
-            print(f"[Miner._calculate_block_size] SUCCESS: Block size set to {self.current_block_size:.2f} MB based on mempool transactions.")
+            print(f"[Miner._calculate_block_size] SUCCESS: Block size set to {self.current_block_size} bytes based on mempool transactions.")
 
         except Exception as e:
             print(f"[Miner._calculate_block_size] ERROR: Exception during block size calculation: {e}")
             raise
+
 
     def _create_coinbase(self, miner_address, fees):
         """
@@ -205,6 +203,7 @@ class Miner:
         - Uses a **fixed block reward** instead of halving.
         - If `MAX_SUPPLY` is reached, only transaction fees are rewarded.
         - Ensures a minimum payout using `Constants.MIN_TRANSACTION_FEE`.
+        - Stores transaction ID as **bytes** instead of hex string.
         """
         try:
             print("[Miner._create_coinbase] INFO: Initiating Coinbase transaction creation...")
@@ -239,15 +238,17 @@ class Miner:
             )
             coinbase_tx.fee = Decimal("0")
 
-            # ✅ **Generate Transaction ID Using SHA3-384**
-            coinbase_tx.tx_id = Hashing.hash(coinbase_tx.calculate_hash().encode()).hex()
+            # ✅ **Generate Transaction ID Using SHA3-384 & Store as Bytes**
+            tx_id_bytes = Hashing.hash(coinbase_tx.calculate_hash().encode())
+            coinbase_tx.tx_id = tx_id_bytes  # ✅ Store as bytes instead of hex string
 
-            print(f"[Miner._create_coinbase] SUCCESS: Coinbase transaction created with TX ID: {coinbase_tx.tx_id}")
+            print(f"[Miner._create_coinbase] SUCCESS: Coinbase transaction created with TX ID (bytes): {tx_id_bytes[:12]}")
             return coinbase_tx
 
         except Exception as e:
             print(f"[Miner._create_coinbase] ERROR: Coinbase creation failed: {e}")
             raise
+
 
     def _calculate_block_reward(self):
         """
@@ -293,26 +294,28 @@ class Miner:
         Ensure the coinbase transaction follows protocol rules:
         - No inputs, exactly one output, type is "COINBASE", fee is zero.
         - Uses single SHA3-384 hashing for transaction ID.
+        - Ensures TX ID is stored as bytes, not a hex string.
         """
         from Zyiron_Chain.transactions.coinbase import CoinbaseTx  # ✅ Fixed import
 
         try:
-            print(f"[Miner._validate_coinbase] INFO: Validating Coinbase transaction with TX ID: {getattr(tx, 'tx_id', 'UNKNOWN')}")
+            tx_id_display = tx.tx_id.hex()[:12] if isinstance(tx.tx_id, bytes) else getattr(tx, "tx_id", "UNKNOWN")
+            print(f"[Miner._validate_coinbase] INFO: Validating Coinbase transaction with TX ID: {tx_id_display}")
 
             # ✅ **Check if Transaction is a Valid CoinbaseTx**
             if not isinstance(tx, CoinbaseTx):
                 print(f"[Miner._validate_coinbase] ERROR: Transaction is not a valid CoinbaseTx instance.")
                 return False
 
-            # ✅ **Ensure TX ID is a Proper String**
-            if not hasattr(tx, "tx_id") or not isinstance(tx.tx_id, str):
-                print(f"[Miner._validate_coinbase] ERROR: Invalid Coinbase transaction ID format: {getattr(tx, 'tx_id', 'UNKNOWN')}")
+            # ✅ **Ensure TX ID is Properly Stored as Bytes**
+            if not hasattr(tx, "tx_id") or not isinstance(tx.tx_id, bytes):
+                print(f"[Miner._validate_coinbase] ERROR: Invalid Coinbase transaction ID format. TX ID must be bytes.")
                 return False
 
-            # ✅ **Validate Coinbase Transaction Hashing**
-            expected_tx_id = Hashing.hash(tx.calculate_hash().encode()).hex()
+            # ✅ **Validate Coinbase Transaction Hashing & Ensure Bytes Storage**
+            expected_tx_id = Hashing.hash(tx.calculate_hash().encode())
             if tx.tx_id != expected_tx_id:
-                print(f"[Miner._validate_coinbase] ERROR: Coinbase TX ID mismatch.\nExpected: {expected_tx_id}\nFound: {tx.tx_id}")
+                print(f"[Miner._validate_coinbase] ERROR: Coinbase TX ID mismatch.\nExpected: {expected_tx_id.hex()}\nFound: {tx.tx_id.hex()}")
                 return False
 
             # ✅ **Check for No Inputs and Exactly One Output**
@@ -335,7 +338,7 @@ class Miner:
                 print(f"[Miner._validate_coinbase] ERROR: Coinbase transaction must have a fee of 0. Found: {tx.fee}")
                 return False
 
-            print(f"[Miner._validate_coinbase] SUCCESS: Coinbase transaction {tx.tx_id} validated successfully.")
+            print(f"[Miner._validate_coinbase] SUCCESS: Coinbase transaction {tx.tx_id.hex()[:12]} validated successfully.")
             return True
 
         except Exception as e:
@@ -351,6 +354,7 @@ class Miner:
         - Dynamically adjusts difficulty.
         - Uses detailed print statements for progress and debugging.
         - Stops mining on errors.
+        - Stores tx_id as bytes instead of string hex format.
         """
         network = network or Constants.NETWORK
         print(f"\n[Miner.mining_loop] INFO: Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
@@ -367,12 +371,12 @@ class Miner:
                 return
 
             # ✅ **Ensure Genesis Block Meets Difficulty Target**
-            if int(genesis_block.hash, 16) >= genesis_block.difficulty:
+            if int.from_bytes(genesis_block.tx_id, "big") >= genesis_block.difficulty:
                 print(f"[Miner.mining_loop] ERROR: Genesis Block validation failed (invalid difficulty) on {network.upper()}! Stopping mining.")
                 return
 
             self.block_manager.chain.append(genesis_block)
-            print(f"[Miner.mining_loop] INFO: Genesis Block added successfully: {genesis_block.hash[:12]}...")
+            print(f"[Miner.mining_loop] INFO: Genesis Block added successfully: {genesis_block.tx_id.hex()[:12]}...")
 
         block_height = self.block_manager.chain[-1].index + 1
 
@@ -394,7 +398,7 @@ class Miner:
 
                 # ✅ **Ensure the Previous Block is Valid Before Adding**
                 last_block = self.block_manager.chain[-1] if self.block_manager.chain else None
-                if last_block and int(last_block.hash, 16) >= last_block.difficulty:
+                if last_block and int.from_bytes(last_block.tx_id, "big") >= last_block.difficulty:
                     print(f"[Miner.mining_loop] ERROR: Last block in chain is invalid. Stopping mining.")
                     break
 
@@ -419,11 +423,11 @@ class Miner:
             except Exception as e:
                 print(f"[Miner.mining_loop] ERROR: Mining encountered an unexpected error on {network.upper()}: {e}")
                 if block:
-                    print(f"[Miner.mining_loop] ERROR: Block {block.index} | Hash: {block.hash[:12]}...")
+                    print(f"[Miner.mining_loop] ERROR: Block {block.index} | Hash: {block.tx_id.hex()[:12]}...")
 
                 last_block = self.block_manager.get_latest_block()
                 if last_block:
-                    print(f"[Miner.mining_loop] INFO: Last valid block hash: {last_block.hash[:12]}...")
+                    print(f"[Miner.mining_loop] INFO: Last valid block hash: {last_block.tx_id.hex()[:12]}...")
                 else:
                     print("[Miner.mining_loop] ERROR: No valid blocks found in the chain. Stopping mining.")
                 break
@@ -442,12 +446,14 @@ class Miner:
         - Verify block timestamp consistency.
         - Ensure block size does not exceed max limit.
         - Enforce max supply limit if reached.
+        - Validate Genesis Block after retrieval instead of before.
+        - Ensure difficulty is stored in bytes.
         """
         try:
             print(f"[Miner.validate_new_block] INFO: Validating new block at height {new_block.index}...")
 
             # ✅ **Check Required Attributes**
-            if not hasattr(new_block, "hash") or not hasattr(new_block, "difficulty"):
+            if not hasattr(new_block, "tx_id") or not hasattr(new_block, "difficulty"):
                 print("[Miner.validate_new_block] ERROR: Block object is missing required attributes.")
                 return False
 
@@ -457,12 +463,14 @@ class Miner:
 
             # ✅ **Ensure Block Hash Meets Proof-of-Work Target**
             try:
-                block_hash_int = int(new_block.hash, 16)
+                block_hash_int = int.from_bytes(new_block.tx_id, "big")
             except ValueError:
                 print(f"[Miner.validate_new_block] ERROR: Block {new_block.index} has an invalid hash format.")
                 return False
 
-            if block_hash_int >= new_block.difficulty:
+            difficulty_int = int.from_bytes(new_block.difficulty, "big") if isinstance(new_block.difficulty, bytes) else new_block.difficulty
+
+            if block_hash_int >= difficulty_int:
                 print(f"[Miner.validate_new_block] ERROR: Invalid Proof-of-Work for block {new_block.index}.")
                 return False
 
@@ -513,7 +521,7 @@ class Miner:
 
             # ✅ **Validate Block Size**
             try:
-                total_block_size = sum(len(json.dumps(tx.to_dict())) for tx in new_block.transactions)
+                total_block_size = sum(len(json.dumps(tx.to_dict()).encode()) for tx in new_block.transactions)
             except (TypeError, AttributeError) as e:
                 print(f"[Miner.validate_new_block] ERROR: Failed to calculate block size: {e}")
                 return False
@@ -530,10 +538,10 @@ class Miner:
                     if isinstance(tx.tx_id, bytes):
                         tx.tx_id = tx.tx_id.decode("utf-8")
 
-                    single_hashed_tx_id = Hashing.hash(tx.tx_id.encode()).hex()
+                    single_hashed_tx_id = Hashing.hash(tx.tx_id.encode()).digest()
 
                     if not self.transaction_manager.validate_transaction(tx):
-                        print(f"[Miner.validate_new_block] ERROR: Invalid transaction in block {new_block.index}: {single_hashed_tx_id}")
+                        print(f"[Miner.validate_new_block] ERROR: Invalid transaction in block {new_block.index}: {single_hashed_tx_id.hex()}")
                         return False
                 except AttributeError as e:
                     print(f"[Miner.validate_new_block] ERROR: Transaction missing required attributes: {e}")
@@ -568,6 +576,8 @@ class Miner:
         - Uses single SHA3-384 hashing for mining.
         - Retrieves transactions from mempool and includes coinbase transaction.
         - Enforces max supply constraints.
+        - Checks SHA3-384 hash length.
+        - Ensures block timestamp validation does not exceed 7200s.
         """
         with self.mining_lock:
             try:
@@ -664,6 +674,12 @@ class Miner:
                     difficulty=current_target,
                     miner_address=miner_address
                 )
+
+                # ✅ **Ensure SHA3-384 Hash Length is Correct**
+                if len(new_block.tx_id) != 48:
+                    print(f"[Miner.mine_block] ERROR: Invalid SHA3-384 hash length for block {block_height}. Stopping mining.")
+                    return None
+
                 print(f"[Miner.mine_block] INFO: New block created with index {block_height}.")
 
                 # ✅ **Perform Proof-of-Work**
@@ -680,6 +696,14 @@ class Miner:
                 new_block.tx_id = final_hash
                 new_block.nonce = final_nonce
                 print(f"[Miner.mine_block] INFO: Block updated with final hash and nonce {final_nonce}.")
+
+                # ✅ **Validate Block Timestamp (Ensure It Does Not Exceed 7200s)**
+                max_time_drift = 7200
+                if new_block.timestamp > int(time.time()) + max_time_drift:
+                    print(f"[Miner.mine_block] ERROR: Block {new_block.index} timestamp exceeds maximum allowable drift of {max_time_drift}s. Stopping mining.")
+                    return None
+
+                print("[Miner.mine_block] INFO: Timestamp validation passed.")
 
                 # ✅ **Store Block Using BlockMetadata**
                 print("[Miner.mine_block] INFO: Storing block in BlockMetadata.")
