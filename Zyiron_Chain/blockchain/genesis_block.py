@@ -64,20 +64,21 @@ class GenesisBlockManager:
         Ensures the Genesis block exists in storage.
         - First checks if it's already stored.
         - If missing, attempts retrieval by the Genesis Coinbase transaction ID (`tx_id`).
-        - Only mines a new Genesis block if both lookups fail.
+        - Validates existence in both LMDB and `block.data`.
+        - Only mines a new Genesis block if all lookups fail.
         """
         with self.genesis_lock:  # Ensure thread safety
             try:
                 print("[GenesisBlockManager.ensure_genesis_block] INFO: Checking for existing Genesis block...")
 
-                # ✅ **Check if Genesis Block Already Exists in Block Metadata**
+                # ✅ **Check if Genesis Block Exists in LMDB Metadata**
                 if hasattr(self.block_metadata, "get_block_by_height"):
                     existing_genesis = self.block_metadata.get_block_by_height(0)
                     if existing_genesis and hasattr(existing_genesis, "hash"):
-                        print(f"[GenesisBlockManager.ensure_genesis_block] ✅ INFO: Genesis Block already exists with hash {existing_genesis.hash}")
+                        print(f"[GenesisBlockManager.ensure_genesis_block] ✅ INFO: Genesis Block found in metadata with hash {existing_genesis.hash}")
                         return existing_genesis
                 else:
-                    print("[GenesisBlockManager.ensure_genesis_block] WARNING: `get_block_by_height` method missing. Skipping direct lookup.")
+                    print("[GenesisBlockManager.ensure_genesis_block] WARNING: `get_block_by_height` method missing. Skipping metadata lookup.")
 
                 # ✅ **Check if Genesis Coinbase TX Exists in `txindex_db`**
                 stored_tx_id = self.block_metadata.get_transaction_id("GENESIS_COINBASE")
@@ -86,16 +87,34 @@ class GenesisBlockManager:
 
                     stored_genesis_block = self.block_metadata.get_block_by_tx_id(stored_tx_id)
                     if stored_genesis_block and hasattr(stored_genesis_block, "hash"):
-                        print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Loaded Genesis block with hash: {stored_genesis_block.hash}")
+                        print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Loaded Genesis block from transaction index with hash: {stored_genesis_block.hash}")
                         return stored_genesis_block
 
                     print("[GenesisBlockManager.ensure_genesis_block] WARNING: Retrieved Genesis block is invalid or missing.")
 
-                # ✅ **Check if Genesis Block Exists in Block Storage**
+                # ✅ **Check if Genesis Block Exists in Block Storage (`block.data`)**
                 latest_block = self.block_storage.get_latest_block()
                 if latest_block and hasattr(latest_block, "index") and latest_block.index == 0:
-                    print(f"[GenesisBlockManager.ensure_genesis_block] ✅ INFO: Loaded Genesis Block from storage with hash: {latest_block.hash}")
+                    print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Loaded Genesis Block from block.data with hash: {latest_block.hash}")
                     return latest_block
+
+                # 🚨 **No Valid Genesis Block Found – Attempt Direct Retrieval from `block.data`**
+                print("[GenesisBlockManager.ensure_genesis_block] ⚠️ WARNING: No valid Genesis block found in metadata. Checking block.data...")
+
+                block_from_storage = self.block_storage.get_block_from_data_file(4)  # Genesis block should be at offset 4
+                if block_from_storage and hasattr(block_from_storage, "index") and block_from_storage.index == 0:
+                    print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block retrieved from block.data with hash: {block_from_storage.hash}")
+
+                    # ✅ **Ensure the block matches the expected Genesis hash**
+                    expected_genesis_hash = Constants.GENESIS_BLOCK_HASH
+                    if block_from_storage.hash == expected_genesis_hash:
+                        print("[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block matches expected hash.")
+                        return block_from_storage
+                    else:
+                        print("[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis Block hash mismatch. Expected:", expected_genesis_hash)
+
+                else:
+                    print("[GenesisBlockManager.ensure_genesis_block] WARNING: Genesis Block not found in block.data.")
 
                 # 🚨 **No Valid Genesis Block Found – Proceed to Mining a New One**
                 print("[GenesisBlockManager.ensure_genesis_block] ⚠️ WARNING: No valid Genesis block found, proceeding to mine a new one...")
@@ -113,6 +132,8 @@ class GenesisBlockManager:
             except Exception as e:
                 print(f"[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis initialization failed: {e}")
                 raise
+
+
 
 
 
@@ -444,3 +465,58 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager.prevent_duplicate_genesis] ❌ ERROR: Failed to check Genesis block existence: {e}")
             return None
+
+
+
+    def store_genesis_block(self, genesis_block: Block):
+        """
+        Stores the Genesis block in both LMDB metadata and block storage.
+
+        - Ensures only one Genesis block exists.
+        - Validates block structure before storing.
+        - Updates `block_metadata`, `txindex_db`, and `block_storage`.
+        - Prevents duplicate entries.
+
+        Args:
+            genesis_block (Block): The Genesis block to store.
+        """
+        try:
+            print("[GenesisBlockManager.store_genesis_block] INFO: Storing Genesis block...")
+
+            # ✅ **Ensure Genesis block follows standardized structure**
+            if not self.validate_genesis_block(genesis_block):
+                raise ValueError("[GenesisBlockManager.store_genesis_block] ❌ ERROR: Genesis block failed validation.")
+
+            # ✅ **Prevent Duplicate Genesis Blocks**
+            existing_block = self.prevent_duplicate_genesis()
+            if existing_block:
+                print(f"[GenesisBlockManager.store_genesis_block] ✅ INFO: Genesis block already exists with hash {existing_block.hash}")
+                return existing_block
+
+            # ✅ **Store Genesis Block in Metadata**
+            print("[GenesisBlockManager.store_genesis_block] INFO: Storing block in LMDB metadata...")
+            self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
+
+            # ✅ **Store Genesis Block in Block Storage (`block.data`)**
+            print("[GenesisBlockManager.store_genesis_block] INFO: Storing block in block.data...")
+            self.block_storage.store_block(genesis_block, genesis_block.difficulty)
+
+            # ✅ **Index Genesis Transactions in `txindex_db`**
+            print("[GenesisBlockManager.store_genesis_block] INFO: Indexing Genesis transactions in txindex_db...")
+            for tx in genesis_block.transactions:
+                if hasattr(tx, "tx_id") and hasattr(tx, "to_dict"):
+                    tx_dict = tx.to_dict()
+                    self.block_metadata.tx_storage.store_transaction(
+                        tx.tx_id, genesis_block.hash, tx_dict.get("inputs", []),
+                        tx_dict.get("outputs", []), tx_dict.get("timestamp", int(time.time()))
+                    )
+                    print(f"[GenesisBlockManager.store_genesis_block] ✅ INFO: Indexed transaction {tx.tx_id} in txindex_db.")
+                else:
+                    print(f"[GenesisBlockManager.store_genesis_block] ⚠️ WARNING: Skipping invalid transaction format.")
+
+            print(f"[GenesisBlockManager.store_genesis_block] ✅ SUCCESS: Genesis block stored with hash: {genesis_block.hash}")
+            return genesis_block
+
+        except Exception as e:
+            print(f"[GenesisBlockManager.store_genesis_block] ❌ ERROR: Failed to store Genesis block: {e}")
+            raise

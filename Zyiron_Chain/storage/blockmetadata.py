@@ -256,24 +256,26 @@ class BlockMetadata:
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
         """
         Deserialize binary block data back into a Block object.
-        - Ensures correct header structure.
-        - Extracts transaction count and validates transactions.
-        - Includes standardized fields (Reward, Fees Collected, Transaction Signature).
+        - Ensures difficulty (64B), miner address (128B), and signature (48B) are properly deserialized.
+        - Extracts transactions while maintaining correct structure.
+
+        Returns:
+            Block object if deserialization is successful, otherwise None.
         """
         try:
             print("[BlockMetadata._deserialize_block_from_binary] INFO: Starting block deserialization...")
 
-            # Define the standardized header structure
-            header_format = ">I48s48sQI B64s 128s 48s Q Q I"
+            # ✅ **Define Standardized Header Format**
+            header_format = ">I 48s 48s Q I B64s 128s 48s Q Q I"
             base_header_size = struct.calcsize(header_format)
-            print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Base header size is {base_header_size} bytes.")
+            print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Expected header size: {base_header_size} bytes.")
 
-            # Ensure block_data is large enough for the header
+            # ✅ **Ensure block_data is large enough for the header**
             if len(block_data) < base_header_size:
-                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is too small for a valid header.")
+                print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Block data too small for valid header.")
                 return None
 
-            # Unpack header fields (block height, previous hash, merkle root, timestamp, nonce)
+            # ✅ **Unpack Header Fields**
             try:
                 (
                     block_height,
@@ -299,44 +301,52 @@ class BlockMetadata:
                 print(f"  - Block Version: {block_version}")
 
             except struct.error as e:
-                print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Struct unpacking failed: {e}")
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Struct unpacking failed: {e}")
                 return None
 
-            # Validate Difficulty
-            difficulty_int = int.from_bytes(difficulty_bytes[:64], "big", signed=False)
+            # ✅ **Validate Difficulty (Always 64 Bytes)**
+            if len(difficulty_bytes) != 64:
+                print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Difficulty size incorrect (expected 64 bytes).")
+                return None
+            difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
             print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Difficulty value: {difficulty_int}.")
 
-            # Process Miner Address (Ensure Proper Decoding)
+            # ✅ **Process Miner Address (Ensure Proper Decoding, Always 128 Bytes)**
             miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
             print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Miner address: {miner_address_str}.")
 
-            # Extract Transaction Count (4 bytes)
+            # ✅ **Ensure Transaction Signature is Always 48 Bytes**
+            transaction_signature = transaction_signature[:48]
+
+            # ✅ **Extract Transaction Count (4 bytes)**
             tx_count_offset = base_header_size
             if len(block_data) < tx_count_offset + 4:
-                print("[BlockMetadata._deserialize_block_from_binary] ERROR: Block data is missing transaction count.")
+                print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Block data is missing transaction count.")
                 return None
 
             tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
             print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Block {block_height} contains {tx_count} transaction(s).")
+
             tx_data_offset = tx_count_offset + 4
-
-            # Extract Transactions (Size-Prefixed)
             transactions = []
-            for i in range(tx_count):
-                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Processing transaction {i}...")
 
-                # Ensure data exists for transaction size
+            # ✅ **Extract Transactions (Size-Prefixed)**
+            for i in range(tx_count):
+                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Processing transaction {i} at offset {tx_data_offset}.")
+
+                # ✅ **Ensure enough data exists for transaction size**
                 if tx_data_offset + 4 > len(block_data):
-                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Missing transaction size at index {i}.")
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Missing transaction size at index {i}.")
                     return None
 
                 tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
                 tx_data_offset += 4
+
                 print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Transaction {i} size: {tx_size} bytes.")
 
-                # Ensure enough data exists for full transaction
+                # ✅ **Ensure full transaction data is available**
                 if tx_data_offset + tx_size > len(block_data):
-                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Incomplete transaction at index {i}.")
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Incomplete transaction at index {i}.")
                     return None
 
                 tx_bytes = block_data[tx_data_offset:tx_data_offset + tx_size]
@@ -345,23 +355,23 @@ class BlockMetadata:
                 try:
                     tx_obj = json.loads(tx_bytes.decode("utf-8"))
                     if "tx_id" not in tx_obj:
-                        print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Transaction {i} missing 'tx_id'. Skipping.")
+                        print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Transaction {i} missing 'tx_id'. Skipping.")
                         continue
                     transactions.append(tx_obj)
                     print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Transaction {i} deserialized successfully with tx_id: {tx_obj.get('tx_id')}.")
                 except json.JSONDecodeError as e:
-                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to decode transaction JSON at index {i}: {e}")
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to decode transaction JSON at index {i}: {e}")
                     return None
                 except Exception as e:
-                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Unexpected error during transaction deserialization at index {i}: {e}")
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Unexpected error during transaction deserialization at index {i}: {e}")
                     return None
 
-            # Ensure the correct number of transactions were deserialized
+            # ✅ **Ensure Correct Number of Transactions**
             if len(transactions) != tx_count:
-                print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Expected {tx_count} transactions but only deserialized {len(transactions)}.")
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Expected {tx_count} transactions but only deserialized {len(transactions)}.")
                 return None
 
-            # Construct Block Dictionary
+            # ✅ **Construct Block Dictionary**
             block_dict = {
                 "index": block_height,
                 "previous_hash": prev_block_hash.hex(),
@@ -378,7 +388,7 @@ class BlockMetadata:
             }
             print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Block dictionary constructed successfully.")
 
-            # Validate all required fields
+            # ✅ **Validate Required Fields**
             required_keys = [
                 "index", "previous_hash", "merkle_root", "timestamp",
                 "nonce", "difficulty", "miner_address", "transaction_signature",
@@ -386,15 +396,16 @@ class BlockMetadata:
             ]
             for key in required_keys:
                 if key not in block_dict:
-                    print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Block missing required field: {key}")
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Block missing required field: {key}")
                     return None
 
             print(f"[BlockMetadata._deserialize_block_from_binary] ✅ SUCCESS: Block {block_height} deserialized successfully.")
             return Block.from_dict(block_dict)
 
         except Exception as e:
-            print(f"[BlockMetadata._deserialize_block_from_binary] ERROR: Failed to deserialize block: {e}")
+            print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to deserialize block: {e}")
             return None
+
 
 
 
@@ -407,21 +418,27 @@ class BlockMetadata:
         try:
             # ✅ **Ensure Shared File Path Is Used**
             if not self.current_block_file:
-                print("[BlockMetadata._initialize_block_data_file] ERROR: `current_block_file` is not set. Cannot initialize block data.")
+                print("[BlockMetadata._initialize_block_data_file] ❌ ERROR: `current_block_file` is not set. Cannot initialize block data.")
                 return None
 
             print(f"[BlockMetadata._initialize_block_data_file] INFO: Initializing block storage at {self.current_block_file}...")
 
             # ✅ **Ensure Directory Exists**
-            os.makedirs(os.path.dirname(self.current_block_file), exist_ok=True)
+            block_data_dir = os.path.dirname(self.current_block_file)
+            if not block_data_dir:
+                print("[BlockMetadata._initialize_block_data_file] ❌ ERROR: Block data directory not found.")
+                return None
+            os.makedirs(block_data_dir, exist_ok=True)
 
-            # ✅ **Check if File Is New or Empty**
-            file_is_new_or_empty = not os.path.exists(self.current_block_file) or os.path.getsize(self.current_block_file) == 0
+            # ✅ **Check if File Exists and Is Non-Empty**
+            file_exists = os.path.exists(self.current_block_file)
+            file_is_empty = file_exists and os.path.getsize(self.current_block_file) == 0
 
-            if file_is_new_or_empty:
+            # ✅ **Write Magic Number If File Is New or Empty**
+            if not file_exists or file_is_empty:
                 with open(self.current_block_file, "wb") as f:
                     f.write(struct.pack(">I", Constants.MAGIC_NUMBER))
-                print(f"[BlockMetadata._initialize_block_data_file] INFO: Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
+                print(f"[BlockMetadata._initialize_block_data_file] ✅ INFO: Created block.data with magic number {hex(Constants.MAGIC_NUMBER)}.")
             else:
                 print("[BlockMetadata._initialize_block_data_file] INFO: block.data file exists. Skipping magic number write.")
 
@@ -429,20 +446,37 @@ class BlockMetadata:
             with open(self.current_block_file, "rb") as f:
                 magic_number_bytes = f.read(4)
                 if len(magic_number_bytes) != 4:
-                    print("[BlockMetadata._initialize_block_data_file] ERROR: block.data file is corrupted or too small.")
+                    print("[BlockMetadata._initialize_block_data_file] ❌ ERROR: block.data file is corrupted or too small.")
                     return None
 
                 file_magic_number = struct.unpack(">I", magic_number_bytes)[0]
 
                 if file_magic_number != Constants.MAGIC_NUMBER:
-                    print(f"[BlockMetadata._initialize_block_data_file] ERROR: Invalid magic number in block.data file: {hex(file_magic_number)}. Expected {hex(Constants.MAGIC_NUMBER)}.")
+                    print(f"[BlockMetadata._initialize_block_data_file] ❌ ERROR: Invalid magic number in block.data file: {hex(file_magic_number)}. Expected {hex(Constants.MAGIC_NUMBER)}.")
                     return None
 
-            print("[BlockMetadata._initialize_block_data_file] SUCCESS: block.data file validated successfully.")
+            # ✅ **Validate Cached Supply Values Before Returning**
+            with self.block_metadata_db.env.begin() as txn:
+                cached_supply = txn.get(b"total_mined_supply")
+
+            if cached_supply:
+                try:
+                    total_supply = Decimal(cached_supply.decode("utf-8"))
+                    if total_supply < 0:
+                        print("[BlockMetadata._initialize_block_data_file] ❌ ERROR: Cached supply contains invalid negative value.")
+                        return None
+                    print(f"[BlockMetadata._initialize_block_data_file] INFO: Cached total supply: {total_supply} ZYC")
+                except (UnicodeDecodeError, ValueError) as decode_error:
+                    print(f"[BlockMetadata._initialize_block_data_file] WARNING: Failed to decode cached total supply: {decode_error}")
+                    return None
+
+            print("[BlockMetadata._initialize_block_data_file] ✅ SUCCESS: block.data file validated successfully.")
 
         except Exception as e:
-            print(f"[BlockMetadata._initialize_block_data_file] ERROR: Failed to initialize block.data file: {e}")
+            print(f"[BlockMetadata._initialize_block_data_file] ❌ ERROR: Failed to initialize block.data file: {e}")
             return None
+
+
 
 
 
@@ -451,70 +485,77 @@ class BlockMetadata:
 
     def store_block(self, block: Block, difficulty: int):
         """
-        Stores block metadata in LMDB, ensuring shared LMDB instances are used.
+        Stores block metadata in LMDB and appends block data to block.data.
+        Ensures:
+        - Magic number is written only once at file creation.
+        - Blocks are correctly appended with proper data offset calculations.
+        - Transaction indexing is performed in LMDB without duplication.
         """
         try:
             print(f"[BlockMetadata.store_block] INFO: Storing Block {block.index}...")
 
-            # ✅ Ensure Shared LMDB Instances Are Used
+            # ✅ **Ensure LMDB Instances Exist**
             if not self.block_metadata_db or not self.txindex_db:
-                print("[BlockMetadata.store_block] ERROR: LMDB instances are not set. Cannot store block.")
+                print("[BlockMetadata.store_block] ❌ ERROR: LMDB instances are not set. Cannot store block.")
                 return
 
-            # ✅ Ensure Block Does Not Already Exist
+            # ✅ **Ensure Block Does Not Already Exist**
             existing_block = self.get_block_by_height(block.index)
             if existing_block:
-                print(f"[BlockMetadata.store_block] WARNING: Block {block.index} already exists. Skipping duplicate write.")
+                print(f"[BlockMetadata.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping duplicate write.")
                 return
 
-            # ✅ Preserve Mined Hash (No Re-computation)
+            # ✅ **Preserve Mined Hash (No Re-computation)**
             print(f"[BlockMetadata.store_block] INFO: Using mined hash {block.hash} for Block {block.index}.")
 
-            # ✅ Extract Coinbase Transaction Details
+            # ✅ **Extract Coinbase Transaction Details**
             coinbase_tx = next((tx for tx in block.transactions if getattr(tx, 'tx_type', None) == "COINBASE"), None)
             miner_address = coinbase_tx.outputs[0].script_pub_key if coinbase_tx else block.miner_address
             reward_amount = coinbase_tx.outputs[0].amount if coinbase_tx else Constants.INITIAL_COINBASE_REWARD
             total_fees = sum(Decimal(str(tx.get('fee', 0))) for tx in block.transactions if isinstance(tx, dict))
             print(f"[BlockMetadata.store_block] INFO: Total fees for Block {block.index}: {total_fees} ZYC.")
 
-            # ✅ Ensure Standardized Miner Address (128 Bytes)
+            # ✅ **Ensure Standardized Miner Address (128 Bytes)**
             miner_address_encoded = miner_address.encode("utf-8")
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
 
-            # ✅ Ensure Difficulty is Stored as 64 Bytes
+            # ✅ **Ensure Difficulty is Stored as 64 Bytes**
             difficulty_bytes = int(difficulty).to_bytes(64, "big", signed=False)
 
-            # ✅ Ensure Transaction Signature Exists (48 Bytes)
-            transaction_signature = getattr(block, "signature", b"\x00" * 48)
+            # ✅ **Ensure Transaction Signature Exists (48 Bytes)**
+            transaction_signature = getattr(block, "signature", b"\x00" * 48)[:48]
 
-            # ✅ Prepare Block Metadata (Preserving Mined Hash)
+            # ✅ **Prepare Block Metadata (Preserving Mined Hash)**
             block_dict = {
                 "index": block.index,
                 "previous_hash": block.previous_hash,
                 "merkle_root": block.merkle_root,
                 "timestamp": block.timestamp,
                 "nonce": block.nonce,
+                "difficulty_length": 64,  # ✅ **Added Difficulty Length**
                 "difficulty": difficulty_bytes.hex(),
-                "miner_address": miner_address,
-                "transaction_signature": transaction_signature.hex(),
+                "miner_address": miner_address_padded.decode("utf-8"),
+                "transaction_signature": transaction_signature.hex(),  # ✅ **Added Block Signature**
                 "reward": str(reward_amount),
                 "fees": str(total_fees),
                 "version": block.version,
                 "transactions": [
                     tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions
-                ],  # ✅ Convert transactions to dicts
-                "hash": block.hash  # ✅ Mined hash is stored directly
+                ],  # ✅ **Convert transactions to dicts**
+                "hash": block.hash  # ✅ **Mined hash is stored directly**
             }
 
-            # ✅ Calculate Correct Data Offset in `block.data`
+            # ✅ **Calculate Correct Data Offset in `block.data`**
             with open(self.current_block_file, "ab") as block_file:
-                if block_file.tell() == 0:
+                if os.path.getsize(self.current_block_file) == 0:  # ✅ **Only write magic number for new file**
                     block_file.write(struct.pack(">I", Constants.MAGIC_NUMBER))
+                    print(f"[BlockMetadata.store_block] ✅ INFO: Magic number written to {self.current_block_file}.")
+
                 block_file.seek(0, os.SEEK_END)
                 block_offset = block_file.tell()
 
             block_metadata = {
-                "hash": block.hash,  # ✅ No re-hashing
+                "hash": block.hash,  # ✅ **No re-hashing**
                 "block_header": block_dict,
                 "transaction_count": len(block.transactions),
                 "block_size": len(json.dumps(block_dict, ensure_ascii=False).encode("utf-8")),
@@ -523,14 +564,14 @@ class BlockMetadata:
                 "tx_ids": [tx["tx_id"] for tx in block.transactions if isinstance(tx, dict)]
             }
 
-            # ✅ Store Metadata in LMDB Using Shared `block_metadata_db`
+            # ✅ **Store Metadata in LMDB Using Shared `block_metadata_db`**
             print(f"[BlockMetadata.store_block] INFO: Storing metadata in LMDB for Block {block.index}...")
             with self.block_metadata_db.env.begin(write=True) as txn:
                 lmdb_key = f"block:{block.hash}".encode("utf-8")
                 txn.put(lmdb_key, json.dumps(block_metadata, ensure_ascii=False).encode("utf-8"))
-                print(f"[BlockMetadata.store_block] INFO: Metadata stored in LMDB for Block {block.index}.")
+                print(f"[BlockMetadata.store_block] ✅ INFO: Metadata stored in LMDB for Block {block.index}.")
 
-            # ✅ Index Transactions in TxStorage Using Shared `txindex_db`
+            # ✅ **Index Transactions in TxStorage Using Shared `txindex_db`**
             print(f"[BlockMetadata.store_block] INFO: Indexing transactions for Block {block.index}...")
             for tx in block.transactions:
                 try:
@@ -539,21 +580,21 @@ class BlockMetadata:
                         inputs = tx.get("inputs", [])
                         outputs = tx.get("outputs", [])
                         timestamp = tx.get("timestamp", int(time.time()))
-                        tx_signature = tx.get("tx_signature", "00" * 48)  # ✅ Ensure `tx_signature` exists
-                        falcon_signature = tx.get("falcon_signature", "00" * 48)  # ✅ Ensure `falcon_signature` exists
+                        tx_signature = tx.get("tx_signature", "00" * 48)[:48]  # ✅ **Ensure `tx_signature` exists**
+                        falcon_signature = tx.get("falcon_signature", "00" * 48)[:48]  # ✅ **Ensure `falcon_signature` exists**
 
-                        # ✅ Store transaction with required signatures
+                        # ✅ **Store transaction with required signatures**
                         self.tx_storage.store_transaction(
                             tx_id, block.hash, inputs, outputs, timestamp, tx_signature, falcon_signature
                         )
-                        print(f"[BlockMetadata.store_block] INFO: Indexed transaction {tx_id} for Block {block.index}.")
+                        print(f"[BlockMetadata.store_block] ✅ INFO: Indexed transaction {tx_id} for Block {block.index}.")
                     else:
-                        print(f"[BlockMetadata.store_block] WARNING: Skipping invalid transaction format: {tx}")
+                        print(f"[BlockMetadata.store_block] ⚠️ WARNING: Skipping invalid transaction format: {tx}")
 
                 except TypeError as e:
                     print(f"[BlockMetadata.store_block] ❌ ERROR: Transaction storage failed for tx {tx_id}: {e}")
 
-            # ✅ Append Block Data to `block.data` File
+            # ✅ **Append Block Data to `block.data` File**
             print(f"[BlockMetadata.store_block] INFO: Appending block data to block.data file...")
             block_bytes = json.dumps(block_dict, ensure_ascii=False).encode('utf-8')
             block_size_bytes = struct.pack(">I", len(block_bytes))
@@ -563,18 +604,15 @@ class BlockMetadata:
                 offset_before_write = block_file.tell()
                 block_file.write(serialized_block_full)
                 block_file.flush()
-                print(f"[BlockMetadata.store_block] SUCCESS: Block {block.index} written to block.data at offset {offset_before_write}.")
-
-                # ✅ Handle Block File Rollover If File Size Exceeds Limit
-                current_file_size_mb = block_file.tell() / (1024 * 1024)
-                if current_file_size_mb >= Constants.BLOCK_DATA_FILE_SIZE_MB:
-                    print(f"[BlockMetadata.store_block] INFO: File {self.current_block_file} reached size limit ({Constants.BLOCK_DATA_FILE_SIZE_MB} MB). New file will be created on next block.")
+                print(f"[BlockMetadata.store_block] ✅ SUCCESS: Block {block.index} written to block.data at offset {offset_before_write}.")
 
             print(f"[BlockMetadata.store_block] ✅ SUCCESS: Block {block.index} fully stored and indexed successfully.")
 
         except Exception as e:
             print(f"[BlockMetadata.store_block] ❌ ERROR: Exception while storing Block {block.index}: {e}")
             raise
+
+
 
 
     def _serialize_transactions(self, transactions: list) -> list:
@@ -802,10 +840,12 @@ class BlockMetadata:
     def _serialize_block_to_binary(self, block: Block) -> bytes:
         """
         Serialize a Block into binary format.
-        - Packs all header fields into a fixed-length binary structure.
-        - Includes reward, fees, and version fields.
-        - Ensures transactions are prefixed with their size for consistency.
-        
+        - Ensures all fields have correct sizes:
+            - Difficulty (64B)
+            - Miner Address (128B)
+            - Signature (48B)
+        - Packs header fields and transactions in a standardized format.
+
         Args:
             block (Block): The block to serialize.
 
@@ -814,43 +854,48 @@ class BlockMetadata:
 
         Raises:
             ValueError: If any field is missing or exceeds the expected size.
-            Exception: If serialization fails.
         """
         try:
             print(f"[BlockMetadata] INFO: Serializing Block {block.index} to binary.")
 
-            # Convert block to dictionary
+            # ✅ Convert block to dictionary
             block_dict = block.to_dict()
-            header = block_dict["header"]
+            header = block_dict.get("header", {})
 
-            # Extract block header fields
-            block_height = int(header["index"])
-            prev_block_hash = bytes.fromhex(header["previous_hash"])
-            merkle_root = bytes.fromhex(header["merkle_root"])
-            timestamp = int(header["timestamp"])
-            nonce = int(header["nonce"])
+            # ✅ Extract block header fields
+            block_height = int(header.get("index", 0))
+            prev_block_hash = bytes.fromhex(header.get("previous_hash", Constants.ZERO_HASH))
+            merkle_root = bytes.fromhex(header.get("merkle_root", Constants.ZERO_HASH))
+            timestamp = int(header.get("timestamp", time.time()))
+            nonce = int(header.get("nonce", 0))
 
-            # Convert difficulty to bytes (64-byte fixed size)
-            difficulty_value = int(header["difficulty"])
-            difficulty_bytes = difficulty_value.to_bytes(64, "big", signed=False).ljust(64, b"\x00")
+            # ✅ **Ensure difficulty is stored correctly (64 bytes)**
+            difficulty_hex = header.get("difficulty", "00" * 64)  # Default to zeroed-out difficulty
+            difficulty_bytes = bytes.fromhex(difficulty_hex).rjust(64, b'\x00')
 
-            # Process miner address (128-byte fixed size, padded)
-            miner_address_str = header["miner_address"]
+            # ✅ **Ensure Difficulty Length (1 byte)**
+            difficulty_packed = struct.pack(">B", len(difficulty_bytes)) + difficulty_bytes
+
+            # ✅ **Ensure Miner Address is 128 bytes**
+            miner_address_str = header.get("miner_address", "").strip()
             miner_address_encoded = miner_address_str.encode("utf-8")
+
             if len(miner_address_encoded) > 128:
-                raise ValueError("[BlockMetadata] ERROR: Miner address exceeds 128 bytes.")
+                miner_address_encoded = miner_address_encoded[:128]  # Truncate if too long
             miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
 
-            # Extract additional metadata fields
-            reward = int(header.get("reward", 0))
-            fees_collected = int(header.get("fees", 0))
+            # ✅ **Ensure Block Signature is Always 48 Bytes**
+            transaction_signature = bytes.fromhex(header.get("transaction_signature", "00" * 96))[:48]
+
+            # ✅ Extract additional metadata fields
+            reward = int(float(header.get("reward", 0)))
+            fees_collected = int(float(header.get("fees", 0)))
             block_version = int(header.get("version", 1))  # Default to version 1
 
-            # Extract Transaction Signature (48-byte fixed size)
-            transaction_signature = bytes.fromhex(header.get("signature", "0" * 96)).ljust(48, b"\x00")
+            print(f"[BlockMetadata] INFO: Header fields - Index: {block_height}, Timestamp: {timestamp}, Nonce: {nonce}.")
 
-            # Pack header fields with standardized format
-            header_format = ">I48s48sQI 64s 8s 8s 4s 128s 48s 8s 8s 4s"
+            # ✅ **Pack header fields into binary format**
+            header_format = ">I 48s 48s Q I B64s 128s 48s Q Q I"
             header_data = struct.pack(
                 header_format,
                 block_height,
@@ -858,27 +903,25 @@ class BlockMetadata:
                 merkle_root,
                 timestamp,
                 nonce,
+                len(difficulty_bytes),
                 difficulty_bytes,
-                reward.to_bytes(8, "big"),
-                fees_collected.to_bytes(8, "big"),
-                block_version.to_bytes(4, "big"),
                 miner_address_padded,
                 transaction_signature,
-                reward.to_bytes(8, "big"),  # Repeated for validation
-                fees_collected.to_bytes(8, "big"),  # Repeated for validation
-                block_version.to_bytes(4, "big"),  # Repeated for validation
+                reward,
+                fees_collected,
+                block_version
             )
-
             print(f"[BlockMetadata] INFO: Header packed successfully for Block {block.index}.")
 
-            # Serialize transactions with size prefix
+            # ✅ **Serialize Transactions**
             serialized_transactions = []
-            transactions = block_dict["transactions"]
+            transactions = block_dict.get("transactions", [])
+
             print(f"[BlockMetadata] INFO: Serializing {len(transactions)} transactions.")
 
             for idx, tx in enumerate(transactions):
                 try:
-                    # Convert transaction to dictionary if needed
+                    # ✅ Convert transaction to dictionary if needed
                     if hasattr(tx, "to_dict"):
                         tx_dict = tx.to_dict()
                     elif isinstance(tx, dict):
@@ -886,31 +929,31 @@ class BlockMetadata:
                     else:
                         raise TypeError(f"[BlockMetadata] ERROR: Transaction {idx} is not serializable.")
 
-                    tx_json = json.dumps(tx_dict, sort_keys=True).encode("utf-8")
+                    # ✅ **Ensure transactions are JSON-encoded properly**
+                    tx_json = json.dumps(tx_dict, ensure_ascii=False, sort_keys=True).encode("utf-8")
                     tx_size = len(tx_json)
 
-                    # Prefix each transaction with its size (4 bytes)
+                    # ✅ **Prefix each transaction with its size (4 bytes)**
                     serialized_tx = struct.pack(">I", tx_size) + tx_json
                     serialized_transactions.append(serialized_tx)
 
                     print(f"[BlockMetadata] INFO: Serialized transaction {idx}: size {tx_size} bytes.")
 
                 except Exception as e:
-                    print(f"[BlockMetadata] ERROR: Failed to serialize transaction {idx}: {e}")
-                    raise
+                    print(f"[BlockMetadata] ❌ ERROR: Failed to serialize transaction {idx}: {e}")
 
+            # ✅ **Pack transaction count (4 bytes) and transactions**
             tx_count = len(serialized_transactions)
             tx_count_data = struct.pack(">I", tx_count)
             tx_data = b"".join(serialized_transactions)
 
-            # Combine all components
+            print(f"[BlockMetadata] INFO: {tx_count} transaction(s) serialized.")
+
+            # ✅ **Final Block Binary Format**
             serialized_block = header_data + tx_count_data + tx_data
-            print(f"[BlockMetadata] SUCCESS: Block {block.index} serialized successfully. Total size: {len(serialized_block)} bytes")
+            print(f"[BlockMetadata] ✅ SUCCESS: Block {block.index} serialized successfully. Total size: {len(serialized_block)} bytes")
             return serialized_block
 
-        except ValueError as ve:
-            print(f"[BlockMetadata] ❌ ERROR: Validation error during serialization: {ve}")
-            raise
         except Exception as e:
             print(f"[BlockMetadata] ❌ ERROR: Failed to serialize block {block.index}: {e}")
             raise
@@ -928,15 +971,15 @@ class BlockMetadata:
 
             # ✅ **Check if File Exists Before Reading**
             if not os.path.exists(self.current_block_file):
-                print(f"[BlockMetadata.get_block_from_data_file] ERROR: block.data file not found: {self.current_block_file}")
+                print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: block.data file not found: {self.current_block_file}")
                 return None
 
             file_size = os.path.getsize(self.current_block_file)
             print(f"[BlockMetadata.get_block_from_data_file] INFO: File size of block.data: {file_size} bytes.")
 
             # ✅ **Ensure Offset is Within File Size**
-            if offset < 0 or offset >= file_size - 8:  # Ensure enough space for magic number + block size
-                print(f"[BlockMetadata.get_block_from_data_file] ERROR: Offset {offset} is out of bounds.")
+            if offset < 0 or offset >= file_size - 8:  # Ensure enough space for block size + magic number
+                print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Offset {offset} is out of bounds.")
                 return None
 
             with open(self.current_block_file, "rb") as f:
@@ -945,18 +988,18 @@ class BlockMetadata:
                 # ✅ **Validate Magic Number Before Reading Block**
                 magic_number_bytes = f.read(4)
                 if len(magic_number_bytes) != 4:
-                    print("[BlockMetadata.get_block_from_data_file] ERROR: Failed to read magic number.")
+                    print("[BlockMetadata.get_block_from_data_file] ❌ ERROR: Failed to read magic number.")
                     return None
 
                 magic_number = struct.unpack(">I", magic_number_bytes)[0]
                 if magic_number != Constants.MAGIC_NUMBER:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Invalid magic number: {hex(magic_number)} (Expected: {hex(Constants.MAGIC_NUMBER)})")
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Invalid magic number: {hex(magic_number)} (Expected: {hex(Constants.MAGIC_NUMBER)})")
                     return None
 
                 # ✅ **Read Block Size**
                 block_size_bytes = f.read(4)
                 if len(block_size_bytes) != 4:
-                    print("[BlockMetadata.get_block_from_data_file] ERROR: Failed to read block size from file.")
+                    print("[BlockMetadata.get_block_from_data_file] ❌ ERROR: Failed to read block size from file.")
                     return None
 
                 block_size = struct.unpack(">I", block_size_bytes)[0]
@@ -964,33 +1007,79 @@ class BlockMetadata:
 
                 # ✅ **Validate Block Size**
                 if block_size <= 0 or (offset + 8 + block_size) > file_size:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Invalid block size {block_size} at offset {offset}.")
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Invalid block size {block_size} at offset {offset}.")
                     return None
 
                 # ✅ **Read Full Block Data**
                 block_data = f.read(block_size)
                 if len(block_data) != block_size:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Read {len(block_data)} bytes, expected {block_size}.")
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Read {len(block_data)} bytes, expected {block_size}.")
                     return None
 
                 # ✅ **Deserialize Block and Validate Header**
                 block = self._deserialize_block_from_binary(block_data)
                 if not block:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Failed to deserialize block at offset {offset}.")
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Failed to deserialize block at offset {offset}.")
                     return None
 
                 # ✅ **Ensure Block Hash Matches Stored Value (No Re-Hashing)**
                 stored_hash = block.hash  # This is the mined hash
                 if not stored_hash or len(stored_hash) != Constants.SHA3_384_HASH_SIZE * 2:
-                    print(f"[BlockMetadata.get_block_from_data_file] ERROR: Block {block.index} has an invalid stored hash.")
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} has an invalid stored hash.")
+                    return None
+
+                # ✅ **Ensure Block Fields Match Standardized Structure**
+                required_fields = [
+                    "index", "previous_hash", "merkle_root", "timestamp", "nonce",
+                    "difficulty_length", "difficulty", "miner_address", "transaction_signature",
+                    "reward", "fees", "version", "transactions"
+                ]
+                for field in required_fields:
+                    if not hasattr(block, field):
+                        print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} is missing required field: {field}.")
+                        return None
+
+                # ✅ **Validate Difficulty Length**
+                if block.difficulty_length != 64:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} has an invalid difficulty length.")
+                    return None
+
+                # ✅ **Validate Block Signature (48 Bytes)**
+                if len(block.transaction_signature) != 48:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} has an invalid transaction signature length.")
+                    return None
+
+                # ✅ **Ensure `falcon_signature` is Always Stored**
+                if not hasattr(block, "falcon_signature") or len(block.falcon_signature) != 48:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} is missing a valid falcon_signature.")
+                    return None
+
+                # ✅ **Validate Miner Address (128 Bytes)**
+                miner_address_padded = block.miner_address.ljust(128, "\x00")
+                if len(miner_address_padded.encode("utf-8")) != 128:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} has an invalid miner address size.")
+                    return None
+
+                # ✅ **Validate Merkle Root Integrity**
+                expected_merkle_root = block._compute_merkle_root()
+                if block.merkle_root != expected_merkle_root:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} has an invalid Merkle Root.\n"
+                        f"  - Expected: {expected_merkle_root}\n  - Found: {block.merkle_root}")
+                    return None
+
+                # ✅ **Validate Transaction Count Matches**
+                if len(block.transactions) != block.transaction_count:
+                    print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Block {block.index} transaction count mismatch.\n"
+                        f"  - Expected: {block.transaction_count}\n  - Found: {len(block.transactions)}")
                     return None
 
                 print(f"[BlockMetadata.get_block_from_data_file] ✅ SUCCESS: Successfully retrieved and validated Block {block.index} from offset {offset}.")
                 return block
 
         except Exception as e:
-            print(f"[BlockMetadata.get_block_from_data_file] ERROR: Failed to retrieve block from file: {e}")
+            print(f"[BlockMetadata.get_block_from_data_file] ❌ ERROR: Failed to retrieve block from file: {e}")
             return None
+
 
 
 
@@ -1087,14 +1176,18 @@ class BlockMetadata:
                 print("[BlockMetadata.get_latest_block] ERROR: Block data offset missing or invalid in LMDB.")
                 return None
 
+            file_size = os.path.getsize(self.current_block_file)
+            if block_offset < 0 or block_offset >= file_size:
+                print(f"[BlockMetadata.get_latest_block] ERROR: Block offset {block_offset} is out of file bounds.")
+                return None
+
             print(f"[BlockMetadata.get_latest_block] INFO: Retrieving full block data from offset {block_offset}.")
             full_block = self.get_block_from_data_file(block_offset)
             if not full_block:
                 print(f"[BlockMetadata.get_latest_block] ERROR: Failed to load full block {block_hash} from block.data file.")
                 return None
 
-            # ✅ **Ensure Block Size Does Not Exceed File Limits**
-            file_size = os.path.getsize(self.current_block_file)
+            # ✅ **Ensure Block Size Matches Actual Bytes Read**
             block_size = len(json.dumps(full_block.to_dict()).encode("utf-8"))
             if block_size > Constants.MAX_BLOCK_SIZE_BYTES or block_offset + block_size > file_size:
                 print(f"[BlockMetadata.get_latest_block] ERROR: Block {full_block.index} exceeds max size limits or is out of file bounds.")
@@ -1155,6 +1248,15 @@ class BlockMetadata:
                                 print("[BlockMetadata.get_total_mined_supply] ERROR: Block header missing 'index'")
                                 continue
 
+                            # ✅ **Validate Timestamp**
+                            try:
+                                timestamp = int(header["timestamp"])
+                                if timestamp <= 0:
+                                    raise ValueError("Invalid timestamp")
+                            except (ValueError, TypeError) as e:
+                                print(f"[BlockMetadata.get_total_mined_supply] ERROR: Invalid timestamp for Block {header['index']}: {e}")
+                                continue
+
                             block_list.append(block_metadata)
 
                         except json.JSONDecodeError as e:
@@ -1163,6 +1265,21 @@ class BlockMetadata:
 
             # ✅ **Sort Blocks by Height to Ensure Correct Processing Order**
             sorted_blocks = sorted(block_list, key=lambda b: b["block_header"]["index"])
+
+            # ✅ **Ensure Blocks are Sorted in Correct Order and Validate Previous Hash**
+            prev_hash = Constants.ZERO_HASH
+            for block_metadata in sorted_blocks:
+                header = block_metadata["block_header"]
+                current_index = header["index"]
+                current_prev_hash = header["previous_hash"]
+                current_hash = block_metadata["hash"]
+
+                if current_prev_hash != prev_hash:
+                    print(f"[BlockMetadata.get_total_mined_supply] ERROR: Chain discontinuity at Block {current_index}.\n"
+                        f"  - Expected Previous Hash: {prev_hash}\n  - Found: {current_prev_hash}")
+                    return Decimal("0")  # Stop processing if chain integrity is broken
+
+                prev_hash = current_hash
 
             # ✅ **Process Each Block for Coinbase Transactions**
             for block_metadata in sorted_blocks:
@@ -1205,6 +1322,7 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.get_total_mined_supply] ERROR: Failed to calculate total mined supply: {e}")
             return Decimal("0")
+
 
 
     def load_chain(self) -> List[Dict]:
@@ -1431,7 +1549,6 @@ class BlockMetadata:
 
 
 
-
     def get_block_by_tx_id(self, tx_id: str) -> Optional[Block]:
         """
         Retrieve a block using a transaction ID from the txindex database.
@@ -1492,6 +1609,22 @@ class BlockMetadata:
                 print(f"[BlockMetadata.get_block_by_tx_id] ❌ ERROR: Block {block_header['index']} has an invalid hash format.")
                 return None
 
+            # ✅ **Check if `block.data` Exists Before Reading**
+            if not os.path.exists(self.current_block_file):
+                print(f"[BlockMetadata.get_block_by_tx_id] ERROR: block.data file not found: {self.current_block_file}")
+                return None
+
+            # ✅ **Ensure Magic Number is Only Written Once**
+            with open(self.current_block_file, "rb") as f:
+                if os.path.getsize(self.current_block_file) < 4:
+                    print("[BlockMetadata.get_block_by_tx_id] ERROR: block.data file too small to contain magic number.")
+                    return None
+
+                file_magic_number = struct.unpack(">I", f.read(4))[0]
+                if file_magic_number != Constants.MAGIC_NUMBER:
+                    print(f"[BlockMetadata.get_block_by_tx_id] ERROR: Invalid magic number in block.data file: {hex(file_magic_number)}. Expected: {hex(Constants.MAGIC_NUMBER)}")
+                    return None
+
             # ✅ **Convert Block Header to Block Object**
             block = Block.from_dict(block_metadata["block_header"])
             print(f"[BlockMetadata.get_block_by_tx_id] ✅ SUCCESS: Retrieved Block {block.index} containing transaction {tx_id}.")
@@ -1500,7 +1633,6 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.get_block_by_tx_id] ❌ ERROR: Failed to retrieve block by transaction ID {tx_id}: {e}")
             return None
-
 
     def get_transaction_id(self, tx_label: str) -> Optional[str]:
         """

@@ -177,6 +177,57 @@ class UTXOStorage:
             print(f"[UTXOStorage._deserialize_utxo] ERROR: Failed to deserialize UTXO: {e}")
             raise
 
+    def store_utxo(self, tx_id: bytes, output_index: int, amount: Decimal, script_pub_key: bytes, is_locked: bool, block_height: int) -> bool:
+        """
+        Stores a UTXO in `utxo.lmdb` with proper validation and binary serialization.
+
+        Args:
+            tx_id (bytes): Transaction ID (48 bytes, SHA3-384 hash).
+            output_index (int): The index of the output in the transaction.
+            amount (Decimal): The amount in smallest units.
+            script_pub_key (bytes): The locking script (max 512B).
+            is_locked (bool): Whether the UTXO is locked.
+            block_height (int): The block height in which the UTXO was created.
+
+        Returns:
+            bool: True if successfully stored, False otherwise.
+        """
+        try:
+            # ✅ **Ensure Transaction ID is Exactly 48 Bytes**
+            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
+                raise ValueError(f"[UTXOStorage.store_utxo] ERROR: Invalid tx_id length. Expected 48B, got {len(tx_id)}B.")
+
+            # ✅ **Ensure ScriptPubKey is Within Allowed Length**
+            script_length = len(script_pub_key)
+            if script_length > 512:
+                raise ValueError(f"[UTXOStorage.store_utxo] ERROR: script_pub_key too long. Max 512B, got {script_length}B.")
+
+            # ✅ **Serialize UTXO in Binary Format**
+            utxo_data = (
+                tx_id +  # 48 bytes (Transaction ID)
+                struct.pack(">I", output_index) +  # 4 bytes (Output Index)
+                struct.pack(">Q", int(amount)) +  # 8 bytes (Amount in smallest unit)
+                struct.pack(">H", script_length) +  # 2 bytes (Script Length)
+                script_pub_key +  # Variable length (Locking Script)
+                struct.pack(">B", int(is_locked)) +  # 1 byte (Locked Flag)
+                struct.pack(">I", block_height) +  # 4 bytes (Block Height)
+                struct.pack(">B", 0)  # 1 byte (Spent Status - 0 = Unspent)
+            )
+
+            # ✅ **Generate Binary UTXO Key**
+            utxo_key = b"utxo:" + tx_id + struct.pack(">I", output_index)
+
+            # ✅ **Store UTXO in LMDB**
+            with self.utxo_db.env.begin(write=True) as txn:
+                txn.put(utxo_key, utxo_data)
+
+            print(f"[UTXOStorage.store_utxo] ✅ SUCCESS: Stored UTXO {tx_id.hex()} at index {output_index}, amount {amount}.")
+            return True
+
+        except Exception as e:
+            print(f"[UTXOStorage.store_utxo] ❌ ERROR: Failed to store UTXO {tx_id.hex()} at index {output_index}: {e}")
+            return False
+
 
 
 
@@ -205,49 +256,57 @@ class UTXOStorage:
 
     def update_utxos(self, block) -> None:
         """
-        Update UTXO databases (utxo.lmdb & utxo_history.lmdb) for the given block using binary format.
+        Update UTXO databases (`utxo.lmdb` & `utxo_history.lmdb`) for the given block.
 
         Steps:
-        1. Remove spent UTXOs and archive them in `utxo_history.lmdb`.
-        2. Add new UTXOs from block transactions.
+        1. Validate and remove spent UTXOs, archiving them in `utxo_history.lmdb`.
+        2. Validate and add new UTXOs from block transactions.
         """
         try:
-            print(f"[UTXOStorage.update_utxos] INFO: Updating UTXOs for Block {block.index}...")
+            print(f"[UTXOManager.update_utxos] INFO: Updating UTXOs for Block {block.index}...")
 
             with self._db_lock:
                 with self.utxo_db.env.begin(write=True) as utxo_txn, \
-                     self.utxo_history_db.env.begin(write=True) as history_txn:
+                    self.utxo_history_db.env.begin(write=True) as history_txn:
 
-                    # Step 1: Remove spent UTXOs
+                    # ✅ **Step 1: Remove Spent UTXOs**
                     for tx in block.transactions:
                         if hasattr(tx, "inputs"):
                             for tx_input in tx.inputs:
-                                utxo_key = b"utxo:" + tx_input.tx_id + struct.pack(">I", tx_input.output_index)
+                                utxo_key = b"utxo:" + bytes.fromhex(tx_input.tx_id) + struct.pack(">I", tx_input.output_index)
                                 spent_utxo = utxo_txn.get(utxo_key)
-                                if spent_utxo:
-                                    # Archive spent UTXO with timestamp in utxo_history.lmdb
-                                    history_key = (b"spent_utxo:" + tx_input.tx_id +
-                                                   struct.pack(">I", tx_input.output_index) +
-                                                   struct.pack(">I", block.timestamp))
-                                    history_txn.put(history_key, spent_utxo)
-                                    # Remove spent UTXO from utxo.lmdb
-                                    utxo_txn.delete(utxo_key)
-                                    print(f"[UTXOStorage.update_utxos] INFO: Removed spent UTXO {tx_input.tx_id.hex()}:{tx_input.output_index}.")
-                                else:
-                                    print(f"[UTXOStorage.update_utxos] WARNING: Spent UTXO {tx_input.tx_id.hex()}:{tx_input.output_index} not found.")
 
-                    # Step 2: Add new UTXOs
+                                if spent_utxo:
+                                    # ✅ **Move Spent UTXO to History**
+                                    history_key = (b"spent_utxo:" + bytes.fromhex(tx_input.tx_id) +
+                                                struct.pack(">I", tx_input.output_index) +
+                                                struct.pack(">I", block.timestamp))
+                                    history_txn.put(history_key, spent_utxo)
+
+                                    # ✅ **Delete Spent UTXO**
+                                    utxo_txn.delete(utxo_key)
+                                    print(f"[UTXOManager.update_utxos] ✅ INFO: Spent UTXO {tx_input.tx_id}:{tx_input.output_index} archived.")
+
+                                else:
+                                    print(f"[UTXOManager.update_utxos] ⚠️ WARNING: Spent UTXO {tx_input.tx_id}:{tx_input.output_index} not found.")
+
+                    # ✅ **Step 2: Add New UTXOs**
                     for tx in block.transactions:
                         for idx, output in enumerate(tx.outputs):
-                            # Convert dictionary outputs to TransactionOut objects if necessary.
+                            # ✅ **Validate Required Fields in UTXO**
+                            if not all(hasattr(output, attr) for attr in ["amount", "script_pub_key", "locked"]):
+                                print(f"[UTXOManager.update_utxos] ❌ ERROR: Invalid UTXO format in transaction {tx.tx_id}, skipping.")
+                                continue
+
+                            # ✅ **Convert Dictionary Outputs to `TransactionOut` Objects**
                             if isinstance(output, dict):
                                 try:
                                     output = TransactionOut.from_dict(output)
                                 except Exception as e:
-                                    print(f"[UTXOStorage.update_utxos] ERROR: Failed to convert output at index {idx}: {e}")
+                                    print(f"[UTXOManager.update_utxos] ❌ ERROR: Failed to convert output at index {idx}: {e}")
                                     continue
 
-                            # Serialize output data into binary format
+                            # ✅ **Serialize UTXO in Binary Format**
                             serialized_utxo = self._serialize_utxo(
                                 tx_id=tx.tx_id,
                                 output_index=idx,
@@ -257,20 +316,21 @@ class UTXOStorage:
                                 block_height=block.index,
                                 spent_status=False
                             )
-                            utxo_key = b"utxo:" + tx.tx_id + struct.pack(">I", idx)
+                            utxo_key = b"utxo:" + bytes.fromhex(tx.tx_id) + struct.pack(">I", idx)
                             utxo_txn.put(utxo_key, serialized_utxo)
 
-                            # Store new UTXO in utxo_history.lmdb
-                            history_key = (b"new_utxo:" + tx.tx_id +
-                                           struct.pack(">I", idx) +
-                                           struct.pack(">I", block.timestamp))
+                            # ✅ **Store New UTXO in `utxo_history.lmdb`**
+                            history_key = (b"new_utxo:" + bytes.fromhex(tx.tx_id) +
+                                        struct.pack(">I", idx) +
+                                        struct.pack(">I", block.timestamp))
                             history_txn.put(history_key, serialized_utxo)
 
-                            print(f"[UTXOStorage.update_utxos] INFO: Added new UTXO {tx.tx_id.hex()}:{idx}, amount {output.amount}.")
+                            print(f"[UTXOManager.update_utxos] ✅ INFO: Added new UTXO {tx.tx_id}:{idx}, amount {output.amount}.")
 
-            print(f"[UTXOStorage.update_utxos] SUCCESS: UTXOs updated successfully for Block {block.index}.")
+            print(f"[UTXOManager.update_utxos] ✅ SUCCESS: UTXOs updated successfully for Block {block.index}.")
+
         except Exception as e:
-            print(f"[UTXOStorage.update_utxos] ERROR: Failed updating UTXOs: {e}")
+            print(f"[UTXOManager.update_utxos] ❌ ERROR: Failed updating UTXOs: {e}")
             raise
 
 

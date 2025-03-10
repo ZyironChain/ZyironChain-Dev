@@ -147,8 +147,9 @@ class Blockchain:
         Add a block to the blockchain with full validation.
         
         - Validates the block before adding (except for genesis block).
+        - Ensures correct structure of transactions and UTXOs.
         - Updates storage modules (block metadata, transactions, and UTXOs).
-        - Ensures metadata integrity and correct versioning.
+        - Prevents adding corrupted or incompatible blocks.
         
         :param block: The block to add.
         :param is_genesis: Whether the block is the genesis block.
@@ -157,51 +158,67 @@ class Blockchain:
         try:
             print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
-            # Skip validation for the Genesis block
+            # ✅ **Validate block structure before adding (skip validation for Genesis)**
             if not is_genesis:
                 if not self.validate_block(block):
                     print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
                     return False
 
-            # Check block version compatibility
+            # ✅ **Check block version compatibility**
             if block.version != Constants.VERSION:
                 print(f"[Blockchain.add_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
                 return False  # Prevent adding incompatible blocks
 
-            # Ensure outputs are TransactionOut objects
+            # ✅ **Ensure outputs are properly formatted as `TransactionOut` objects**
             for tx in block.transactions:
-                tx.outputs = [
-                    TransactionOut(**output) if isinstance(output, dict) else output
-                    for output in tx.outputs
-                ]
-
-            # Store block metadata and full block data
-            self.block_metadata.store_block(block, block.difficulty)
-            print(f"[Blockchain.add_block] INFO: Block {block.index} metadata stored successfully.")
-
-            # Index transactions from the block
-            for tx in block.transactions:
-                if isinstance(tx, dict):
-                    tx_id = tx.get("tx_id")
+                if hasattr(tx, "outputs"):
+                    tx.outputs = [
+                        TransactionOut(**output) if isinstance(output, dict) else output
+                        for output in tx.outputs
+                    ]
                 else:
-                    tx_id = getattr(tx, "tx_id", None)
+                    print(f"[Blockchain.add_block] ❌ ERROR: Transaction in Block {block.index} is missing outputs. Skipping.")
+                    return False
 
+            # ✅ **Ensure `tx_id` exists before indexing transactions**
+            for tx in block.transactions:
+                tx_id = tx.tx_id if hasattr(tx, "tx_id") else tx.get("tx_id")
                 if not tx_id:
-                    print(f"[Blockchain.add_block] ❌ ERROR: Missing tx_id in transaction. Skipping transaction in Block {block.index}.")
-                    continue
+                    print(f"[Blockchain.add_block] ❌ ERROR: Missing `tx_id` in transaction. Skipping transaction in Block {block.index}.")
+                    continue  # Skip this transaction
 
-                block_hash = block.hash
-                inputs = self._extract_inputs(tx)
-                outputs = self._extract_outputs(tx)
-                timestamp = getattr(tx, "timestamp", int(time.time()))
-                self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
-                print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
+            # ✅ **Store block metadata and full block data**
+            self.block_metadata.store_block(block, block.difficulty)
+            print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} metadata stored successfully.")
 
-            # Update UTXO storage with new UTXOs from the block
+            # ✅ **Index transactions from the block**
+            for tx in block.transactions:
+                try:
+                    tx_id = tx.tx_id if hasattr(tx, "tx_id") else tx.get("tx_id")
+                    if not tx_id:
+                        print(f"[Blockchain.add_block] ❌ ERROR: Transaction in Block {block.index} is missing `tx_id`. Skipping.")
+                        continue  # Skip invalid transaction
+
+                    block_hash = block.hash
+                    inputs = self._extract_inputs(tx)
+                    outputs = self._extract_outputs(tx)
+                    timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
+
+                    self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
+                    print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
+
+                except Exception as e:
+                    print(f"[Blockchain.add_block] ❌ ERROR: Failed to index transaction in Block {block.index}: {e}")
+
+            # ✅ **Validate and update UTXO storage**
+            if not self.utxo_storage.validate_utxos(block):
+                print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} has invalid UTXOs. Aborting addition.")
+                return False  # Prevent corrupt UTXO storage
+
             self.utxo_storage.update_utxos(block)
             print(f"[Blockchain.add_block] ✅ INFO: UTXO database updated successfully.")
 
-            # Append block to in-memory chain
+            # ✅ **Append block to in-memory chain**
             self.chain.append(block)
             print(f"[Blockchain.add_block] ✅ SUCCESS: Block {block.index} added to the chain.")
             return True

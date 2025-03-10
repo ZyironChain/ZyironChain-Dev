@@ -133,8 +133,9 @@ class Block:
         header_bytes = header_str.encode("utf-8")
         block_hash = Hashing.hash(header_bytes).hex()
         
-        # ✅ REMOVED EXCESSIVE PRINTING
+        # ✅ Removed print statement to avoid excessive logging
         return block_hash
+
 
 
 
@@ -232,6 +233,7 @@ class Block:
 
 
 
+
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
         print("[Block.from_dict] Reconstructing block from dict.")
@@ -277,16 +279,11 @@ class Block:
         block.fees = data["header"].get("fees", 0)
         block.version = data["header"].get("version", 1)  # Default version
 
-        # ✅ Ensure Hash Consistency
+        # ✅ Ensure Hash Consistency (Preserve Mined Hash)
         block.hash = data.get("hash", block.calculate_hash())
 
         print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
         return block
-
-
-
-
-
 
 
 

@@ -11,6 +11,13 @@ from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.deserializer import Deserializer
 
+import hashlib
+import struct
+import time
+from decimal import Decimal
+from typing import Dict
+from Zyiron_Chain.transactions.txout import TransactionOut
+
 class CoinbaseTx:
     """
     Represents a block reward (coinbase) transaction.
@@ -36,22 +43,21 @@ class CoinbaseTx:
         # Coinbase transactions have **no inputs**
         self.inputs = []
 
-        # Define outputs (miner reward)
-        # Notice that each output is just a dict, so this is JSON-serializable.
+        # ✅ FIX: Ensure correct output format
         self.outputs = [{
-            "address": miner_address,
+            "script_pub_key": miner_address,  # ✅ FIXED: Changed from 'address' to 'script_pub_key'
             "amount": float(self.reward),
-            "script_pub_key": miner_address
+            "locked": False  # Added default locked state
         }]
 
         # Define transaction type and fee
         self.type = "COINBASE"
         self.fee = Decimal("0")
 
-        # Initialize an optional metadata field (to avoid KeyErrors if not set externally).
+        # ✅ FIX: Ensure metadata is always initialized
         self.metadata = {}
 
-        # Estimate transaction size
+        # ✅ FIX: Improved transaction size estimation
         self.size = self._estimate_size()
         print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
 
@@ -73,11 +79,9 @@ class CoinbaseTx:
         Generate a unique transaction ID using single SHA3-384 hashing.
         Uses a prefix from Constants if available.
         """
-        # Attempt to get a prefix from TRANSACTION_MEMPOOL_MAP for COINBASE
         prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get("COINBASE", {}).get("prefixes", [])
         prefix = prefixes[0] if prefixes else "COINBASE-"
 
-        # Construct the data string
         tx_data = f"{prefix}{self.block_height}-{self.timestamp}-{self.miner_address}-{self.reward}"
         tx_id = hashlib.sha3_384(tx_data.encode()).hexdigest()
 
@@ -86,86 +90,78 @@ class CoinbaseTx:
 
     def _estimate_size(self) -> int:
         """
-        Estimate the transaction size in bytes.
+        Improved size estimation using struct.pack().
         """
-        temp_data = {
+        try:
+            header_size = struct.calcsize(">I 48s Q")  # block_height, tx_id, timestamp
+            outputs_size = sum(struct.calcsize(">d 128s") for _ in self.outputs)  # Each output: amount (double), script_pub_key (128 bytes)
+            estimated_size = header_size + outputs_size
+            return estimated_size
+        except Exception as e:
+            print(f"[CoinbaseTx._estimate_size] ERROR: Failed to estimate size: {e}")
+            return 0
+
+    def to_dict(self) -> Dict:
+        """
+        Serialize the CoinbaseTx to a dictionary.
+        """
+        print(f"[CoinbaseTx.to_dict] Serializing CoinbaseTx (tx_id: {self.tx_id})")
+
+        return {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
             "reward": str(self.reward),
             "inputs": self.inputs,
-            "outputs": self.outputs,
+            "outputs": [
+                out.to_dict() if isinstance(out, TransactionOut) else {
+                    "script_pub_key": out["script_pub_key"],  # ✅ FIXED: Ensure valid output structure
+                    "amount": str(out["amount"]),  # ✅ Ensure `amount` remains a string for JSON compatibility
+                    "locked": out.get("locked", False)
+                } for out in self.outputs
+            ],
             "timestamp": self.timestamp,
             "type": self.type,
-        }
-        return len(str(temp_data))
-
-    def to_dict(self) -> Dict:
-        """
-        Serialize the CoinbaseTx to a dictionary.
-        Includes all fields, including metadata, so everything is JSON-serializable.
-        """
-        print(f"[CoinbaseTx.to_dict] Serializing CoinbaseTx (tx_id: {self.tx_id})")
-        return {
-            "tx_id": self.tx_id,
-            "block_height": self.block_height,
-            "miner_address": self.miner_address,
-            "reward": str(self.reward),      # Convert Decimal to string for serialization
-            "inputs": self.inputs,           # Already a list of dicts
-            "outputs": self.outputs,         # List of dicts, so it's JSON-serializable
-            "timestamp": self.timestamp,
-            "type": self.type,
-            "fee": str(self.fee),            # Convert Decimal to string
+            "fee": str(self.fee),  # ✅ Ensure `fee` is stored as a string
             "size": self.size,
-            "metadata": self.metadata        # Ensure it's a dict to be JSON-serializable
+            "metadata": self.metadata if isinstance(self.metadata, dict) else {}  # ✅ Ensure metadata is always a valid dictionary
         }
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: Dict) -> "CoinbaseTx":
         """
         Deserialize a CoinbaseTx from a dictionary.
-        - Ignores unexpected fields.
-        - Restores metadata if available.
-        - Ensures required fields are present.
         """
         try:
             print(f"[CoinbaseTx.from_dict] INFO: Deserializing CoinbaseTx from dictionary...")
 
-            # Expected keys in the dictionary
-            expected_keys = {
-                "block_height", "miner_address", "reward", "tx_id",
-                "timestamp", "inputs", "outputs", "type", "size", "fee"
-            }
-
-            # Filter out only the expected keys
-            filtered_data = {k: data[k] for k in expected_keys if k in data}
-
-            # Required fields for a valid CoinbaseTx
+            # ✅ **Ensure Required Fields Exist**
             required_fields = {"block_height", "miner_address", "reward"}
-            missing_fields = [field for field in required_fields if field not in filtered_data]
+            missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 raise ValueError(f"[CoinbaseTx.from_dict] ❌ ERROR: Missing required fields: {missing_fields}")
 
-            # Create the CoinbaseTx object
+            # ✅ **Parse Basic Fields**
             obj = cls(
-                block_height=filtered_data["block_height"],
-                miner_address=filtered_data["miner_address"],
-                reward=Decimal(filtered_data["reward"])  # Convert string to Decimal
+                block_height=data["block_height"],
+                miner_address=data["miner_address"],
+                reward=Decimal(str(data["reward"]))  # ✅ Ensure reward is stored as Decimal
             )
 
-            # Restore optional fields
-            obj.tx_id = filtered_data.get("tx_id", obj._generate_tx_id())  # Generate TX ID if missing
-            obj.timestamp = filtered_data.get("timestamp", int(time.time()))  # Use current time if missing
-            obj.inputs = filtered_data.get("inputs", [])    # Default to empty list
-            obj.outputs = filtered_data.get("outputs", obj.outputs)
-            obj.type = filtered_data.get("type", "COINBASE")
-            obj.size = filtered_data.get("size", obj._estimate_size())
-            obj.fee = Decimal(filtered_data.get("fee", "0"))
+            obj.tx_id = data.get("tx_id", obj._generate_tx_id())  # ✅ Ensure tx_id is generated if missing
+            obj.timestamp = data.get("timestamp", int(time.time()))  # ✅ Default to current time if missing
+            obj.inputs = data.get("inputs", [])
 
-            # Restore metadata safely
-            # If the 'metadata' field is present in the original data, use it if it's a dict, else default to {}
-            potential_metadata = data.get("metadata", {})
-            obj.metadata = potential_metadata if isinstance(potential_metadata, dict) else {}
+            # ✅ **Ensure Outputs Are Properly Deserialized**
+            obj.outputs = [
+                TransactionOut.from_dict(out) if isinstance(out, dict) else out
+                for out in data.get("outputs", [])
+            ]
+
+            obj.type = data.get("type", "COINBASE")
+            obj.size = data.get("size", obj._estimate_size())
+            obj.fee = Decimal(str(data.get("fee", "0")))  # ✅ Ensure fee is stored as Decimal
+            obj.metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
 
             print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id}")
             return obj

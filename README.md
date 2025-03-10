@@ -21,9 +21,9 @@ Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 1024** for digital signa
 ✅ **Quantum-Resistant Security**: SHA3-384 hashing & Falcon 512 signatures.
 ✅ **Three-Layer Architecture**: Separation of core, payments, and governance.
 ✅ **Instant Payments**: Multi-hop routing for fast transactions.
-✅ **Smart Transactions**: Programmable logic for automated transactions.
+✅ **Smart Transactions**: Programmable logic for automated transactions.Also know as SmartPay (under active development)
 ✅ **Decentralized Governance**: Community-driven blockchain upgrades.
-✅ **Dynamic Block Sizes**: 1MB-10MB per block, depending on network traffic.
+✅ **Dynamic Block Sizes**: 1MB-10MB per block, depending on network traffic 300 second blocks
 ✅ **Two Mempools**:
    - **Standard Mempool** → Regular & Instant Transactions.
    - **Smart Mempool** → Smart Contract Transactions.
@@ -71,9 +71,9 @@ The project is modular and divided into key components:
 1️⃣8️⃣ **`miner.py`** – Implements SHA3-384 mining with dynamic difficulty.
 1️⃣9️⃣ **`pow.py`** – Manages Proof-of-Work calculations.
 
-### 🔹 **Governance & Dispute Resolution**
+### 🔹 ** Dispute Resolution**
 2️⃣0️⃣ **`dispute.py`** – Smart contract logic for resolving disputes.
-2️⃣1️⃣ **`governance.py`** – (Planned) On-chain voting & protocol upgrades.
+
 
 ---
 
@@ -86,7 +86,7 @@ pip install -r requirements.txt
 
 ### 2️⃣ **Run the Blockchain**
 ```bash
-python blockchain.py
+python start.py
 ```
 *Genesis Block will be created automatically if not found.*
 

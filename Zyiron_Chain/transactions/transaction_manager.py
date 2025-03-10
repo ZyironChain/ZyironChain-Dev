@@ -99,8 +99,8 @@ class TransactionManager:
 
         Accepts either 'recipient_address' or (if missing) the legacy keyword 'recipient_script_pub_key'.
 
-        :param sender: Sender's address.
-        :param recipient_address: Recipient's address. If None, the function checks kwargs for 'recipient_script_pub_key'.
+        :param sender: Sender's address (must be explicitly provided).
+        :param recipient_address: Recipient's address. If None, checks kwargs for 'recipient_script_pub_key'.
         :param amount: Amount to send.
         :param fee: Transaction fee.
         :param transaction_type: Type of the transaction (default: "STANDARD").
@@ -108,24 +108,32 @@ class TransactionManager:
         :return: The created transaction as a dictionary.
         """
         try:
-            # Validate sender using the wallet manager
-            if not self.wallet_manager.validate_address(sender):
-                raise ValueError("Invalid sender address")
+            # **✅ FIX: Ensure sender is explicitly provided**
+            if not sender:
+                print("[TransactionManager.create_transaction ERROR] Missing required 'sender' argument.")
+                raise ValueError("Sender address must be provided.")
 
-            # Check for legacy parameter if recipient_address is not provided
+            # **Validate sender address using the wallet manager**
+            if not self.wallet_manager.validate_address(sender):
+                print(f"[TransactionManager.create_transaction ERROR] Invalid sender address: {sender}")
+                raise ValueError("Invalid sender address.")
+
+            # **Support for legacy 'recipient_script_pub_key' argument**
             if recipient_address is None and "recipient_script_pub_key" in kwargs:
                 recipient_address = kwargs["recipient_script_pub_key"]
-                print("[TransactionManager.create_transaction] INFO: 'recipient_script_pub_key' found in kwargs; using it as recipient_address.")
+                print("[TransactionManager.create_transaction INFO] 'recipient_script_pub_key' found in kwargs; using it as recipient_address.")
 
             if recipient_address is None:
+                print("[TransactionManager.create_transaction ERROR] Missing recipient address.")
                 raise ValueError("Recipient address must be provided.")
 
-            print(f"[TransactionManager.create_transaction] Creating transaction from {sender} to {recipient_address}...")
+            print(f"[TransactionManager.create_transaction INFO] Creating transaction from {sender} to {recipient_address}...")
 
-            # Generate transaction ID by hashing key components
-            tx_data = f"{sender}{recipient_address}{amount}{fee}{transaction_type}"
+            # **Generate a unique transaction ID using single SHA3-384 hashing**
+            tx_data = f"{sender}{recipient_address}{amount}{fee}{transaction_type}{time.time()}"
             tx_hash = Hashing.hash(tx_data.encode()).hex()
 
+            # **Transaction dictionary**
             transaction = {
                 "sender": sender,
                 "recipient_address": recipient_address,
@@ -136,11 +144,11 @@ class TransactionManager:
                 "tx_id": tx_hash
             }
 
-            print(f"[TransactionManager.create_transaction] SUCCESS: Transaction created with ID {transaction['tx_id']}.")
+            print(f"[TransactionManager.create_transaction SUCCESS] Transaction created with ID {transaction['tx_id']}.")
             return transaction
 
         except Exception as e:
-            print(f"[TransactionManager.create_transaction] ERROR: Failed to create transaction: {e}")
+            print(f"[TransactionManager.create_transaction ERROR] Failed to create transaction: {e}")
             return None
 
 
@@ -323,29 +331,45 @@ class TransactionManager:
 
     def validate_transaction(self, tx: Transaction) -> bool:
         """
-        Validate a transaction: signature, UTXO checks, fees, replay prevention, etc.
-        CoinbaseTx is skipped from these checks except for basic format.
+        Validate a transaction:
+        - Ensures correct structure and required fields.
+        - Verifies digital signature.
+        - Checks for double-spending.
+        - Ensures fees meet minimum requirements.
+        - Validates mempool placement based on transaction type.
         """
         try:
-            # If it’s a coinbase, skip deeper checks
             from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+
+            print(f"[TransactionManager.validate_transaction] INFO: Validating transaction {tx.tx_id}...")
+
+            # ✅ **Handle Coinbase Transactions (Skip Deeper Checks)**
             if isinstance(tx, CoinbaseTx):
                 print(f"[TransactionManager.validate_transaction] INFO: Coinbase transaction {tx.tx_id} skipping deeper validation.")
                 return True
 
-            # Ensure tx_id is str
+            # ✅ **Ensure tx_id is a Valid SHA3-384 Hash**
             if isinstance(tx.tx_id, bytes):
                 tx.tx_id = tx.tx_id.decode("utf-8")
 
-            # Re-hash tx_id
             single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
-
-            # Check signature
-            if not tx.verify_signature():
-                print(f"[TransactionManager.validate_transaction] ERROR: Signature verification failed for {single_hashed_tx_id}")
+            if single_hashed_tx_id != tx.tx_id:
+                print(f"[TransactionManager.validate_transaction] ERROR: Transaction ID hash mismatch.")
                 return False
 
-            # Check UTXOs for inputs
+            # ✅ **Check Required Fields**
+            required_fields = ["tx_id", "inputs", "outputs", "timestamp", "tx_signature"]
+            for field in required_fields:
+                if not hasattr(tx, field):
+                    print(f"[TransactionManager.validate_transaction] ERROR: Missing required field: {field}")
+                    return False
+
+            # ✅ **Verify Digital Signature**
+            if not tx.verify_signature():
+                print(f"[TransactionManager.validate_transaction] ERROR: Signature verification failed for {tx.tx_id}")
+                return False
+
+            # ✅ **Check UTXO Inputs for Validity**
             input_sum = Decimal("0")
             for tx_in in tx.inputs:
                 utxo = self.utxo_manager.get_utxo(tx_in.tx_out_id)
@@ -357,7 +381,15 @@ class TransactionManager:
                     return False
                 input_sum += Decimal(str(utxo.amount))
 
-            output_sum = sum(Decimal(str(out.amount)) for out in tx.outputs)
+            # ✅ **Ensure Outputs Are Properly Structured**
+            output_sum = Decimal("0")
+            for output in tx.outputs:
+                if not hasattr(output, "amount") or not hasattr(output, "script_pub_key"):
+                    print(f"[TransactionManager.validate_transaction] ERROR: Invalid transaction output structure.")
+                    return False
+                output_sum += Decimal(str(output.amount))
+
+            # ✅ **Ensure Input Sum >= Output Sum**
             if input_sum < output_sum:
                 print(
                     f"[TransactionManager.validate_transaction] ERROR: Transaction {tx.tx_id} "
@@ -365,12 +397,8 @@ class TransactionManager:
                 )
                 return False
 
-            # Fee check
+            # ✅ **Validate Fees Against `FeeModel`**
             calculated_fee = input_sum - output_sum
-            # Example fee check if you have a FeeModel
-            # Or you might do your own logic here
-            # required_fee = self._calculate_required_fee(tx)
-            # For demonstration, we can do a simpler check
             min_fee_required = Decimal(Constants.MIN_TRANSACTION_FEE)
             if calculated_fee < min_fee_required:
                 print(
@@ -379,16 +407,15 @@ class TransactionManager:
                 )
                 return False
 
-            # Replay check - if tx_storage has a method to see if tx_id is used
+            # ✅ **Check for Replay Attacks (Duplicate Transactions)**
             if self.tx_storage.transaction_exists(tx.tx_id):
                 print(f"[TransactionManager.validate_transaction] ERROR: Replay attack detected for {tx.tx_id}")
                 return False
 
-            # Ensure transaction is in correct mempool if typed
+            # ✅ **Ensure Transaction is in Correct Mempool Based on Type**
             tx_type = PaymentTypeManager().get_transaction_type(tx.tx_id)
             expected_mempool = Constants.TRANSACTION_MEMPOOL_MAP.get(tx_type.name, {}).get("mempool", "StandardMempool")
 
-            # Check presence in the correct mempool (optional)
             if expected_mempool == "SmartMempool" and tx.tx_id not in self.smart_mempool.transactions:
                 print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in SmartMempool but is not.")
                 return False
@@ -396,7 +423,7 @@ class TransactionManager:
                 print(f"[TransactionManager.validate_transaction] ERROR: {tx.tx_id} should be in StandardMempool but is not.")
                 return False
 
-            print(f"[TransactionManager.validate_transaction] INFO: Transaction {tx.tx_id} passed all validation checks.")
+            print(f"[TransactionManager.validate_transaction] ✅ SUCCESS: Transaction {tx.tx_id} passed all validation checks.")
             return True
 
         except Exception as e:

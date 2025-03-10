@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+import struct
 
 from decimal import Decimal, getcontext
 getcontext().prec = 18
@@ -176,3 +177,57 @@ class FeeModel:
         calculated_fee = max(Decimal(Constants.MIN_TRANSACTION_FEE), fee)
         print(f"[FeeModel._calculate_fee] Calculated fee: {calculated_fee}")
         return calculated_fee
+
+
+
+    def store_fee(self, transaction_id: str, block_hash: str, base_fee: Decimal, tax_fee: Decimal, miner_fee: Decimal, congestion_level: str) -> bool:
+        """
+        Stores the computed fee data in `fee_stats.lmdb` with full validation and binary serialization.
+
+        Args:
+            transaction_id (str): Unique transaction ID.
+            block_hash (str): Hash of the block containing the transaction.
+            base_fee (Decimal): The total fee for the transaction.
+            tax_fee (Decimal): The portion of the fee allocated as tax.
+            miner_fee (Decimal): The portion of the fee allocated to miners.
+            congestion_level (str): The congestion level at which the fee was calculated.
+
+        Returns:
+            bool: True if successfully stored, False otherwise.
+        """
+        try:
+            # ✅ **Ensure transaction_id and block_hash are valid**
+            if not isinstance(transaction_id, str) or len(transaction_id) == 0:
+                raise ValueError("[FeeModel.store_fee] ERROR: Invalid transaction_id format.")
+            if not isinstance(block_hash, str) or len(block_hash) != 96:  # SHA3-384 hash length in hex
+                raise ValueError("[FeeModel.store_fee] ERROR: Invalid block_hash format.")
+
+            # ✅ **Ensure fees are in correct decimal format**
+            base_fee = Decimal(base_fee)
+            tax_fee = Decimal(tax_fee)
+            miner_fee = Decimal(miner_fee)
+
+            # ✅ **Generate Binary Key for Storage**
+            fee_key = f"fee:{transaction_id}".encode("utf-8")
+
+            # ✅ **Serialize Fee Data in Binary Format**
+            fee_data = struct.pack(
+                ">96s 32s Q Q Q 8s",  # Hashes, Fees, Congestion Level
+                block_hash.encode("utf-8"),
+                transaction_id.encode("utf-8"),
+                int(base_fee * Constants.COIN_MULTIPLIER),  # Convert to smallest unit
+                int(tax_fee * Constants.COIN_MULTIPLIER),   # Convert to smallest unit
+                int(miner_fee * Constants.COIN_MULTIPLIER),  # Convert to smallest unit
+                congestion_level.encode("utf-8")
+            )
+
+            # ✅ **Store Fee Data in LMDB**
+            with self.fee_stats_db.env.begin(write=True) as txn:
+                txn.put(fee_key, fee_data)
+
+            print(f"[FeeModel.store_fee] ✅ SUCCESS: Stored fee data for transaction {transaction_id} in fee_stats.lmdb.")
+            return True
+
+        except Exception as e:
+            print(f"[FeeModel.store_fee] ❌ ERROR: Failed to store fee data for transaction {transaction_id}: {e}")
+            return False
