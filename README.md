@@ -7,7 +7,7 @@ Zyiron Chain is designed to be the most secure, efficient, and community-driven 
 ---
 
 ## 🔹 Blockchain Overview
-Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 1024** for digital signatures, making it quantum-resistant. It is structured into threetwo layers:
+Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 512** for digital signatures, making it quantum-resistant. It is structured into threetwo layers:
 
 1️⃣ **Layer 1: Core Protocol** – Handles block creation, PoW consensus, and transaction validation.
 2️⃣ **Layer 2: Instant Payments** – Supports multi-hop routing and batching for low-latency payments.
@@ -22,7 +22,7 @@ Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 1024** for digital signa
 ✅ **Three-Layer Architecture**: Separation of core, payments, and governance.
 ✅ **Instant Payments**: Multi-hop routing for fast transactions.
 ✅ **Smart Transactions**: Programmable logic for automated transactions.Also know as SmartPay (under active development)
-✅ **Decentralized Governance**: Community-driven blockchain upgrades.
+✅ **The Zyiron Foundation**: Advancing humanity and technology one block at a time 
 ✅ **Dynamic Block Sizes**: 1MB-10MB per block, depending on network traffic 300 second blocks
 ✅ **Two Mempools**:
    - **Standard Mempool** → Regular & Instant Transactions.

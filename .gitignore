@@ -1,4 +1,4 @@
-cat <<EOL > .gitignore
+﻿cat <<EOL > .gitignore
 # Ignore Python virtual environments
 .venv/
 
@@ -16,7 +16,12 @@ dist/
 
 # Ignore sensitive key files
 Keys/
+Keys/*
 Keys/*.json
+
+# Ignore QR code storage
+QR_Codes/
+QR_Codes/*
 
 # Ignore large database files
 *.mdb

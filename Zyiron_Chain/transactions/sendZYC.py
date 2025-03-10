@@ -4,7 +4,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 from decimal import Decimal, getcontext
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.keys.key_manager import KeyManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
 from Zyiron_Chain.mempool.standardmempool import StandardMempool
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.transactions.tx import Transaction

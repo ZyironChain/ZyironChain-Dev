@@ -32,7 +32,7 @@ from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.utils.deserializer import Deserializer
 from Zyiron_Chain.storage.block_storage import WholeBlockData
 from Zyiron_Chain.storage.blockmetadata import BlockMetadata
-from Zyiron_Chain.keys.key_manager import KeyManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
 
 from threading import Lock
 

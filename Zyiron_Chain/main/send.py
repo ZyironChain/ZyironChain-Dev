@@ -14,7 +14,7 @@ sys.path.append(project_root)
 
 # Import required modules from the project
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.keys.key_manager import KeyManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.transactions.transaction_manager import TransactionManager
 from Zyiron_Chain.transactions.tx import Transaction

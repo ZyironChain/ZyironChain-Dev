@@ -1,8 +1,9 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-
+import zlib
+import qrcode
+import os
 import logging
 from termcolor import colored
 import os
@@ -12,7 +13,12 @@ import hashlib
   # Import Wallet for Falcon key generation
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.falcon.falcon.falcon import SecretKey, PublicKey
-from Zyiron_Chain.keys.wallet_api import serialize_complex 
+from Zyiron_Chain.accounts.wallet_api import serialize_complex 
+import os
+import qrcode
+import base64
+import textwrap
+from PIL import Image, ImageDraw, ImageFont 
 
 class KeyManager:
     def __init__(self, key_file="Keys/KeyManager_Public_Private_Keys.json"):
@@ -675,20 +681,20 @@ class KeyManager:
         return is_valid
 
 
-
     def export_keys(self):
         """
         Export a specific key set (miner, validator, channel) based on user selection.
         Saves the exported keys in a .txt file with a box-like structure using UTF-8 encoding.
+        Offers an option to generate QR codes for each key.
         """
-        print("\n🔹 Export Key Pairs")
+        print("\n🔹 EXPORT KEY PAIRS")
 
         # ✅ Ask for role
         role = input("Enter the role to export (miner, validator, channel): ").strip().lower()
         if role not in ["miner", "validator", "channel"]:
             print("❌ Invalid role. Choose from: miner, validator, channel.")
             return
-        
+
         # ✅ Ask for network
         network = input("Enter the network (testnet or mainnet): ").strip().lower()
         if network not in ["testnet", "mainnet"]:
@@ -728,6 +734,9 @@ class KeyManager:
         filename = input("Enter the filename to save the key pair (without extension): ").strip()
         filename = f"Keys/{filename}.txt"
 
+        # ✅ Ask if user wants QR codes
+        generate_qr = input("Do you want to generate QR codes for these keys? (yes/no): ").strip().lower() == "yes"
+
         # ✅ Ensure the directory exists
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
@@ -736,22 +745,32 @@ class KeyManager:
             file.write(f"\n{'=' * 80}\n")
             file.write(f"🔹 {role.capitalize()} Key Export - {selected_identifier.upper()} - {network.upper()}\n")
             file.write(f"{'=' * 80}\n\n")
-            file.write(f"{'|' + ' ' * 30 + 'PRIVATE KEY' + ' ' * 30 + '|'}\n")
-            file.write(f"{'=' * 80}\n")
-            file.write(f"{'| '}{selected_key_data.get('private_key', 'N/A')}{' |'}\n")
-            file.write(f"{'=' * 80}\n\n")
 
-            file.write(f"{'|' + ' ' * 31 + 'PUBLIC KEY' + ' ' * 31 + '|'}\n")
-            file.write(f"{'=' * 80}\n")
-            file.write(f"{'| '}{selected_key_data.get('public_key', 'N/A')}{' |'}\n")
-            file.write(f"{'=' * 80}\n\n")
+            # ✅ Private Key Section
+            private_key = selected_key_data.get("private_key", "N/A")
+            file.write(f"{'=' * 20} ( PRIVATE KEY ) {'=' * 20}\n")
+            file.write(f"===START HERE({private_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
 
-            file.write(f"{'|' + ' ' * 28 + 'HASHED PUBLIC KEY' + ' ' * 28 + '|'}\n")
-            file.write(f"{'=' * 80}\n")
-            file.write(f"{'| '}{selected_key_data.get('hashed_public_key', 'N/A')}{' |'}\n")
-            file.write(f"{'=' * 80}\n\n")
+            # ✅ Public Key Section
+            public_key = selected_key_data.get("public_key", "N/A")
+            file.write(f"{'=' * 20} ( PUBLIC KEY ) {'=' * 20}\n")
+            file.write(f"===START HERE({public_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
+
+            # ✅ Hashed Public Key Section
+            hashed_public_key = selected_key_data.get("hashed_public_key", "N/A")
+            file.write(f"{'=' * 18} ( HASHED PUBLIC KEY ) {'=' * 18}\n")
+            file.write(f"===START HERE({hashed_public_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
 
         print(f"\n✅ Exported {role.capitalize()} {selection} to {filename}.")
+
+        # ✅ Generate QR codes if requested
+        if generate_qr:
+            self.generate_qr_code(private_key, public_key, hashed_public_key, f"{selected_identifier}_keys")
+            print("\n✅ QR Codes generated for Private, Public, and Hashed Public Key!")
+
 
     def recompute_hashed_public_key(self, network: str, identifier: str) -> str:
         """
@@ -812,6 +831,178 @@ class KeyManager:
 
 
 
+
+
+
+    def test_hashed_public_key(self, network: str, identifier: str):
+        """
+        Test if the stored hashed public key can be correctly recomputed.
+
+        Args:
+            network (str): Either "testnet" or "mainnet".
+            identifier (str): The key identifier.
+
+        Prints:
+            - ✅ Success message if recomputed hash matches the stored hash.
+            - ⚠️ Warning message if the hash does not match, prompting an update.
+        """
+        network = network.lower()
+        if network not in ["testnet", "mainnet"]:
+            raise ValueError("Invalid network. Choose 'testnet' or 'mainnet'.")
+
+        # ✅ Ensure the key exists
+        key_data = self.keys[network]["keys"].get(identifier)
+        if not key_data:
+            print(f"❌ Key '{identifier}' not found in {network}.")
+            return
+
+        try:
+            # ✅ Retrieve the stored public key
+            public_key_json = json.loads(base64.b64decode(key_data["public_key"]).decode("utf-8"))
+            raw_public_key = public_key_json.get("h")  # ✅ Extract Falcon public key
+        except Exception as e:
+            print(f"❌ Failed to load public key for '{identifier}': {e}")
+            return
+
+        # ✅ Hash the raw Falcon public key
+        serialized_key = json.dumps({"h": raw_public_key}, default=serialize_complex).encode("utf-8")
+        recomputed_hashed_key = hashlib.sha3_384(serialized_key).hexdigest()
+
+        # ✅ Add network-specific prefix
+        prefix = "ZYT" if network == "testnet" else "ZYC"
+        recomputed_hashed_key = f"{prefix}{recomputed_hashed_key}"
+
+        # ✅ Compare with the stored value
+        stored_hashed_key = key_data["hashed_public_key"]
+
+        print(f"\n🔹 Testing Hashed Public Key for '{identifier}' in {network.upper()}...")
+        print(f"  - Stored Hash: {stored_hashed_key}")
+        print(f"  - Recomputed Hash: {recomputed_hashed_key}")
+
+        if stored_hashed_key == recomputed_hashed_key:
+            print(f"✅ Hashed public key is correct for {identifier}.")
+        else:
+            print(f"⚠️ Hash mismatch! Updating stored hash for {identifier}...")
+            self.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hashed_key
+            self.save_keys()
+            print(f"✅ Stored hash updated successfully.")
+
+
+
+
+
+
+
+    def generate_qr_code(self, private_key, public_key, hashed_public_key, identifier):
+        """
+        Generates QR codes for:
+        - ✅ Hashed Public Key (Network Address) [QR Code]
+        - ✅ Stores Private Key in .txt format (NO QR)
+        - ✅ Stores Public Key in .txt format (NO QR)
+
+        Args:
+            private_key (str): The private key (stored in .txt only).
+            public_key (str): The Falcon-512 public key (stored in .txt only).
+            hashed_public_key (str): The hashed public key (wallet address for transactions).
+            identifier (str): The key identifier (e.g., miner_1).
+        """
+
+        def create_qr(data, scale=1):
+            """Creates a QR code while ensuring it stays within the max version limit."""
+            qr = qrcode.QRCode(
+                version=40,  # ✅ Max supported QR version
+                error_correction=qrcode.constants.ERROR_CORRECT_H,  # High error correction
+                box_size=20 * scale,  # Increased box size
+                border=4
+            )
+            qr.add_data(data)
+            qr.make(fit=True)
+            qr_image = qr.make_image(fill="black", back_color="white")
+            return qr_image.convert("RGB")  # Convert to RGB mode
+
+        # ✅ Set up directories
+        base_folder = f"QR_Codes/{identifier}"
+        os.makedirs(base_folder, exist_ok=True)
+
+        # ✅ **Store Private & Public Key in .txt (No QR Code)**
+        key_file_path = f"{base_folder}/{identifier}_keys.txt"
+        with open(key_file_path, "w", encoding="utf-8") as file:
+            file.write(f"\n{'=' * 80}\n")
+            file.write(f"🔹 PRIVATE & PUBLIC KEYS - {identifier.upper()}\n")
+            file.write(f"{'=' * 80}\n\n")
+
+            # ✅ Store Private Key
+            file.write(f"{'=' * 20} ( PRIVATE KEY ) {'=' * 20}\n")
+            file.write(f"===START HERE({private_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
+
+            # ✅ Store Public Key
+            file.write(f"{'=' * 20} ( PUBLIC KEY ) {'=' * 20}\n")
+            file.write(f"===START HERE({public_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
+
+            # ✅ Store Hashed Public Key (For Reference)
+            file.write(f"{'=' * 18} ( HASHED PUBLIC KEY - NETWORK ADDRESS ) {'=' * 18}\n")
+            file.write(f"===START HERE({hashed_public_key})END HERE===\n")
+            file.write(f"{'=' * 60}\n\n")
+
+        print(f"✅ Private & Public Keys stored securely in {key_file_path}")
+
+        # ✅ **Create QR Code for Hashed Public Key (Network Address)**
+        print(f"Hashed Public Key: {hashed_public_key}")  # Debug statement
+        hashed_qr = create_qr(hashed_public_key, scale=2)
+
+        # ✅ **Define Image Layout for Hashed Public Key**
+        spacing = 30
+        hashed_qr_size = hashed_qr.size[0]
+        img_width = hashed_qr_size + spacing * 2
+        img_height = hashed_qr_size + spacing * 4
+
+        # ✅ **Create Image for Hashed Public Key QR Code**
+        hashed_img = Image.new("RGB", (img_width, img_height), "white")
+        print(f"✅ Created image: {hashed_img} (Type: {type(hashed_img)})")  # Debug statement
+
+        draw = ImageDraw.Draw(hashed_img)
+        print(f"✅ Created draw object: {draw} (Type: {type(draw)})")  # Debug statement
+
+        # ✅ Load font for labeling
+        try:
+            font = ImageFont.truetype("arial.ttf", 40)  # Increased font size
+            print("✅ Font loaded successfully.")
+        except Exception as e:
+            print(f"❌ Failed to load font: {e}")
+            font = ImageFont.load_default()
+
+        # Convert hex color (#000000) to RGB tuple (0, 0, 0)
+        text_color = (0, 0, 0)  # Black color in RGB
+        print(f"Text color: {text_color} (Type: {type(text_color)})")  # Debug statement
+
+        try:
+            draw.text((spacing, spacing - 20), "🔹 HASHED PUBLIC KEY (NETWORK ADDRESS)", fill=text_color, font=font)
+            print("✅ Text drawn successfully.")
+        except Exception as e:
+            print(f"❌ Error drawing text: {e}")
+
+        # ✅ **Fix `paste()` method by specifying bounding box**
+        try:
+            print(f"✅ QR code image: {hashed_qr} (Type: {type(hashed_qr)})")  # Debug statement
+            qr_position = (
+                (img_width - hashed_qr.size[0]) // 2,  # Center horizontally
+                (img_height - hashed_qr.size[1]) // 2   # Center vertically
+            )
+            hashed_img.paste(hashed_qr, qr_position)  # Paste centered
+            print("✅ QR code pasted successfully.")
+        except Exception as e:
+            print(f"❌ Error pasting QR code: {e}")
+
+        # ✅ Save Hashed Public Key QR Code Image
+        hashed_img_path = f"{base_folder}/{identifier}_hashed_public_key.png"
+        try:
+            hashed_img.save(hashed_img_path, quality=100)  # Save with maximum quality
+            print(f"✅ Hashed Public Key QR Code saved: {hashed_img_path}")
+        except Exception as e:
+            print(f"❌ Error saving image: {e}")
+
 if __name__ == "__main__":
     try:
         print("\n🔹 Initializing KeyManager...")
@@ -821,6 +1012,26 @@ if __name__ == "__main__":
         if not key_manager.keys:
             print("⚠️ No keys found. Creating new key file...")
             key_manager.initialize_keys_structure()
+
+        # ✅ Verify and fix hashed public keys before starting
+        for network in ["testnet", "mainnet"]:
+            for identifier in key_manager.keys.get(network, {}).get("keys", {}):
+                print(f"\n🔍 Verifying hashed public key for {identifier} in {network.upper()}...")
+                
+                # ✅ Retrieve stored and recomputed hashed public key
+                stored_hashed_key = key_manager.keys[network]["keys"][identifier]["hashed_public_key"]
+                recomputed_hashed_key = key_manager.recompute_hashed_public_key(network, identifier)
+
+                print(f"  🔹 Stored Hash: {stored_hashed_key}")
+                print(f"  🔹 Recomputed Hash: {recomputed_hashed_key}")
+
+                if stored_hashed_key == recomputed_hashed_key:
+                    print(f"✅ Hashed public key is correct for {identifier}.")
+                else:
+                    print(f"⚠️ Hash mismatch detected! Updating stored hash for {identifier}...")
+                    key_manager.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hashed_key
+                    key_manager.save_keys()
+                    print(f"✅ Stored hash updated successfully.")
 
         print("\n✅ KeyManager is ready. Launching menu...\n")
         key_manager.interactive_menu()  # ✅ Start the interactive menu

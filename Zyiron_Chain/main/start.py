@@ -33,7 +33,7 @@ from Zyiron_Chain.blockchain.blockchain import Blockchain
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.miner.miner import Miner
 from Zyiron_Chain.transactions.transaction_manager import TransactionManager
-from Zyiron_Chain.keys.key_manager import KeyManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
 from Zyiron_Chain.storage.lmdatabase import LMDBManager  # For LMDB manager creation
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockManager
