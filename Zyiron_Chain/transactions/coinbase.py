@@ -18,6 +18,16 @@ from decimal import Decimal
 from typing import Dict
 from Zyiron_Chain.transactions.txout import TransactionOut
 
+import hashlib
+import struct
+import time
+from decimal import Decimal
+from typing import Dict
+
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.transactions.txout import TransactionOut
+
+
 class CoinbaseTx:
     """
     Represents a block reward (coinbase) transaction.
@@ -25,15 +35,13 @@ class CoinbaseTx:
     Detailed print statements are used instead of logging.
     """
 
-    def __init__(self, block_height: int, miner_address: str, reward: Decimal = None):
+    def __init__(self, block_height: int, miner_address: str, reward: Decimal):
         print(f"[CoinbaseTx.__init__] Initializing Coinbase Transaction for Block {block_height}...")
 
         # Assign core attributes
         self.block_height = block_height
         self.miner_address = miner_address
-
-        # Dynamically calculate block reward based on halving intervals
-        self.reward = reward if reward is not None else self._calculate_reward(block_height)
+        self.reward = reward
         self.timestamp = int(time.time())
 
         # Generate unique transaction ID (SHA3-384 hash)
@@ -43,36 +51,25 @@ class CoinbaseTx:
         # Coinbase transactions have **no inputs**
         self.inputs = []
 
-        # ✅ FIX: Ensure correct output format
+        # ✅ Ensure correct output format
         self.outputs = [{
-            "script_pub_key": miner_address,  # ✅ FIXED: Changed from 'address' to 'script_pub_key'
+            "script_pub_key": miner_address,
             "amount": float(self.reward),
-            "locked": False  # Added default locked state
+            "locked": False  # Default locked state
         }]
 
         # Define transaction type and fee
         self.type = "COINBASE"
         self.fee = Decimal("0")
 
-        # ✅ FIX: Ensure metadata is always initialized
+        # ✅ Ensure metadata is always initialized
         self.metadata = {}
 
-        # ✅ FIX: Improved transaction size estimation
+        # ✅ Improved transaction size estimation
         self.size = self._estimate_size()
         print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
 
         print(f"[CoinbaseTx.__init__] CoinbaseTx successfully initialized for miner: {miner_address}")
-
-    def _calculate_reward(self, block_height: int) -> Decimal:
-        """
-        Dynamically calculate the block reward based on halving intervals.
-        Uses constants from Constants.
-        """
-        halvings = block_height // Constants.BLOCKCHAIN_HALVING_BLOCK_HEIGHT
-        reward = Decimal(Constants.INITIAL_COINBASE_REWARD) / (2 ** halvings)
-        calculated_reward = max(reward, Decimal(str(Constants.MIN_TRANSACTION_FEE)))
-        print(f"[CoinbaseTx._calculate_reward] Reward for Block {block_height}: {calculated_reward} ZYC")
-        return calculated_reward
 
     def _generate_tx_id(self) -> str:
         """
@@ -115,16 +112,16 @@ class CoinbaseTx:
             "inputs": self.inputs,
             "outputs": [
                 out.to_dict() if isinstance(out, TransactionOut) else {
-                    "script_pub_key": out["script_pub_key"],  # ✅ FIXED: Ensure valid output structure
-                    "amount": str(out["amount"]),  # ✅ Ensure `amount` remains a string for JSON compatibility
+                    "script_pub_key": out["script_pub_key"],
+                    "amount": str(out["amount"]),
                     "locked": out.get("locked", False)
                 } for out in self.outputs
             ],
             "timestamp": self.timestamp,
             "type": self.type,
-            "fee": str(self.fee),  # ✅ Ensure `fee` is stored as a string
+            "fee": str(self.fee),
             "size": self.size,
-            "metadata": self.metadata if isinstance(self.metadata, dict) else {}  # ✅ Ensure metadata is always a valid dictionary
+            "metadata": self.metadata if isinstance(self.metadata, dict) else {}
         }
 
     @classmethod
@@ -135,24 +132,24 @@ class CoinbaseTx:
         try:
             print(f"[CoinbaseTx.from_dict] INFO: Deserializing CoinbaseTx from dictionary...")
 
-            # ✅ **Ensure Required Fields Exist**
+            # ✅ Ensure required fields exist
             required_fields = {"block_height", "miner_address", "reward"}
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 raise ValueError(f"[CoinbaseTx.from_dict] ❌ ERROR: Missing required fields: {missing_fields}")
 
-            # ✅ **Parse Basic Fields**
+            # ✅ Parse basic fields
             obj = cls(
                 block_height=data["block_height"],
                 miner_address=data["miner_address"],
-                reward=Decimal(str(data["reward"]))  # ✅ Ensure reward is stored as Decimal
+                reward=Decimal(str(data["reward"]))  # Ensure reward is stored as Decimal
             )
 
-            obj.tx_id = data.get("tx_id", obj._generate_tx_id())  # ✅ Ensure tx_id is generated if missing
-            obj.timestamp = data.get("timestamp", int(time.time()))  # ✅ Default to current time if missing
+            obj.tx_id = data.get("tx_id", obj._generate_tx_id())  # Ensure tx_id is generated if missing
+            obj.timestamp = data.get("timestamp", int(time.time()))  # Default to current time if missing
             obj.inputs = data.get("inputs", [])
 
-            # ✅ **Ensure Outputs Are Properly Deserialized**
+            # ✅ Ensure Outputs Are Properly Deserialized
             obj.outputs = [
                 TransactionOut.from_dict(out) if isinstance(out, dict) else out
                 for out in data.get("outputs", [])
@@ -160,7 +157,7 @@ class CoinbaseTx:
 
             obj.type = data.get("type", "COINBASE")
             obj.size = data.get("size", obj._estimate_size())
-            obj.fee = Decimal(str(data.get("fee", "0")))  # ✅ Ensure fee is stored as Decimal
+            obj.fee = Decimal(str(data.get("fee", "0")))  # Ensure fee is stored as Decimal
             obj.metadata = data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {}
 
             print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id}")

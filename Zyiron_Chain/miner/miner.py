@@ -202,14 +202,15 @@ class Miner:
     def _create_coinbase(self, miner_address, fees):
         """
         Creates a coinbase transaction for miners using single SHA3-384 hashing.
-        - If max supply is reached, only transaction fees are rewarded.
-        - Ensures a minimum payout using Constants.MIN_TRANSACTION_FEE.
+        - Uses a **fixed block reward** instead of halving.
+        - If `MAX_SUPPLY` is reached, only transaction fees are rewarded.
+        - Ensures a minimum payout using `Constants.MIN_TRANSACTION_FEE`.
         """
         try:
             print("[Miner._create_coinbase] INFO: Initiating Coinbase transaction creation...")
 
-            # ✅ **Calculate Block Reward**
-            block_reward = self._calculate_block_reward()
+            # ✅ **Use Fixed Block Reward (No Halving)**
+            block_reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
 
             # ✅ **Get Total Mined Supply from BlockMetadata**
             try:
@@ -250,40 +251,16 @@ class Miner:
 
     def _calculate_block_reward(self):
         """
-        Calculate the current block reward using halving logic.
-        - Halves every BLOCKCHAIN_HALVING_BLOCK_HEIGHT blocks.
-        - If MAX_SUPPLY is reached, reward is zero (only fees).
+        Calculate the current block reward using a **fixed supply model**.
+        - Uses a **constant block reward** (`INITIAL_COINBASE_REWARD`).
+        - If `MAX_SUPPLY` is reached, only transaction fees are rewarded.
+        - Ensures a minimum payout using `MIN_TRANSACTION_FEE`.
         """
         try:
             print("[Miner._calculate_block_reward] INFO: Initiating block reward calculation...")
 
-            # ✅ **Fetch Constants for Halving & Supply**
-            halving_interval = getattr(Constants, "BLOCKCHAIN_HALVING_BLOCK_HEIGHT", None)
-            initial_reward = getattr(Constants, "INITIAL_COINBASE_REWARD", None)
-            max_supply = getattr(Constants, "MAX_SUPPLY", None)
-            min_fee = getattr(Constants, "MIN_TRANSACTION_FEE", None)
-
-            if halving_interval is None or initial_reward is None or min_fee is None:
-                print("[Miner._calculate_block_reward] ERROR: Missing required constants for reward calculation.")
-                return Decimal("0")
-
-            initial_reward = Decimal(initial_reward)
-            min_fee = Decimal(min_fee)
-
-            # ✅ **Get Current Block Height**
-            if not hasattr(self.block_manager, "chain") or not isinstance(self.block_manager.chain, list):
-                print("[Miner._calculate_block_reward] ERROR: Invalid blockchain reference in block manager.")
-                return Decimal("0")
-
-            current_height = len(self.block_manager.chain)
-
-            # ✅ **Calculate Halvings**
-            halvings = max(0, current_height // halving_interval)
-            reward = initial_reward / (2 ** halvings)
-
-            print(f"[Miner._calculate_block_reward] INFO: Current Block Height: {current_height}")
-            print(f"[Miner._calculate_block_reward] INFO: Halving Interval: {halving_interval}, Halvings: {halvings}")
-            print(f"[Miner._calculate_block_reward] INFO: Base Reward After Halving: {reward} ZYC")
+            # ✅ **Use Fixed Block Reward**
+            block_reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
 
             # ✅ **Retrieve Total Mined Supply from BlockMetadata**
             try:
@@ -292,15 +269,15 @@ class Miner:
                 print(f"[Miner._calculate_block_reward] ERROR: Failed to retrieve total mined supply: {e}")
                 return Decimal("0")
 
-            print(f"[Miner._calculate_block_reward] INFO: Total Mined Supply: {total_mined} ZYC (Max: {max_supply})")
+            print(f"[Miner._calculate_block_reward] INFO: Total Mined Supply: {total_mined} ZYC (Max: {Constants.MAX_SUPPLY})")
 
             # ✅ **Check if Max Supply is Reached**
-            if max_supply is not None and total_mined >= Decimal(max_supply):
+            if Constants.MAX_SUPPLY is not None and total_mined >= Decimal(Constants.MAX_SUPPLY):
                 print("[Miner._calculate_block_reward] INFO: Max supply reached; no new coins rewarded.")
                 return Decimal("0")
 
             # ✅ **Ensure Reward Does Not Go Below Minimum Transaction Fee**
-            final_reward = max(reward, min_fee)
+            final_reward = max(block_reward, Decimal(Constants.MIN_TRANSACTION_FEE))
 
             print(f"[Miner._calculate_block_reward] SUCCESS: Final Block Reward: {final_reward} ZYC")
             return final_reward
@@ -308,6 +285,7 @@ class Miner:
         except Exception as e:
             print(f"[Miner._calculate_block_reward] ERROR: Unexpected error during reward calculation: {e}")
             return Decimal("0")
+
 
 
     def _validate_coinbase(self, tx):
@@ -463,6 +441,7 @@ class Miner:
         - Validate subsequent transactions via the transaction manager.
         - Verify block timestamp consistency.
         - Ensure block size does not exceed max limit.
+        - Enforce max supply limit if reached.
         """
         try:
             print(f"[Miner.validate_new_block] INFO: Validating new block at height {new_block.index}...")
@@ -500,6 +479,19 @@ class Miner:
                 return False
 
             print("[Miner.validate_new_block] INFO: Coinbase transaction validated.")
+
+            # ✅ **Check Total Mined Supply Before Accepting the Block**
+            try:
+                total_mined = self.block_metadata.get_total_mined_supply()
+            except Exception as e:
+                print(f"[Miner.validate_new_block] ERROR: Failed to retrieve total mined supply: {e}")
+                return False
+
+            print(f"[Miner.validate_new_block] INFO: Total Mined Supply: {total_mined} ZYC (Max: {Constants.MAX_SUPPLY})")
+
+            if Constants.MAX_SUPPLY is not None and total_mined >= Decimal(Constants.MAX_SUPPLY):
+                print("[Miner.validate_new_block] ERROR: Max supply reached. Rejecting new block.")
+                return False
 
             # ✅ **Validate Block Timestamp**
             prev_block = self.block_manager.chain[-1] if self.block_manager.chain else None
@@ -556,7 +548,6 @@ class Miner:
 
 
 
-
     @property
     def mining_lock(self):
         """
@@ -576,6 +567,7 @@ class Miner:
         - Calls `GenesisBlockManager.ensure_genesis_block()` if no previous block is found.
         - Uses single SHA3-384 hashing for mining.
         - Retrieves transactions from mempool and includes coinbase transaction.
+        - Enforces max supply constraints.
         """
         with self.mining_lock:
             try:
@@ -615,20 +607,12 @@ class Miner:
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
 
                 # ✅ **Adjust Difficulty Based on the Latest Block**
-                if not hasattr(self, "block_manager") or not self.block_manager:
-                    print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot calculate difficulty.")
-                    return None
-
                 print("[Miner.mine_block] INFO: Calculating difficulty target.")
                 current_target = self.block_manager.calculate_target()
                 current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
                 # ✅ **Retrieve Miner Address**
-                if not hasattr(self, "key_manager") or not self.key_manager:
-                    print("[Miner.mine_block] ERROR: `key_manager` not initialized. Cannot retrieve miner address.")
-                    return None
-
                 print("[Miner.mine_block] INFO: Retrieving miner address.")
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
                 if not miner_address:
@@ -637,19 +621,11 @@ class Miner:
                 print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}.")
 
                 # ✅ **Calculate Block Size Based on Mempool Load**
-                if not hasattr(self, "_calculate_block_size") or not callable(self._calculate_block_size):
-                    print("[Miner.mine_block] ERROR: `_calculate_block_size` method not found. Cannot calculate block size.")
-                    return None
-
                 print("[Miner.mine_block] INFO: Calculating block size based on mempool load.")
                 self._calculate_block_size()
                 print(f"[Miner.mine_block] INFO: Current block size set to {self.current_block_size:.2f} MB.")
 
                 # ✅ **Retrieve Pending Transactions from Mempool**
-                if not hasattr(self, "transaction_manager") or not hasattr(self.transaction_manager, "mempool"):
-                    print("[Miner.mine_block] ERROR: `transaction_manager` or `mempool` not initialized. Cannot retrieve transactions.")
-                    return None
-
                 print("[Miner.mine_block] INFO: Retrieving pending transactions from mempool.")
                 pending_txs = self.transaction_manager.mempool.get_pending_transactions(
                     block_size_mb=self.current_block_size
@@ -659,11 +635,19 @@ class Miner:
                 total_fees = sum(tx["fee"] for tx in pending_txs if "fee" in tx)
                 print(f"[Miner.mine_block] INFO: Total fees for this block: {total_fees} ZYC.")
 
-                # ✅ **Create Coinbase Transaction**
-                if not hasattr(self, "_create_coinbase") or not callable(self._create_coinbase):
-                    print("[Miner.mine_block] ERROR: `_create_coinbase` method not found. Cannot create coinbase transaction.")
+                # ✅ **Check if Max Supply is Reached**
+                try:
+                    total_mined = self.block_metadata.get_total_mined_supply()
+                except Exception as e:
+                    print(f"[Miner.mine_block] ERROR: Failed to retrieve total mined supply: {e}")
                     return None
 
+                print(f"[Miner.mine_block] INFO: Total Mined Supply: {total_mined} ZYC (Max: {Constants.MAX_SUPPLY})")
+
+                if Constants.MAX_SUPPLY is not None and total_mined >= Decimal(Constants.MAX_SUPPLY):
+                    print("[Miner.mine_block] INFO: Max supply reached; only transaction fees will be rewarded.")
+
+                # ✅ **Create Coinbase Transaction**
                 print("[Miner.mine_block] INFO: Creating coinbase transaction.")
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
@@ -683,10 +667,6 @@ class Miner:
                 print(f"[Miner.mine_block] INFO: New block created with index {block_height}.")
 
                 # ✅ **Perform Proof-of-Work**
-                if not hasattr(self, "pow_manager") or not self.pow_manager:
-                    print("[Miner.mine_block] ERROR: `pow_manager` not initialized. Cannot perform Proof-of-Work.")
-                    return None
-
                 print("[Miner.mine_block] INFO: Starting Proof-of-Work.")
                 final_hash, final_nonce, attempts = self.pow_manager.perform_pow(new_block)
                 print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final hash: {final_hash[:12]}...")

@@ -16,6 +16,14 @@ from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.transactions.fees import FeeModel
 from Zyiron_Chain.utils.hashing import Hashing
 
+import hashlib
+import json
+import time
+from decimal import Decimal
+from typing import Any
+
+
+
 class TXValidation:
     """
     A dedicated class for validating transactions according to protocol rules.
@@ -63,45 +71,6 @@ class TXValidation:
 
         print(f"[TXVALIDATION] Coinbase transaction {tx.tx_id} validated successfully.")
         return True
-
-    def _calculate_block_reward(self) -> Decimal:
-        """
-        Calculate current block reward using halving logic:
-         - Halves every BLOCKCHAIN_HALVING_BLOCK_HEIGHT blocks.
-         - If total mined supply >= MAX_SUPPLY, reward is zero (only fees).
-         - Returns at least the minimum fee if reward is below that.
-        """
-        try:
-            print("[TXVALIDATION] Calculating block reward via halving logic.")
-            halving_interval = getattr(Constants, "BLOCKCHAIN_HALVING_BLOCK_HEIGHT", None)
-            initial_reward = getattr(Constants, "INITIAL_COINBASE_REWARD", None)
-            max_supply = getattr(Constants, "MAX_SUPPLY", None)
-            min_fee = getattr(Constants, "MIN_TRANSACTION_FEE", None)
-
-            if halving_interval is None or initial_reward is None or min_fee is None:
-                print("[TXVALIDATION ERROR] Missing required constants for block reward calculation.")
-                return Decimal("0")
-
-            halving_interval = int(halving_interval)
-            initial_reward = Decimal(initial_reward)
-            min_fee = Decimal(min_fee)
-
-            current_height = len(self.block_manager.chain)
-            halvings = max(0, current_height // halving_interval)
-            reward = initial_reward / (2 ** halvings)
-
-            total_mined = self.block_metadata.get_total_mined_supply()
-            if max_supply is not None and total_mined >= Decimal(max_supply):
-                print("[TXVALIDATION] Max supply reached. Block reward is 0 (only fees).")
-                return Decimal("0")
-
-            final_reward = max(reward, min_fee)
-            print(f"[TXVALIDATION] Computed block reward: {final_reward} (Total mined: {total_mined}/{max_supply})")
-            return final_reward
-
-        except Exception as e:
-            print(f"[TXVALIDATION ERROR] Unexpected error in _calculate_block_reward: {e}")
-            return Decimal("0")
 
     def validate_transaction_fee(self, transaction: Any) -> bool:
         """

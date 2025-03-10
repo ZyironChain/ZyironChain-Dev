@@ -2,10 +2,68 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import hashlib
-
+import os
+from lmdb import Environment
 from decimal import Decimal
 
 #CHANGE NETWORK HERE TO ACESS THE ALL THE NETWORKS WHEN NETWORKS ARE SELECTED IT AUTO SWITCHES TO THE CORRECT PORTS 
+
+
+
+import hashlib
+import os
+import lmdb
+
+
+
+
+
+
+def store_transaction_signature(tx_id: bytes, falcon_signature: bytes, txindex_path: str) -> bytes:
+    """
+    Stores the Falcon-512 signature in `txindex.lmdb` and writes the SHA3-384 
+    transaction signature to `block.data`.
+
+    - SHA3-384 Hash (48 bytes) → `block.data`
+    - Full Falcon-512 Signature (700 bytes) + 512-byte Salt → `txindex.lmdb`
+    
+    Args:
+        tx_id (bytes): The transaction ID.
+        falcon_signature (bytes): The full Falcon-512 signature (700 bytes).
+        txindex_path (str): Path to the `txindex.lmdb` database.
+
+    Returns:
+        bytes: SHA3-384 hash (48 bytes) stored in block.data.
+    """
+
+    # ✅ Generate a 512-byte cryptographic salt
+    salt = os.urandom(512)
+
+    # ✅ Compute SHA3-384 hash: Falcon-512 Signature + Salt
+    sha3_384_hash = hashlib.sha3_384(falcon_signature + salt).digest()
+
+    # ✅ Ensure the LMDB environment is opened correctly
+    env = lmdb.open(txindex_path, map_size=128 * 1024 * 1024, max_dbs=1)
+
+    # ✅ Store full Falcon-512 signature + salt in `txindex.lmdb`
+    try:
+        with env.begin(write=True) as txn:
+            txn.put(tx_id, salt + falcon_signature)  # ✅ Store salt + full signature
+
+        print(f"[INFO] ✅ Falcon-512 Signature stored in `txindex.lmdb` for TX ID {tx_id.hex()}.")
+
+    except Exception as e:
+        print(f"[ERROR] ❌ Failed to store Falcon-512 Signature: {e}")
+
+    # ✅ Close LMDB environment after use
+    env.close()
+
+    # ✅ Return SHA3-384 hashed signature for block storage (`block.data`)
+    return sha3_384_hash
+
+
+
+
 
 class Constants:
     """
@@ -46,10 +104,11 @@ class Constants:
     MAX_LMDB_DATABASES = 200
 
     # 🔹 **Magic Numbers**
+# ✅ Store the magic number in **big endian** (matching block.data format)
     MAGIC_NUMBERS = {
-        "mainnet": 0x5A594331,
-        "testnet": 0x5A595432,
-        "regnet": 0x5A595233
+        "mainnet": int.from_bytes(b"\x5A\x59\x43\x31", "big"),
+        "testnet": int.from_bytes(b"\x5A\x59\x54\x32", "big"),
+        "regnet": int.from_bytes(b"\x5A\x59\x52\x33", "big")
     }
     MAGIC_NUMBER = MAGIC_NUMBERS[NETWORK]
 
@@ -62,7 +121,8 @@ class Constants:
     UTXO_FLAG = UTXO_FLAGS[NETWORK]
 
 
-    LMDB_MAP_SIZE = 128  # 1 GB
+    LMDB_MAP_SIZE = 128 * 1024 * 1024  # ✅ Convert 128MB → Bytes (128 * 1024 * 1024)
+
     
     DATABASES = {
         "block_metadata": "block_metadata",
@@ -106,13 +166,13 @@ class Constants:
         MIN_DIFFICULTY_FACTOR = 0.85  # ⬇️ **Max decrease: 15%**
         MAX_DIFFICULTY_FACTOR = 4.0  # ⬆️ **Max increase: 400%**
 
-    # 🔹 **Coin Economics**
-    MAX_SUPPLY = None if NETWORK in ["testnet", "regnet"] else 77_777_777  # 🪙 **No max supply for testnet & regnet**
-    INITIAL_COINBASE_REWARD = 7.00  # 🎁 **Starting block reward**
-    BLOCKCHAIN_HALVING_BLOCK_HEIGHT = 420_480  # 📉 **Halving every ~4 years (~5 min block time)**
-    COIN = Decimal("0.00000001")  # ✅ Smallest currency unit
+    # 🔹 **Coin Economics (Fixed Supply Model)**
+    MAX_SUPPLY = 77_777_777 if NETWORK == "mainnet" else None  # 🪙 **Fixed supply for mainnet, no max for testnet & regnet**
+    INITIAL_COINBASE_REWARD = 7.00  # 🎁 **Fixed block reward per mined block**
+    COIN = Decimal("0.00000001")  # ✅ Smallest currency unit (1 ZYC = 100,000,000 units called a Zee)
+    
 
-    # 🔹 **Maximum Block Size Settings**
+# ✅ **Updated Block Size Range to Allow 0MB - 10MB**
     MAX_BLOCK_SIZE_SETTINGS = {
         "mainnet": (0, 10 * 1024 * 1024),  # ✅ 0MB to 10MB
         "testnet": (0, 10 * 1024 * 1024),  # ✅ 0MB to 10MB
@@ -121,14 +181,16 @@ class Constants:
 
     # ✅ **Apply Network-Specific Block Size Limits**
     BLOCK_SIZE_RANGE = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
-    MIN_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[0]
-    MAX_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[1]
+    MIN_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[0]  # ✅ Minimum Block Size (0MB)
+    MAX_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[1]  # ✅ Maximum Block Size (10MB)
 
     # ✅ **Explicitly Set Initial Block Size**
-    INITIAL_BLOCK_SIZE_MB = (MIN_BLOCK_SIZE_BYTES / (1024 * 1024)) if MIN_BLOCK_SIZE_BYTES > 0 else 0  # ✅ Ensures valid computation
+    INITIAL_BLOCK_SIZE_MB = (MIN_BLOCK_SIZE_BYTES / (1024 * 1024)) if MIN_BLOCK_SIZE_BYTES > 0 else 0  # ✅ Ensures 0MB allowed
 
 
-    MAX_TIME_DRIFT = 7200
+    # ✅ **Time Drift Configuration**
+    MAX_TIME_DRIFT = 7200  # ⏳ 2-hour time drift buffer
+
 
 
     # 🔹 **Hashing & Security**
@@ -181,50 +243,137 @@ class Constants:
 
 # 🔹 **Database Configuration**
     # Define the maximum block data file size before a new one is created (512 MB)
-    BLOCK_DATA_FILE_SIZE_MB = 512  # ✅ Ensures block.data files roll over at 512 MB
+    BLOCK_DATA_FILE_SIZE_BYTES = 512 * 1024 * 1024  # ✅ Convert MB → Bytes (512MB)
+
+
+
+    # ✅ Standardized Block Storage Offsets (Matches block.data format)
+    BLOCK_STORAGE_OFFSETS = {
+        "magic_number": {
+            "start": 0, "size": 4,
+            "desc": "4-byte Network Identifier (Magic Number)"
+        },
+        "block_length": {
+            "start": 4, "size": 8,
+            "desc": "8-byte Unsigned Long Long, ensures block length within limits"
+        },
+        "block_hash": {
+            "start": 12, "size": 48,
+            "desc": "48-byte SHA3-384 Block Hash"
+        },
+        "previous_hash": {
+            "start": 60, "size": 48,
+            "desc": "48-byte SHA3-384 Previous Block Hash"
+        },
+        "merkle_root": {
+            "start": 108, "size": 48,
+            "desc": "48-byte SHA3-384 Merkle Root"
+        },
+        "block_height": {
+            "start": 156, "size": 8,
+            "desc": "8-byte Unsigned Long Long Block Height"
+        },
+        "timestamp": {
+            "start": 164, "size": 8,
+            "desc": "8-byte Block Timestamp"
+        },
+        "difficulty_length": {
+            "start": 172, "size": 1,
+            "desc": "1-byte Difficulty Length (size marker)"
+        },
+        "difficulty": {
+            "start": 173, "size": 64,
+            "desc": "64-byte Difficulty Target"
+        },
+        "nonce": {
+            "start": 237, "size": 8,
+            "desc": "8-byte Unsigned Long Long Nonce"
+        },
+        "miner_address": {
+            "start": 245, "size": 128,
+            "desc": "128-byte Falcon-512 Public Key of Miner"
+        },
+        "transaction_signature": {
+            "start": 373, "size": 48,
+            "desc": "48-byte SHA3-384 Transaction Signature"
+        },
+        "falcon_signature": {
+            "start": 421, "size": 700,
+            "desc": "700-byte Falcon-512 Digital Signature"
+        },
+        "reward": {
+            "start": 1121, "size": 8,
+            "desc": "8-byte Block Reward"
+        },
+        "fees_collected": {
+            "start": 1129, "size": 8,
+            "desc": "8-byte Total Fees Collected"
+        },
+        "block_version": {
+            "start": 1137, "size": 4,
+            "desc": "4-byte Block Version"
+        },
+        "transaction_count": {
+            "start": 1141, "size": 4,
+            "desc": "4-byte Number of Transactions"
+        },
+        "metadata": {
+            "start": 1145, "size": 256,
+            "desc": "256-byte Truncated Metadata (Dynamic Storage)"
+        },
+        "transactions": {
+            "start": 1401, "size": None,
+            "desc": "Variable-Length Transactions (Starts after all metadata)"
+        }
+    }
+
+
+
+
+
 
     # Network Database Configuration
     NETWORK_DATABASES = {
         "mainnet": {
-            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
-            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata.lmdb",
-            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex.lmdb",
-            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo.lmdb",
-            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history.lmdb",
-            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index.lmdb",
-            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool.lmdb",
-            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats.lmdb",
-            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks.lmdb",
-            "flag": "MAINNET"  # ✅ Ensures correct network identification
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata.lmdb",  # 📜 Stores block headers & metadata
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history.lmdb",  # 📊 Stores UTXO history (spent & unspent)
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool.lmdb",  # 🚀 Stores pending transactions (standard & smart)
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats.lmdb",  # 📈 Tracks historical fee data for congestion-based fees
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks.lmdb",  # 🏗️ Stores orphaned blocks awaiting parent blocks
+            "flag": "MAINNET"  # ✅ Network identifier flag
         },
         "testnet": {
-            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
-            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Testnet.lmdb",
-            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Testnet.lmdb",
-            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Testnet.lmdb",
-            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Testnet.lmdb",
-            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index_Testnet.lmdb",
-            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Testnet.lmdb",
-            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Testnet.lmdb",
-            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Testnet.lmdb",
-            "flag": "TESTNET"  # ✅ Ensures correct network identification
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Testnet.lmdb",  # 📜 Stores block headers & metadata
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Testnet.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Testnet.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Testnet.lmdb",  # 📊 Stores UTXO history (spent & unspent)
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Testnet.lmdb",  # 🚀 Stores pending transactions (standard & smart)
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Testnet.lmdb",  # 📈 Tracks historical fee data for congestion-based fees
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Testnet.lmdb",  # 🏗️ Stores orphaned blocks awaiting parent blocks
+            "flag": "TESTNET"  # ✅ Network identifier flag
         },
         "regnet": {
-            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # Current working directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # Subfolder for block data
-            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Regnet.lmdb",
-            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Regnet.lmdb",
-            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Regnet.lmdb",
-            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Regnet.lmdb",
-            "wallet_index": f"{BLOCKCHAIN_STORAGE_PATH}wallet_index_Regnet.lmdb",
-            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Regnet.lmdb",
-            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Regnet.lmdb",
-            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Regnet.lmdb",
-            "flag": "REGNET"  # ✅ Ensures correct network identification
+            "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
+            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Regnet.lmdb",  # 📜 Stores block headers & metadata
+            "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Regnet.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
+            "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Regnet.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)
+            "utxo_history": f"{BLOCKCHAIN_STORAGE_PATH}utxo_history_Regnet.lmdb",  # 📊 Stores UTXO history (spent & unspent)
+            "mempool": f"{BLOCKCHAIN_STORAGE_PATH}mempool_Regnet.lmdb",  # 🚀 Stores pending transactions (standard & smart)
+            "fee_stats": f"{BLOCKCHAIN_STORAGE_PATH}fee_stats_Regnet.lmdb",  # 📈 Tracks historical fee data for congestion-based fees
+            "orphan_blocks": f"{BLOCKCHAIN_STORAGE_PATH}orphan_blocks_Regnet.lmdb",  # 🏗️ Stores orphaned blocks awaiting parent blocks
+            "flag": "REGNET"  # ✅ Network identifier flag
         }
     }
+
+
+
 
     # Assign the correct database set based on the selected network
     DATABASES = NETWORK_DATABASES[NETWORK]
