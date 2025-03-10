@@ -398,43 +398,65 @@ class SecretKey:
 
 
 
+import time
+
+import time
 
 if __name__ == "__main__":
-    # Example usage and test of Falcon keys and signatures
     try:
         print("Generating Falcon keys...")
-        
-        # Create a secret key for Falcon (1024-bit security level)
-        secret_key = SecretKey(1024)
-        print("Secret Key generated.")
-        
+
+        # Measure key generation time
+        start_time = time.time()
+        secret_key = SecretKey(256)
+        keygen_time = time.time() - start_time
+        print(f"Secret Key generated in {keygen_time:.6f} seconds.")
+
         # Create the corresponding public key
         public_key = PublicKey(secret_key)
         print("Public Key generated.")
-        
-        # Print the keys
-        print("\nSecret Key:")
-        print(secret_key)
 
-        print("\nPublic Key:")
-        print(public_key)
+        # Convert h to a hex-friendly format
+        def to_hex(value):
+            """Convert a list or bytes to a hex string."""
+            if isinstance(value, list):
+                return "".join(format(x, "02x") for x in value)  # Convert list elements to hex
+            elif isinstance(value, bytes):
+                return value.hex()
+            else:
+                return str(value)  # If it's something else, fallback to string
+
+        print("\nSecret Key (Hex Representation):")
+        print(to_hex(secret_key.h))
+
+        print("\nPublic Key (Hex Representation):")
+        print(to_hex(public_key.h))
 
         # Message to sign
         message = b"Test message for Falcon signature."
 
         # Signing the message
         print("\nSigning the message...")
+        start_time = time.time()
         signature = secret_key.sign(message)
-        print("Message signed successfully.")
+        sign_time = time.time() - start_time
+        print(f"Message signed successfully in {sign_time:.6f} seconds.")
+
+        # Display the raw signature in hexadecimal format
+        print("\nGenerated Signature (Hex):")
+        print(signature.hex())  # Convert bytes to hex for better readability
 
         # Verifying the signature
         print("\nVerifying the signature...")
+        start_time = time.time()
         is_valid = public_key.verify(message, signature)
+        verify_time = time.time() - start_time
 
         if is_valid:
-            print("Signature verified successfully. The message is authentic.")
+            print(f"Signature verified successfully in {verify_time:.6f} seconds. The message is authentic.")
         else:
-            print("Signature verification failed. The message is not authentic.")
+            print(f"Signature verification failed in {verify_time:.6f} seconds. The message is not authentic.")
 
     except Exception as e:
         print(f"An error occurred: {e}")
+
