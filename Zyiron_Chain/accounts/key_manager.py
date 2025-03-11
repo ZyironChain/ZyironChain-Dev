@@ -508,7 +508,7 @@ class KeyManager:
     def sign_message_interactive(self):
         """
         Allows the user to input a message, signs it using the default key,
-        and displays the signature, public key, and hashed public key.
+        and verifies the signature for correctness.
         """
         try:
             network = self.network  # ✅ Get current network
@@ -526,30 +526,45 @@ class KeyManager:
             # ✅ Ask user for message input
             message = input("\nEnter the message to sign: ").strip().encode("utf-8")
 
-            # ✅ Sign the message using the stored private key
+            # ✅ Hash the message before signing
+            hashed_message = hashlib.sha3_384(message).digest()
+
+            # ✅ Sign the hashed message using the stored private key
             print("\nSigning the message...")
-            signature = self.sign_transaction(message, network, identifier)
-            print("Message signed successfully.")
+            signature = self.sign_transaction(hashed_message, network, identifier)
+            signature_base64 = base64.b64encode(signature).decode("utf-8")
+            print("\n✅ Message signed successfully!")
 
             # ✅ Retrieve the raw public key
             raw_public_key = self.recompute_raw_public_key(network, identifier)
-
-            # ✅ Convert everything to Base64 for better display
-            signature_base64 = base64.b64encode(signature).decode("utf-8")
             raw_public_key_base64 = base64.b64encode(raw_public_key.encode("utf-8")).decode("utf-8")
 
             # ✅ Display output
-            print("\nSignature (Base64):")
+            print("\n🔹 Signature (Base64 Encoded):")
             print(signature_base64)
 
-            print("\nRaw Public Key (Base64):")
+            print("\n🔹 Raw Public Key (Base64 Encoded):")
             print(raw_public_key_base64)
 
-            print("\nHashed Public Key:")
+            print("\n🔹 Hashed Public Key (Network Address):")
             print(hashed_pubkey)
 
+            # ✅ Ask user if they want to verify the signature
+            verify = input("\nDo you want to verify this signature? (yes/no): ").strip().lower()
+            if verify == "yes":
+                print("\n🔹 Verifying the signed message...")
+
+                # ✅ Ensure verification uses the **same hashed message**
+                is_valid = self.verify_transaction(hashed_message, base64.b64decode(signature_base64), network, identifier)
+
+                if is_valid:
+                    print("\n✅ Signature verification successful! The message is authentic.")
+                else:
+                    print("\n❌ Signature verification failed! The message is NOT authentic.")
+
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"\n❌ An error occurred: {e}")
+
 
 
 
@@ -587,14 +602,24 @@ class KeyManager:
             print(f"  - Network: {key_data.get('network', 'N/A')}\n")
 
 
-
+    def _convert_json_complex(self, obj):
+        """Recursively convert dictionaries with 'real' and 'imag' keys into complex numbers."""
+        if isinstance(obj, dict):
+            if 'real' in obj and 'imag' in obj:
+                return complex(obj['real'], obj['imag'])
+            else:
+                return {k: self._convert_json_complex(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_json_complex(v) for v in obj]
+        else:
+            return obj
 
     def sign_transaction(self, message: bytes, network: str, identifier: str) -> bytes:
         """
         Sign a transaction using the stored private key in KeyManager.
 
         Args:
-            message (bytes): The message to sign.
+            message (bytes): The original message to sign.
             network (str): Either "testnet" or "mainnet".
             identifier (str): The identifier of the key to sign with.
 
@@ -613,29 +638,41 @@ class KeyManager:
         try:
             # ✅ Decode the JSON-stored private key
             private_key_json = json.loads(base64.b64decode(key_data["private_key"]).decode("utf-8"))
-            
-            # ✅ Create a new Falcon SecretKey instance
-            secret_key = SecretKey(512)
 
-            # ✅ Convert stored JSON complex values back to real complex numbers
-            for key, value in private_key_json.items():
-                if isinstance(value, dict) and "real" in value and "imag" in value:
-                    # ✅ Convert back to complex number
-                    setattr(secret_key, key, complex(value["real"], value["imag"]))
+            # ✅ Recursively convert JSON data to complex numbers
+            def _convert_json_complex(obj):
+                """Recursively convert dictionaries with 'real' and 'imag' keys into complex numbers."""
+                if isinstance(obj, dict):
+                    if 'real' in obj and 'imag' in obj:
+                        return complex(obj['real'], obj['imag'])
+                    else:
+                        return {k: _convert_json_complex(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [_convert_json_complex(v) for v in obj]
                 else:
-                    setattr(secret_key, key, value)  # ✅ Set other values normally
+                    return obj
+
+            # ✅ Convert JSON structure to Falcon format
+            private_key_converted = _convert_json_complex(private_key_json)
+
+            # ✅ Create a Falcon SecretKey instance and update attributes
+            secret_key = SecretKey(512)
+            secret_key.__dict__.update(private_key_converted)
 
         except Exception as e:
             raise ValueError(f"Failed to load private key for signing: {e}")
 
         print(f"🔹 Signing transaction for {network.upper()} using {identifier}...")
 
-        # ✅ Sign the message using Falcon
-        signature = secret_key.sign(message)
-        print("✅ Transaction signed successfully.")
-        
-        return signature
+        # ✅ Hash the message before signing with SHA3-384
+        hashed_message = hashlib.sha3_384(message).digest()
 
+        # ✅ Sign the hashed message using Falcon
+        signature = secret_key.sign(hashed_message)
+        print("✅ Transaction signed successfully.")
+
+        # ✅ Encode the signature in base64 to preserve integrity
+        return base64.b64encode(signature)
 
 
 
@@ -644,10 +681,10 @@ class KeyManager:
         Verify a transaction signature using the stored public key.
 
         Args:
-            message (bytes): The message to verify.
+            message (bytes): The original message to verify.
             signature (bytes): The signature to verify.
             network (str): The network ("testnet" or "mainnet").
-            identifier (str): The key identifier to verify with.
+            identifier (str): The key identifier used for signing.
 
         Returns:
             bool: True if the signature is valid, False otherwise.
@@ -662,16 +699,42 @@ class KeyManager:
             raise ValueError(f"Key '{identifier}' not found in {network}.")
 
         try:
+            # ✅ Decode and reconstruct the JSON-stored public key
             public_key_json = json.loads(base64.b64decode(key_data["public_key"]).decode("utf-8"))
-            public_key = PublicKey(SecretKey(512))  # ✅ Create Falcon public key
-            public_key.__dict__.update(public_key_json)  # ✅ Restore public key data
+
+            # ✅ Convert JSON format to complex numbers
+            def _convert_json_complex(obj):
+                """Recursively convert dictionaries with 'real' and 'imag' keys into complex numbers."""
+                if isinstance(obj, dict):
+                    if 'real' in obj and 'imag' in obj:
+                        return complex(obj['real'], obj['imag'])
+                    else:
+                        return {k: _convert_json_complex(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [_convert_json_complex(v) for v in obj]
+                else:
+                    return obj
+
+            # ✅ Restore public key with Falcon format
+            public_key_converted = _convert_json_complex(public_key_json)
+
+            # ✅ Create a Falcon PublicKey instance and update attributes
+            public_key = PublicKey(SecretKey(512))
+            public_key.__dict__.update(public_key_converted)
+
         except Exception as e:
             raise ValueError(f"Failed to load public key for verification: {e}")
 
         print(f"🔹 Verifying transaction for {network.upper()} using {identifier}...")
 
-        # ✅ Verify the message signature
-        is_valid = public_key.verify(message, signature)
+        # ✅ Ensure the message is **hashed before verification**
+        hashed_message = hashlib.sha3_384(message).digest()
+
+        # ✅ Decode base64 signature to raw bytes
+        signature_bytes = base64.b64decode(signature)
+
+        # ✅ Verify the hashed message against the signature
+        is_valid = public_key.verify(hashed_message, signature_bytes)
 
         if is_valid:
             print("✅ Transaction verified successfully.")
@@ -679,6 +742,10 @@ class KeyManager:
             print("❌ Transaction verification failed.")
 
         return is_valid
+
+
+
+
 
 
     def export_keys(self):
