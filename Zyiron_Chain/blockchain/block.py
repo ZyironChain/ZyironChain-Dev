@@ -47,7 +47,6 @@ class Block:
       - block hash (calculated from all header fields)
     """
 
-
     def __init__(
         self,
         index: int,
@@ -78,7 +77,7 @@ class Block:
         self.timestamp = int(timestamp) if timestamp else int(time.time())
 
         # ✅ **Version from constants**
-        self.version = Constants.VERSION
+        self.version = Constants.VERSION  # This is a string (e.g., "1.00")
 
         print(f"[Block.__init__] Creating Block #{self.index}")
         print(f" - Previous Hash: {self.previous_hash.hex()}")
@@ -89,7 +88,7 @@ class Block:
 
         # ✅ **Compute the Merkle root**
         self.merkle_root = self._compute_merkle_root()
-        print(f"[Block.__init__] Merkle Root computed: {self.merkle_root.hex()}")
+        print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")  # ✅ Remove .hex() since it's already a hex string
 
         # ✅ **Assign Coinbase TX ID**
         self.tx_id = self._get_coinbase_tx_id()
@@ -98,7 +97,25 @@ class Block:
         # ✅ **Hash is assigned only when mined**
         self.hash = None
         print(f"[Block.__init__] Block initialized successfully.")
-              
+
+    def calculate_hash(self) -> str:
+        """
+        Calculate the block's hash using single SHA3-384.
+        """
+        # Convert version to integer if it's a string
+        version_int = int(float(self.version) * 100)  # Convert "1.00" to 100
+        header_bytes = (
+            version_int.to_bytes(4, 'big') +  # ✅ Convert version to bytes
+            self.index.to_bytes(8, 'big') +
+            self.previous_hash +
+            bytes.fromhex(self.merkle_root) +  # ✅ Convert hex string to bytes
+            self.timestamp.to_bytes(8, 'big') +
+            self.nonce.to_bytes(8, 'big') +
+            self.difficulty +
+            self.miner_address
+        )
+        return Hashing.hash(header_bytes).hex()  # ✅ Properly hash bytes
+    
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, i.e. the data
@@ -122,23 +139,6 @@ class Block:
         print("[Block.from_bytes] Deserializing block from bytes.")
         data = Deserializer().deserialize(block_bytes)
         return cls.from_dict(data)
-
-    def calculate_hash(self) -> str:
-        """
-        Calculate the block's hash using single SHA3-384.
-        """
-        header_bytes = (
-            self.version.to_bytes(4, 'big') +
-            self.index.to_bytes(8, 'big') +
-            self.previous_hash +
-            self.merkle_root +
-            self.timestamp.to_bytes(8, 'big') +
-            self.nonce.to_bytes(8, 'big') +
-            self.difficulty +
-            self.miner_address
-        )
-        return Hashing.hash(header_bytes).hex()  # ✅ Properly hash bytes
-
 
 
 
@@ -180,7 +180,13 @@ class Block:
                 if len(tx_hashes) % 2 != 0:
                     tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd
 
-                new_level = [Hashing.hash((tx_hashes[i] + tx_hashes[i + 1]).encode()).hex() for i in range(0, len(tx_hashes), 2)]
+                # Convert hex strings to bytes before concatenation and hashing
+                new_level = []
+                for i in range(0, len(tx_hashes), 2):
+                    combined = bytes.fromhex(tx_hashes[i]) + bytes.fromhex(tx_hashes[i + 1])
+                    new_hash = Hashing.hash(combined).hex()  # Hash the combined bytes
+                    new_level.append(new_hash)
+
                 tx_hashes = new_level  # Move to next Merkle tree level
 
             # Final Merkle Root
@@ -191,7 +197,6 @@ class Block:
         except Exception as e:
             print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
             return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
-
 
 
     def to_dict(self) -> dict:

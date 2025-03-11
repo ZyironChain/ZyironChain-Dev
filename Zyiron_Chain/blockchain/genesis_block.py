@@ -164,7 +164,6 @@ class GenesisBlockManager:
             if not miner_address:
                 raise ValueError("[GenesisBlockManager] ERROR: Failed to retrieve miner address.")
 
-
             # ✅ **Define Zyiron Chain Metadata for Genesis Block**
             genesis_metadata = {
                 "Genesis Block": "***************************Genesis Block***************************",
@@ -229,15 +228,21 @@ class GenesisBlockManager:
             last_update = start_time
 
             # ✅ **Mine Until Difficulty Target is Met**
-            max_difficulty = Constants.MAX_DIFFICULTY_FACTOR * Constants.GENESIS_TARGET
+            genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
+            max_difficulty = genesis_target_int * Constants.MAX_DIFFICULTY_FACTOR
             mining_status_interval = 2  # Status update every 2 seconds
 
             while True:
                 genesis_block.nonce += 1
                 computed_hash = Hashing.hash(genesis_block.calculate_hash().encode()).hex()
-                
+
+                # ✅ **Debug Logs**
+                print(f"[DEBUG] Computed Hash (int): {int(computed_hash, 16)}")
+                print(f"[DEBUG] Genesis Target (int): {genesis_target_int}")
+                print(f"[DEBUG] Max Difficulty (int): {max_difficulty}")
+
                 # ✅ **Ensure Hash Meets Target**
-                if int(computed_hash, 16) < Constants.GENESIS_TARGET:
+                if int(computed_hash, 16) < genesis_target_int:
                     genesis_block.hash = computed_hash
                     break
 
@@ -279,7 +284,6 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
-
 
     def print_genesis_metadata(self):
         """
