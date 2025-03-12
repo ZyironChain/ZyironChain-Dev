@@ -31,34 +31,34 @@ from Zyiron_Chain.transactions.txout import TransactionOut
 class CoinbaseTx:
     """
     Represents a block reward (coinbase) transaction.
-    Uses single SHA3-384 hashing and all amounts are handled as bytes (via encoding when needed).
+    Uses single SHA3-384 hashing and all amounts are handled in smallest units (ZYC * Constants.COIN).
     Detailed print statements are used instead of logging.
     """
 
     def __init__(self, block_height: int, miner_address: str, reward: Decimal):
         print(f"[CoinbaseTx.__init__] Initializing Coinbase Transaction for Block {block_height}...")
 
-        # Assign core attributes
+        # ✅ Assign core attributes
         self.block_height = block_height
         self.miner_address = miner_address
-        self.reward = reward
+        self.reward = reward * Constants.COIN  # Convert reward to smallest unit
         self.timestamp = int(time.time())
 
-        # Generate unique transaction ID (SHA3-384 hash)
+        # ✅ Generate unique transaction ID (SHA3-384 hash)
         self.tx_id = self._generate_tx_id()
         print(f"[CoinbaseTx.__init__] Transaction ID (tx_id) generated: {self.tx_id}")
 
-        # Coinbase transactions have **no inputs**
+        # ✅ Coinbase transactions have **no inputs**
         self.inputs = []
 
         # ✅ Ensure correct output format
         self.outputs = [{
             "script_pub_key": miner_address,
-            "amount": float(self.reward),
+            "amount": float(self.reward / Constants.COIN),  # Convert back to readable units
             "locked": False  # Default locked state
         }]
 
-        # Define transaction type and fee
+        # ✅ Define transaction type and fee
         self.type = "COINBASE"
         self.fee = Decimal("0")
 
@@ -69,7 +69,7 @@ class CoinbaseTx:
         self.size = self._estimate_size()
         print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
 
-        print(f"[CoinbaseTx.__init__] CoinbaseTx successfully initialized for miner: {miner_address}")
+        print(f"[CoinbaseTx.__init__] ✅ SUCCESS: CoinbaseTx initialized for miner: {miner_address}")
 
     def _generate_tx_id(self) -> str:
         """
@@ -82,7 +82,7 @@ class CoinbaseTx:
         tx_data = f"{prefix}{self.block_height}-{self.timestamp}-{self.miner_address}-{self.reward}"
         tx_id = hashlib.sha3_384(tx_data.encode()).hexdigest()
 
-        print(f"[CoinbaseTx._generate_tx_id] Generated tx_id: {tx_id}")
+        print(f"[CoinbaseTx._generate_tx_id] INFO: Generated tx_id: {tx_id}")
         return tx_id
 
     def _estimate_size(self) -> int:
@@ -95,20 +95,20 @@ class CoinbaseTx:
             estimated_size = header_size + outputs_size
             return estimated_size
         except Exception as e:
-            print(f"[CoinbaseTx._estimate_size] ERROR: Failed to estimate size: {e}")
+            print(f"[CoinbaseTx._estimate_size] ❌ ERROR: Failed to estimate size: {e}")
             return 0
 
     def to_dict(self) -> Dict:
         """
         Serialize the CoinbaseTx to a dictionary.
         """
-        print(f"[CoinbaseTx.to_dict] Serializing CoinbaseTx (tx_id: {self.tx_id})")
+        print(f"[CoinbaseTx.to_dict] INFO: Serializing CoinbaseTx (tx_id: {self.tx_id})")
 
         return {
             "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
-            "reward": str(self.reward),
+            "reward": str(self.reward / Constants.COIN),  # Convert back for readability
             "inputs": self.inputs,
             "outputs": [
                 out.to_dict() if isinstance(out, TransactionOut) else {
@@ -142,7 +142,7 @@ class CoinbaseTx:
             obj = cls(
                 block_height=data["block_height"],
                 miner_address=data["miner_address"],
-                reward=Decimal(str(data["reward"]))  # Ensure reward is stored as Decimal
+                reward=Decimal(str(data["reward"])) * Constants.COIN  # Convert reward to smallest unit
             )
 
             obj.tx_id = data.get("tx_id", obj._generate_tx_id())  # Ensure tx_id is generated if missing

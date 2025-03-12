@@ -89,30 +89,31 @@ class WholeBlockData:
     def validate_block_data_file(self) -> bool:
         """
         Validates the block.data file by:
-          - Checking the magic number.
-          - Reading the block size.
-          - Ensuring that the block data is complete.
+        - Checking the magic number.
+        - Reading the block size.
+        - Ensuring that the block data is complete.
+        - Using **8-byte block size validation (`>Q` instead of `>I`).**
         
         :return: True if the file is valid; False otherwise.
         """
         try:
             with open(self.current_block_file, "rb") as f:
-                # Read the magic number (first 4 bytes)
+                # ✅ **Read the Magic Number (First 4 Bytes)**
                 magic_number = f.read(4)
                 if magic_number != struct.pack(">I", Constants.MAGIC_NUMBER):
                     print(f"[WholeBlockData.validate_block_data_file] ERROR: Invalid magic number in block.data: {magic_number.hex()}")
                     return False
 
-                # Read block size (next 4 bytes)
-                block_size_bytes = f.read(4)
-                if len(block_size_bytes) != 4:
+                # ✅ **Read Block Size as 8 Bytes (`>Q`)**
+                block_size_bytes = f.read(8)
+                if len(block_size_bytes) != 8:
                     print("[WholeBlockData.validate_block_data_file] ERROR: Failed to read block size from block.data.")
                     return False
 
-                block_size = struct.unpack(">I", block_size_bytes)[0]
+                block_size = struct.unpack(">Q", block_size_bytes)[0]  # ✅ Now uses 8-byte format
                 print(f"[WholeBlockData.validate_block_data_file] INFO: Block size: {block_size} bytes.")
 
-                # Read the block data based on the block size
+                # ✅ **Read the Block Data Based on the Block Size**
                 block_data = f.read(block_size)
                 if len(block_data) != block_size:
                     print(f"[WholeBlockData.validate_block_data_file] ERROR: Incomplete block data. Expected {block_size} bytes, got {len(block_data)}.")
@@ -125,7 +126,8 @@ class WholeBlockData:
             print(f"[WholeBlockData.validate_block_data_file] ERROR: Failed to validate block.data file: {e}")
             return False
 
-    
+
+        
 
     def _setup_block_storage(self):
         """
@@ -219,6 +221,7 @@ class WholeBlockData:
         - Block size is validated (0MB - 10MB).
         - Block metadata is stored correctly.
         - No redundant magic numbers are written.
+        - Ensures `difficulty_length` (1 byte), `difficulty` (64 bytes), and `fees_collected` (8 bytes) match `BLOCK_STORAGE_OFFSETS`.
 
         :param block: The block to store.
         :param difficulty: The difficulty target of the block.
@@ -230,6 +233,21 @@ class WholeBlockData:
             if not self.block_metadata:
                 print("[WholeBlockData.store_block] ERROR: `block_metadata` is not initialized. Cannot store block.")
                 return
+
+            # ✅ **Ensure Difficulty is Exactly 64 Bytes**
+            difficulty_bytes = difficulty.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty"]["size"], "big")
+
+            # ✅ **Ensure Difficulty Length is Exactly 1 Byte**
+            difficulty_length = 1  # Always 1 byte
+            difficulty_length_bytes = difficulty_length.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty_length"]["size"], "big")
+
+            # ✅ **Ensure Fees Collected is Exactly 8 Bytes**
+            fees_collected_int = int(block.fees * (10**8))  # Convert Decimal to int
+            fees_collected_bytes = fees_collected_int.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["fees_collected"]["size"], "big")
+
+            print(f"[WholeBlockData.store_block] INFO: Difficulty Length (1 byte): {difficulty_length_bytes.hex()}")
+            print(f"[WholeBlockData.store_block] INFO: Difficulty (64 bytes): {difficulty_bytes.hex()}")
+            print(f"[WholeBlockData.store_block] INFO: Fees Collected (8 bytes): {fees_collected_bytes.hex()}")
 
             # ✅ **Serialize Block Before Writing**
             block_bytes = self._serialize_block_to_binary(block)
@@ -257,7 +275,9 @@ class WholeBlockData:
 
                 # ✅ **Store Block Size as 8 Bytes (Prevent Overflow Issues)**
                 block_size_bytes = struct.pack(">Q", block_size)
-                f.write(block_size_bytes + block_bytes)
+
+                # ✅ **Write Block Data**
+                f.write(block_size_bytes + difficulty_length_bytes + difficulty_bytes + fees_collected_bytes + block_bytes)
                 f.flush()
 
                 print(f"[WholeBlockData.store_block] SUCCESS: Block {block.index} stored at offset {offset_before_write}.")
@@ -519,6 +539,7 @@ class WholeBlockData:
         """
         Serialize a Block into binary format.
         - Packs header fields, extra metadata (reward, fees, version), and transaction data.
+        - Ensures `difficulty` is exactly **64 bytes** before serialization.
         """
         try:
             print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
@@ -540,7 +561,7 @@ class WholeBlockData:
 
             # ✅ **Fix: Ensure difficulty_bytes is exactly 64 bytes**
             difficulty_value = int(header["difficulty"], 16)  # Convert from hex string
-            difficulty_bytes = difficulty_value.to_bytes(64, "big", signed=False).rjust(64, b'\x00')  # Ensure 64 bytes
+            difficulty_bytes = difficulty_value.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty"]["size"], "big").rjust(64, b'\x00')  # Ensure 64 bytes
             print(f"[WholeBlockData] INFO: Difficulty processed - length: {len(difficulty_bytes)} bytes.")
 
             # ✅ **Fix: Ensure Miner Address is exactly 128 bytes**
@@ -633,10 +654,16 @@ class WholeBlockData:
 
 
 
+
     def get_block_from_data_file(self, offset: int):
         """
         Retrieve a block from block.data using its offset.
-        Ensures block size validity and header integrity before reading the block.
+        - Ensures block size validity using **8-byte (`>Q`) format**.
+        - Validates offset correctness before reading.
+        - Prevents incomplete block reads due to file corruption.
+
+        :param offset: The byte offset to read the block from.
+        :return: The deserialized Block object, or None if retrieval fails.
         """
         try:
             print(f"[WholeBlockData.get_block_from_data_file] INFO: Attempting to retrieve block at offset {offset}.")
@@ -649,12 +676,11 @@ class WholeBlockData:
             file_size = os.path.getsize(self.current_block_file)
             print(f"[WholeBlockData.get_block_from_data_file] INFO: File size of block.data: {file_size} bytes.")
 
-            # ✅ **Ensure Offset is Correct**
+            # ✅ **Ensure Offset is Valid**
             if offset < 4:  # Offset should be at least 4 to skip the magic number
                 print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Invalid offset {offset}. Adjusting to 4.")
                 offset = 4
 
-            # ✅ **Ensure Offset is Within File Size**
             if offset >= file_size:
                 print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Offset {offset} is beyond file size {file_size}.")
                 return None
@@ -662,16 +688,16 @@ class WholeBlockData:
             with open(self.current_block_file, "rb") as f:
                 f.seek(offset)
 
-                # ✅ **Read Block Size (8 Bytes)**
+                # ✅ **Read Block Size as 8 Bytes (`>Q`)**
                 block_size_bytes = f.read(8)
                 if len(block_size_bytes) != 8:
                     print("[WholeBlockData.get_block_from_data_file] ❌ ERROR: Failed to read block size from file.")
                     return None
 
-                block_size = struct.unpack(">Q", block_size_bytes)[0]  # ✅ **Use 8-byte format**
+                block_size = struct.unpack(">Q", block_size_bytes)[0]  # ✅ Now uses 8-byte format
                 print(f"[WholeBlockData.get_block_from_data_file] INFO: Block size read as {block_size} bytes.")
 
-                # ✅ **Validate Block Size (Must be 1B - 10MB)**
+                # ✅ **Validate Block Size (1B - 10MB)**
                 if block_size <= 0 or block_size > 10 * 1024 * 1024:
                     print(f"[WholeBlockData.get_block_from_data_file] ❌ ERROR: Invalid block size {block_size}. Allowed range: 1 - 10MB.")
                     return None

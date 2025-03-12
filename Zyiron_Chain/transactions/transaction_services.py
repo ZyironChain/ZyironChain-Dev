@@ -35,29 +35,28 @@ class TransactionService:
         - Initialize the FeeModel using Constants.
         - Return the fee computed by the FeeModel.
         """
-        # Serialize transaction components to bytes
         input_data = "".join(f"{i['tx_id']}{i['amount']}" for i in inputs)
         output_data = "".join(f"{o['address']}{o['amount']}" for o in outputs)
         tx_size = len(input_data.encode("utf-8")) + len(output_data.encode("utf-8"))
+        
         print(f"[TransactionService._calculate_fees] INFO: Calculated transaction size is {tx_size} bytes.")
         
-        # Generate verification hash using single SHA3-384 hashing
         combined_data = input_data + output_data
         verification_hash = Hashing.hash(combined_data.encode("utf-8"))
         print(f"[TransactionService._calculate_fees] INFO: Verification hash computed as {verification_hash.hex()}.")
         
-        # Initialize FeeModel with network constants
         from Zyiron_Chain.transactions.fees import FeeModel  # Lazy import
         fee_model = FeeModel(max_supply=Constants.MAX_SUPPLY)
+        
         print(f"[TransactionService._calculate_fees] INFO: FeeModel initialized with max_supply {Constants.MAX_SUPPLY}.")
         
-        # Calculate fee using FeeModel and return it
         fee = fee_model.calculate_fee(
             block_size=Constants.MAX_BLOCK_SIZE_BYTES,
             payment_type=tx_type.name,
             amount=sum(Decimal(i["amount"]) for i in inputs),
             tx_size=tx_size
         )
+        
         print(f"[TransactionService._calculate_fees] INFO: Calculated fee is {fee}.")
         return fee
 
@@ -69,15 +68,9 @@ class TransactionService:
         """
         Prepare a transaction by validating inputs/outputs, calculating fees,
         creating the transaction using TransactionFactory, and allocating funds.
-        
-        Steps:
-        - Validate that input sum covers output sum.
-        - Calculate fees using _calculate_fees.
-        - Create the transaction via TransactionFactory.
-        - Allocate funds using the FeeModel's allocator.
-        - Return a dictionary with the transaction, fee breakdown, and metadata.
         """
         print("[TransactionService.prepare_transaction] INFO: Starting transaction preparation.")
+        
         if not self._validate_io_sum(inputs, outputs):
             print("[TransactionService.prepare_transaction] ERROR: Input/output sum validation failed.")
             raise ValueError("Input/output mismatch")
@@ -88,7 +81,6 @@ class TransactionService:
         tx = TransactionFactory.create_transaction(tx_type, inputs, outputs)
         print(f"[TransactionService.prepare_transaction] INFO: Transaction created with tx_id {tx.tx_id}.")
 
-        # Allocate funds using the fee model's allocator (assumes allocator is part of FeeModel)
         allocation = self.fee_model.allocator.allocate(Decimal(tx.fee))
         print(f"[TransactionService.prepare_transaction] INFO: Fund allocation for fee: {allocation}")
 
@@ -100,6 +92,7 @@ class TransactionService:
             },
             "metadata": metadata or {}
         }
+        
         print("[TransactionService.prepare_transaction] INFO: Transaction preparation complete.")
         return result
 
@@ -110,5 +103,7 @@ class TransactionService:
         """
         input_sum = sum(Decimal(inp["amount"]) for inp in inputs)
         output_sum = sum(Decimal(out["amount"]) for out in outputs)
+        
         print(f"[TransactionService._validate_io_sum] INFO: Total inputs = {input_sum}, Total outputs = {output_sum}.")
+        
         return input_sum >= output_sum

@@ -104,12 +104,12 @@ class GenesisBlockManager:
                 # ✅ **Use Constants-Based Offset for Genesis Block**
                 genesis_block_offset = Constants.BLOCK_STORAGE_OFFSETS["magic_number"]["start"]
                 block_from_storage = self.block_storage.get_block_from_data_file(genesis_block_offset)
-                
+
                 if block_from_storage and hasattr(block_from_storage, "index") and block_from_storage.index == 0:
                     print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block retrieved from block.data with hash: {block_from_storage.hash}")
 
                     # ✅ **Ensure the block matches the expected Genesis hash**
-                    expected_genesis_hash = Constants.GENESIS_BLOCK_HASH
+                    expected_genesis_hash = Constants.ZERO_HASH  # ✅ FIX: Replace incorrect BLOCk_HASH with Constants.ZERO_HASH
                     if block_from_storage.hash == expected_genesis_hash:
                         print("[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block matches expected hash.")
                         return block_from_storage
@@ -285,6 +285,7 @@ class GenesisBlockManager:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
 
+
     def print_genesis_metadata(self):
         """
         Retrieves and prints the Genesis Block metadata from the Coinbase transaction.
@@ -373,14 +374,14 @@ class GenesisBlockManager:
                     f"Expected Length: {Constants.SHA3_384_HASH_SIZE}, Found: {len(genesis_block.hash)}"
                 )
 
-            # ✅ **Check Difficulty Target Compliance (Uses `Constants.GENESIS_TARGET`)**
-            genesis_target = Constants.GENESIS_TARGET
+            # ✅ **Check Difficulty Target Compliance**
             block_hash_int = int(genesis_block.hash, 16)
+            genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
 
-            if block_hash_int >= genesis_target:
+            if block_hash_int >= genesis_target_int:
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block hash does not meet difficulty target.\n"
-                    f"Expected Target: {hex(genesis_target)}\n"
+                    f"Expected Target: {hex(genesis_target_int)}\n"
                     f"Found: {genesis_block.hash}"
                 )
 
@@ -456,6 +457,7 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager.validate_genesis_block] ❌ ERROR: Genesis block validation failed: {e}")
             return False
+
 
 
     def prevent_duplicate_genesis(self):
