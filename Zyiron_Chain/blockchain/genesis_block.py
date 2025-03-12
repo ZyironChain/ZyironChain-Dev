@@ -229,7 +229,7 @@ class GenesisBlockManager:
 
             # ✅ **Mine Until Difficulty Target is Met**
             genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
-            max_difficulty = genesis_target_int * Constants.MAX_DIFFICULTY_FACTOR
+            max_difficulty = int.from_bytes(Constants.MAX_DIFFICULTY, byteorder='big')  # ✅ FIX: Uses Constants.MAX_DIFFICULTY
             mining_status_interval = 2  # Status update every 2 seconds
 
             while True:
