@@ -299,7 +299,7 @@ class Constants:
             "desc": "1-byte Difficulty Length (size marker)"
         },
         "difficulty": {
-            "start": 173, "size": 64,
+            "start": 173, "size": 48,
             "desc": "64-byte Difficulty Target (first 48 bytes are significant, rest are zeros)"
         },
         "nonce": {

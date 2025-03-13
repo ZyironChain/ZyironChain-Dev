@@ -192,47 +192,74 @@ class Block:
     def calculate_hash(self) -> bytes:
         """
         Calculate the block's hash using single SHA3-384.
+        - Ensures correct conversion of all fields to bytes.
+        - Handles edge cases with proper type checking.
         """
-        # Convert version to integer if it's a string
-        version_int = int(float(self.version) * 100)  # Convert "1.00" to 100
+        try:
 
-        # Ensure previous_hash is bytes
-        previous_hash_bytes = (
-            bytes.fromhex(self.previous_hash) if isinstance(self.previous_hash, str)
-            else self.previous_hash
-        )
+            # ✅ **Convert version to integer and then bytes** (e.g., "1.00" → 100)
+            try:
+                version_int = int(float(self.version) * 100)  # Convert "1.00" to 100
+                version_bytes = version_int.to_bytes(4, 'big')
+            except ValueError:
+                print(f"[Block.calculate_hash] ERROR: Invalid version format '{self.version}', defaulting to 100.")
+                version_bytes = (100).to_bytes(4, 'big')  # Default to 100 if conversion fails
 
-        # Ensure merkle_root is bytes
-        merkle_root_bytes = (
-            bytes.fromhex(self.merkle_root) if isinstance(self.merkle_root, str)
-            else self.merkle_root
-        )
+            # ✅ **Ensure previous_hash is 48 bytes**
+            if isinstance(self.previous_hash, str):
+                previous_hash_bytes = bytes.fromhex(self.previous_hash)
+            elif isinstance(self.previous_hash, bytes):
+                previous_hash_bytes = self.previous_hash
+            else:
+                print("[Block.calculate_hash] ERROR: Invalid previous_hash format, using zero hash.")
+                previous_hash_bytes = Constants.ZERO_HASH  # Fallback
 
-        # Ensure difficulty is bytes
-        difficulty_bytes = (
-            bytes.fromhex(self.difficulty) if isinstance(self.difficulty, str)
-            else self.difficulty
-        )
+            # ✅ **Ensure merkle_root is 48 bytes**
+            if isinstance(self.merkle_root, str):
+                merkle_root_bytes = bytes.fromhex(self.merkle_root)
+            elif isinstance(self.merkle_root, bytes):
+                merkle_root_bytes = self.merkle_root
+            else:
+                print("[Block.calculate_hash] ERROR: Invalid merkle_root format, using zero hash.")
+                merkle_root_bytes = Constants.ZERO_HASH  # Fallback
 
-        # Ensure miner_address is bytes
-        miner_address_bytes = (
-            self.miner_address if isinstance(self.miner_address, bytes)
-            else self.miner_address.encode('utf-8')  # Only encode if it's a string
-        )
+            # ✅ **Ensure difficulty is exactly 48 bytes**
+            if isinstance(self.difficulty, str):
+                difficulty_bytes = bytes.fromhex(self.difficulty).ljust(48, b'\x00')[:48]
+            elif isinstance(self.difficulty, bytes):
+                difficulty_bytes = self.difficulty.ljust(48, b'\x00')[:48]
+            else:
+                print("[Block.calculate_hash] ERROR: Invalid difficulty format, using zero difficulty.")
+                difficulty_bytes = b'\x00' * 48  # Fallback
 
-        # Convert all fields to bytes
-        header_bytes = (
-            version_int.to_bytes(4, 'big') +  # ✅ Convert version to bytes
-            self.index.to_bytes(8, 'big') +
-            previous_hash_bytes +  # ✅ Use bytes directly
-            merkle_root_bytes +  # ✅ Use bytes directly
-            self.timestamp.to_bytes(8, 'big') +
-            self.nonce.to_bytes(8, 'big') +
-            difficulty_bytes +  # ✅ Use bytes directly
-            miner_address_bytes  # ✅ Use bytes directly
-        )
+            # ✅ **Ensure miner_address is exactly 128 bytes**
+            if isinstance(self.miner_address, bytes):
+                miner_address_bytes = self.miner_address.ljust(128, b'\x00')[:128]
+            elif isinstance(self.miner_address, str):
+                miner_address_bytes = self.miner_address.encode('utf-8').ljust(128, b'\x00')[:128]
+            else:
+                print("[Block.calculate_hash] ERROR: Invalid miner_address format, using empty address.")
+                miner_address_bytes = b'\x00' * 128  # Fallback
 
-        return Hashing.hash(header_bytes)  # ✅ Return bytes directly (no .hex())
+            # ✅ **Pack all fields into bytes for hashing**
+            header_bytes = (
+                version_bytes +
+                self.index.to_bytes(8, 'big') +
+                previous_hash_bytes +
+                merkle_root_bytes +
+                self.timestamp.to_bytes(8, 'big') +
+                self.nonce.to_bytes(8, 'big') +
+                difficulty_bytes +
+                miner_address_bytes
+            )
+
+            # ✅ **Compute SHA3-384 hash**
+            block_hash = Hashing.hash(header_bytes)
+            return block_hash
+
+        except Exception as e:
+            print(f"[Block.calculate_hash] ❌ ERROR: Failed to compute block hash: {e}")
+            return Constants.ZERO_HASH  # Fallback on error
 
 
     def get_header(self) -> dict:
@@ -301,64 +328,105 @@ class Block:
         """
         Deserialize a block from a dictionary, ensuring proper type conversions and safety checks.
         """
-        print("[Block.from_dict] Reconstructing block from dict.")
+        try:
+            print("[Block.from_dict] INFO: Reconstructing block from dict.")
 
-        # ✅ Validate required fields
-        required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce", "difficulty", "miner_address"]
-        if "header" not in data:
-            raise ValueError("[Block.from_dict] ERROR: 'header' section missing in input data.")
+            # ✅ Validate required fields
+            required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce", "difficulty", "miner_address"]
+            if "header" not in data:
+                raise ValueError("[Block.from_dict] ❌ ERROR: 'header' section missing in input data.")
 
-        for field in required_fields:
-            if field not in data["header"]:
-                raise ValueError(f"[Block.from_dict] ERROR: Missing required field '{field}' in 'header'.")
+            for field in required_fields:
+                if field not in data["header"]:
+                    raise ValueError(f"[Block.from_dict] ❌ ERROR: Missing required field '{field}' in 'header'.")
 
-        # ✅ Convert difficulty back to bytes from hex (handle if it's already bytes)
-        difficulty_bytes = bytes.fromhex(data["header"]["difficulty"]) if isinstance(data["header"]["difficulty"], str) else data["header"]["difficulty"]
-
-        # ✅ Ensure previous_hash and merkle_root are properly decoded from hex
-        previous_hash_bytes = bytes.fromhex(data["header"]["previous_hash"]) if isinstance(data["header"]["previous_hash"], str) else data["header"]["previous_hash"]
-        merkle_root_bytes = bytes.fromhex(data["header"]["merkle_root"]) if isinstance(data["header"]["merkle_root"], str) else data["header"]["merkle_root"]
-
-        # ✅ Ensure miner address is properly encoded
-        miner_address_str = data["header"]["miner_address"]
-        miner_address_bytes = bytes.fromhex(miner_address_str) if isinstance(miner_address_str, str) else miner_address_str
-
-        # ✅ Rebuild transaction objects safely
-        rebuilt_transactions = []
-        for tx_data in data.get("transactions", []):
-            if not isinstance(tx_data, dict):
-                raise TypeError(f"[Block.from_dict] ERROR: Transaction must be a dict, got {type(tx_data)}.")
-            tx_type = tx_data.get("type", "STANDARD").upper()
-            if tx_type == "COINBASE":
-                from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-                rebuilt_transactions.append(CoinbaseTx.from_dict(tx_data))
+            # ✅ **Convert difficulty back to bytes (ensure exactly 48 bytes)**
+            if isinstance(data["header"]["difficulty"], str):
+                difficulty_bytes = bytes.fromhex(data["header"]["difficulty"]).ljust(48, b'\x00')[:48]
+            elif isinstance(data["header"]["difficulty"], bytes):
+                difficulty_bytes = data["header"]["difficulty"].ljust(48, b'\x00')[:48]
             else:
-                from Zyiron_Chain.transactions.tx import Transaction
-                rebuilt_transactions.append(Transaction.from_dict(tx_data))
+                print("[Block.from_dict] ❌ ERROR: Invalid difficulty format, using zero difficulty.")
+                difficulty_bytes = b'\x00' * 48  # Fallback
 
-        # ✅ Construct Block object with properly formatted fields
-        block = cls(
-            index=data["header"]["index"],
-            previous_hash=previous_hash_bytes,
-            transactions=rebuilt_transactions,
-            timestamp=data["header"]["timestamp"],
-            nonce=data["header"]["nonce"],
-            difficulty=difficulty_bytes,
-            miner_address=miner_address_bytes
-        )
+            # ✅ **Ensure previous_hash and merkle_root are properly decoded from hex**
+            if isinstance(data["header"]["previous_hash"], str):
+                previous_hash_bytes = bytes.fromhex(data["header"]["previous_hash"])
+            elif isinstance(data["header"]["previous_hash"], bytes):
+                previous_hash_bytes = data["header"]["previous_hash"]
+            else:
+                print("[Block.from_dict] ❌ ERROR: Invalid previous_hash format, using zero hash.")
+                previous_hash_bytes = Constants.ZERO_HASH  # Fallback
 
-        # ✅ Assign optional fields with proper conversion
-        block.tx_id = data.get("tx_id")
-        block.transaction_signature = bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))
-        block.reward = Decimal(str(data["header"].get("reward", "0")))  # Convert to Decimal for precision
-        block.fees = Decimal(str(data["header"].get("fees", "0")))  # Convert to Decimal for safe handling
-        block.version = data["header"].get("version", "1.00")  # Default version
+            if isinstance(data["header"]["merkle_root"], str):
+                merkle_root_bytes = bytes.fromhex(data["header"]["merkle_root"])
+            elif isinstance(data["header"]["merkle_root"], bytes):
+                merkle_root_bytes = data["header"]["merkle_root"]
+            else:
+                print("[Block.from_dict] ❌ ERROR: Invalid merkle_root format, using zero hash.")
+                merkle_root_bytes = Constants.ZERO_HASH  # Fallback
 
-        # ✅ Preserve hash if already mined; otherwise, compute it
-        block.hash = bytes.fromhex(data.get("hash")) if data.get("hash") else block.calculate_hash()
+            # ✅ **Ensure miner address is properly encoded**
+            if isinstance(data["header"]["miner_address"], str):
+                miner_address_bytes = data["header"]["miner_address"].encode("utf-8").ljust(128, b'\x00')[:128]
+            elif isinstance(data["header"]["miner_address"], bytes):
+                miner_address_bytes = data["header"]["miner_address"].ljust(128, b'\x00')[:128]
+            else:
+                print("[Block.from_dict] ❌ ERROR: Invalid miner_address format, using empty address.")
+                miner_address_bytes = b'\x00' * 128  # Fallback
 
-        print(f"[Block.from_dict] Block #{block.index} reconstructed successfully.")
-        return block
+            # ✅ **Rebuild transaction objects safely**
+            rebuilt_transactions = []
+            for tx_data in data.get("transactions", []):
+                if not isinstance(tx_data, dict):
+                    print(f"[Block.from_dict] ❌ ERROR: Transaction must be a dict, got {type(tx_data)}. Skipping.")
+                    continue  # Skip invalid transactions
+
+                tx_type = tx_data.get("type", "STANDARD").upper()
+                try:
+                    if tx_type == "COINBASE":
+                        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+                        rebuilt_transactions.append(CoinbaseTx.from_dict(tx_data))
+                    else:
+                        from Zyiron_Chain.transactions.tx import Transaction
+                        rebuilt_transactions.append(Transaction.from_dict(tx_data))
+                except Exception as tx_error:
+                    print(f"[Block.from_dict] ❌ ERROR: Failed to parse transaction {tx_data.get('tx_id', 'UNKNOWN')}: {tx_error}")
+                    continue  # Skip failing transactions
+
+            # ✅ **Construct Block object with properly formatted fields**
+            block = cls(
+                index=int(data["header"]["index"]),
+                previous_hash=previous_hash_bytes,
+                transactions=rebuilt_transactions,
+                timestamp=int(data["header"]["timestamp"]),
+                nonce=int(data["header"]["nonce"]),
+                difficulty=difficulty_bytes,
+                miner_address=miner_address_bytes
+            )
+
+            # ✅ **Assign optional fields with proper conversion**
+            block.tx_id = data.get("tx_id", None)
+            block.transaction_signature = (
+                bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))[:48]
+            )
+            block.reward = Decimal(str(data["header"].get("reward", "0")))  # Convert to Decimal for precision
+            block.fees = Decimal(str(data["header"].get("fees", "0")))  # Convert to Decimal for safe handling
+            block.version = str(data["header"].get("version", "1.00"))  # Default version
+
+            # ✅ **Preserve hash if already mined; otherwise, compute it**
+            if "hash" in data and isinstance(data["hash"], str):
+                block.hash = bytes.fromhex(data["hash"])
+            else:
+                block.hash = block.calculate_hash()
+
+            print(f"[Block.from_dict] ✅ SUCCESS: Block #{block.index} reconstructed successfully.")
+            return block
+
+        except Exception as e:
+            print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}")
+            raise
+
 
     def __repr__(self) -> str:
         """

@@ -16,7 +16,7 @@ from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.utils.deserializer import Deserializer
-
+from Zyiron_Chain.blockchain.block import Block
 class UTXOStorage:
     """
     UTXOStorage manages unspent transaction outputs (UTXOs) and UTXO history in LMDB.
@@ -50,43 +50,52 @@ class UTXOStorage:
 
 
 
-    def validate_utxos(self, transactions: List[Dict]) -> bool:
+    def validate_utxos(self, block: Block) -> bool:
         """
         Validate that all transactions in a block reference valid, unspent UTXOs.
 
-        :param transactions: List of transactions to validate.
+        :param block: The Block object containing transactions.
         :return: True if all transactions are valid, False otherwise.
         """
         try:
-            print("[UTXOStorage.validate_utxos] INFO: Validating UTXOs for block transactions...")
+            print(f"[UTXOStorage.validate_utxos] INFO: Validating UTXOs for Block {block.index}...")
 
-            for tx in transactions:
+            # Ensure block has transactions
+            if not hasattr(block, "transactions") or not isinstance(block.transactions, list):
+                print(f"[UTXOStorage.validate_utxos] ERROR: Block {block.index} has no transactions.")
+                return False
+
+            for tx in block.transactions:
                 if not isinstance(tx, dict) or "inputs" not in tx or "tx_id" not in tx:
                     print(f"[UTXOStorage.validate_utxos] ERROR: Invalid transaction format: {tx}")
                     return False
+
+                tx_id = tx["tx_id"]  # Extract transaction ID
 
                 for tx_input in tx["inputs"]:
                     tx_out_id = tx_input.get("tx_out_id")
                     output_index = tx_input.get("output_index", 0)
 
                     if not tx_out_id or not isinstance(tx_out_id, str):
-                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing tx_out_id in transaction {tx['tx_id']}")
+                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing tx_out_id in transaction {tx_id}")
                         return False
 
+                    # Retrieve UTXO from storage
                     utxo = self.get_utxo(tx_out_id, output_index)
                     if not utxo:
-                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id} at index {output_index} not found.")
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id} at index {output_index} not found for tx {tx_id}.")
                         return False
 
-                    if utxo["spent_status"]:
-                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id}:{output_index} is already spent.")
+                    # Ensure UTXO is unspent
+                    if utxo.get("spent_status"):
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id}:{output_index} is already spent in tx {tx_id}.")
                         return False
 
-            print("[UTXOStorage.validate_utxos] SUCCESS: All UTXOs validated successfully.")
+            print(f"[UTXOStorage.validate_utxos] ✅ SUCCESS: All UTXOs validated successfully for Block {block.index}.")
             return True
 
         except Exception as e:
-            print(f"[UTXOStorage.validate_utxos] ERROR: Failed to validate UTXOs: {e}")
+            print(f"[UTXOStorage.validate_utxos] ❌ ERROR: Failed to validate UTXOs for Block {block.index}: {e}")
             return False
 
 

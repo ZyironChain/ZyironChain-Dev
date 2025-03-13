@@ -540,7 +540,7 @@ class WholeBlockData:
         """
         Serialize a Block into binary format.
         - Packs header fields, extra metadata (reward, fees, version), and transaction data.
-        - Ensures `difficulty` is exactly **64 bytes** before serialization.
+        - Ensures `difficulty` is exactly **48 bytes** before serialization.
         """
         try:
             print(f"[WholeBlockData] INFO: Serializing Block {block.index} to binary.")
@@ -560,9 +560,9 @@ class WholeBlockData:
             nonce = int(header["nonce"])
             print(f"[WholeBlockData] INFO: Fixed header fields - index: {block_height}, timestamp: {timestamp}, nonce: {nonce}.")
 
-            # ✅ **Fix: Ensure difficulty_bytes is exactly 64 bytes**
-            difficulty_value = int(header["difficulty"], 16)  # Convert from hex string
-            difficulty_bytes = difficulty_value.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty"]["size"], "big").rjust(64, b'\x00')  # Ensure 64 bytes
+            # ✅ **Fix: Ensure difficulty_bytes is exactly 48 bytes**
+            difficulty_hex = header.get("difficulty", "00" * 48)
+            difficulty_bytes = bytes.fromhex(difficulty_hex).ljust(48, b'\x00')[:48]  # Ensure 48 bytes
             print(f"[WholeBlockData] INFO: Difficulty processed - length: {len(difficulty_bytes)} bytes.")
 
             # ✅ **Fix: Ensure Miner Address is exactly 128 bytes**
@@ -587,7 +587,7 @@ class WholeBlockData:
             print(f"[WholeBlockData] INFO: Block version processed: {block_version}")
 
             # ✅ **Fix: Pack the header fields correctly**
-            fixed_header_format = ">I 48s 48s Q I 64s 128s 48s Q Q I"
+            fixed_header_format = ">I 48s 48s Q I 48s 128s 48s Q Q I"
             fixed_header_data = struct.pack(
                 fixed_header_format,
                 block_height,
@@ -595,7 +595,7 @@ class WholeBlockData:
                 merkle_root,
                 timestamp,
                 nonce,
-                difficulty_bytes,
+                difficulty_bytes,  # Now correctly 48 bytes
                 miner_address_padded,
                 transaction_signature,
                 reward,

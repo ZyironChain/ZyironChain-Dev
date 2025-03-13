@@ -482,61 +482,48 @@ class BlockMetadata:
     def store_block(self, block: Block, difficulty: Union[bytes, int, str]):
         """
         Stores block metadata in LMDB and appends block data to block.data.
-        Enhanced with robust hex/bytes handling, transaction validation,
-        and improved error checking. Ensures no re-hashing occurs.
+        - Ensures correct serialization of the 48-byte difficulty value.
+        - Handles hex/bytes conversions for difficulty, miner address, and hashes.
+        - Validates transactions before storing.
+        - Includes error handling for LMDB operations and file storage.
         """
         try:
             print(f"[BlockMetadata.store_block] INFO: Storing Block {block.index}...")
 
-            # Validate LMDB instances
+            # ✅ **Validate LMDB instances**
             if not self.block_metadata_db or not self.txindex_db:
-                print("[BlockMetadata.store_block] ❌ ERROR: LMDB instances not initialized")
+                print("[BlockMetadata.store_block] ❌ ERROR: LMDB instances not initialized.")
                 return
 
-            # Check for existing block using both height and hash
+            # ✅ **Check if block already exists**
             existing_by_height = self.get_block_by_height(block.index)
             existing_by_hash = self.get_block_metadata(block.hash.hex() if isinstance(block.hash, bytes) else block.hash)
             if existing_by_height or existing_by_hash:
-                print(f"[BlockMetadata.store_block] ⚠️ WARNING: Block {block.index} exists. Skipping")
+                print(f"[BlockMetadata.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping.")
                 return
 
-            # Enhanced difficulty handling
+            # ✅ **Ensure difficulty is correctly formatted as 48 bytes**
             if isinstance(difficulty, str):  # Hex string input
-                if not all(c in string.hexdigits for c in difficulty):
-                    raise ValueError("Invalid hex characters in difficulty")
-                # Convert hex to bytes and check length
-                difficulty_bytes = bytes.fromhex(difficulty)
-                if not (48 <= len(difficulty_bytes) <= 64):
-                    raise ValueError(f"Difficulty must be 48 to 64 bytes (hex), got {len(difficulty_bytes)}")
-                # Pad with leading zeros to 64 bytes
-                difficulty_bytes = difficulty_bytes.ljust(64, b'\x00')
+                difficulty_bytes = bytes.fromhex(difficulty).ljust(48, b'\x00')[:48]
             elif isinstance(difficulty, bytes):
-                if not (48 <= len(difficulty) <= 64):
-                    raise ValueError(f"Difficulty must be 48 to 64 bytes, got {len(difficulty)}")
-                # Pad with leading zeros to 64 bytes
-                difficulty_bytes = difficulty.ljust(64, b'\x00')
+                difficulty_bytes = difficulty.ljust(48, b'\x00')[:48]
             elif isinstance(difficulty, int):
-                # Convert to bytes and pad to 64 bytes
-                difficulty_bytes = difficulty.to_bytes(64, "big", signed=False)
+                difficulty_bytes = difficulty.to_bytes(48, "big")
             else:
-                raise TypeError("Difficulty must be hex str, bytes, or int")
+                raise TypeError("Difficulty must be a hex str, bytes, or int")
 
-            # Robust miner address handling
-            miner_address = self._get_miner_address(block)  # Extracted to helper method
+            # ✅ **Ensure miner address is correctly formatted to 128 bytes**
+            miner_address = self._get_miner_address(block).ljust(128, "\x00")[:128]
 
-            # Validate and convert hash fields
-            def ensure_hex(field, value):
-                if isinstance(value, bytes):
-                    return value.hex()
-                if isinstance(value, str) and len(value) == 96 and all(c in string.hexdigits for c in value):
-                    return value
-                raise ValueError(f"Invalid {field} format: {type(value)}")
+            # ✅ **Ensure previous hash, merkle root, and block hash are in hex format**
+            def ensure_hex(value):
+                return value.hex() if isinstance(value, bytes) else value
 
-            previous_hash_hex = ensure_hex("previous_hash", block.previous_hash)
-            merkle_root_hex = ensure_hex("merkle_root", block.merkle_root)
-            block_hash_hex = ensure_hex("block_hash", block.hash)
+            previous_hash_hex = ensure_hex(block.previous_hash)
+            merkle_root_hex = ensure_hex(block.merkle_root)
+            block_hash_hex = ensure_hex(block.hash)
 
-            # Transaction validation and ID extraction
+            # ✅ **Transaction validation and ID extraction**
             tx_ids = []
             valid_transactions = []
             for tx in block.transactions:
@@ -545,16 +532,16 @@ class BlockMetadata:
                     tx_ids.append(tx_id)
                     valid_transactions.append(tx)
 
-            # Build block metadata with improved validation
+            # ✅ **Build block metadata**
             block_dict = {
                 "index": block.index,
                 "previous_hash": previous_hash_hex,
                 "merkle_root": merkle_root_hex,
                 "timestamp": block.timestamp,
                 "nonce": block.nonce,
-                "difficulty": difficulty_bytes.hex(),  # Store as 64-byte hex string
+                "difficulty": difficulty_bytes.hex(),
                 "miner_address": miner_address,
-                "transaction_signature": getattr(block, "signature", b"\x00"*48)[:48].hex(),
+                "transaction_signature": getattr(block, "signature", b"\x00" * 48).hex(),
                 "reward": str(Decimal(block.reward).normalize() if hasattr(block, "reward") else 0),
                 "fees": str(Decimal(block.fees).normalize() if hasattr(block, "fees") else 0),
                 "version": block.version,
@@ -562,7 +549,7 @@ class BlockMetadata:
                 "hash": block_hash_hex  # Use the mined hash directly
             }
 
-            # File handling with magic number verification
+            # ✅ **Handle block file storage**
             with open(self.current_block_file, "ab+") as block_file:
                 block_file.seek(0)
                 existing_magic = block_file.read(4)
@@ -575,7 +562,7 @@ class BlockMetadata:
                 block_file.seek(0, os.SEEK_END)
                 block_offset = block_file.tell()
 
-            # LMDB transaction with proper error handling
+            # ✅ **Store block metadata in LMDB**
             with self.block_metadata_db.env.begin(write=True) as txn:
                 try:
                     block_metadata = {
@@ -592,16 +579,17 @@ class BlockMetadata:
                     print(f"[BlockMetadata.store_block] ❌ LMDB Error: {e}")
                     raise
 
-            # Transaction indexing with validation
+            # ✅ **Transaction indexing**
             print(f"[BlockMetadata.store_block] Indexing {len(valid_transactions)} transactions...")
             for tx in valid_transactions:
                 self._index_transaction(tx, block_hash_hex)
 
-            print(f"[BlockMetadata.store_block] ✅ Block {block.index} stored successfully")
+            print(f"[BlockMetadata.store_block] ✅ Block {block.index} stored successfully.")
 
         except Exception as e:
             print(f"[BlockMetadata.store_block] ❌ Critical Error: {e}")
             raise
+
 
     def _get_miner_address(self, block: Block) -> str:
         """
