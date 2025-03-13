@@ -32,7 +32,7 @@ from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # Hypothe
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.miner.pow import PowManager
 from Zyiron_Chain.transactions.txout import TransactionOut 
-
+from Zyiron_Chain.utils.hashing import Hashing
 class Blockchain:
     """
     Main Blockchain class that:
@@ -104,35 +104,81 @@ class Blockchain:
     def load_chain_from_storage(self) -> list:
         """
         Load the blockchain from storage into memory with validation.
+        - Ensures block hashes are validated without re-hashing (preserves mined hash).
+        - Handles edge cases for conversions (bytes, JSON, hex, etc.).
+        - Validates block structure, integrity, transactions, and UTXOs.
         """
         try:
             print("[Blockchain.load_chain_from_storage] INFO: Loading chain from storage...")
 
-            # Retrieve all stored blocks
+            # ✅ Retrieve all stored blocks
             stored_blocks = self.block_metadata.get_all_blocks()
             if not stored_blocks:
-                print("[Blockchain.load_chain_from_storage] WARNING: No blocks found in storage.")
+                print("[Blockchain.load_chain_from_storage] ❌ WARNING: No blocks found in storage.")
                 return []  # Explicitly return an empty list
 
             loaded_blocks = []
             for block_data in stored_blocks:
                 try:
-                    # Ensure block data is valid before processing
+                    # ✅ **Ensure block data is valid before processing**
                     if not isinstance(block_data, dict) or "index" not in block_data or "hash" not in block_data:
                         print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping corrupted block: {block_data}")
                         continue
 
-                    # Deserialize the block safely
+                    # ✅ **Deserialize the block safely**
                     block = Block.from_dict(block_data)
+
+                    # ✅ **Preserve the mined hash (do not re-hash)**
+                    mined_hash = block.hash  # Original mined hash
+
+                    # ✅ **Validate block structure**
                     if not self.validate_block(block):
                         print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Skipping invalid block at height {block.index}")
                         continue
 
-                    # Add valid block to the list
+                    # ✅ **Validate block hash integrity**
+                    expected_hash = self._compute_block_hash(block)
+                    if expected_hash != mined_hash:
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} hash mismatch! Expected: {expected_hash.hex()}, Found: {mined_hash.hex()}")
+                        continue
+
+                    # ✅ **Validate transactions inside the block**
+                    valid_transactions = []
+                    for tx in block.transactions:
+                        try:
+                            if not isinstance(tx, dict):
+                                print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Invalid transaction format in Block {block.index}. Skipping.")
+                                continue
+
+                            tx_id = tx.get("tx_id")
+                            if not self._validate_transaction(tx, tx_id, block.index):
+                                print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Transaction {tx_id} in Block {block.index} failed validation.")
+                                continue
+
+                            # ✅ **Check if transaction exists in storage**
+                            stored_tx = self.tx_storage.get_transaction(tx_id)
+                            if stored_tx and stored_tx.get("tx_id") != tx_id:
+                                print(f"[Blockchain.load_chain_from_storage] ❌ WARNING: Transaction ID mismatch in stored transactions. Expected {tx_id}, Found {stored_tx.get('tx_id')}")
+                                continue
+
+                            valid_transactions.append(tx)
+
+                        except Exception as tx_error:
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction processing error in Block {block.index}: {tx_error}")
+                            continue
+
+                    # ✅ **Re-assign only valid transactions**
+                    block.transactions = valid_transactions
+
+                    # ✅ **Validate UTXOs related to this block**
+                    if not self.utxo_storage.validate_utxos(block):
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} contains invalid UTXOs. Skipping block.")
+                        continue
+
                     loaded_blocks.append(block)
 
                 except Exception as block_error:
-                    print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to process block: {block_error}")
+                    print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to process block {block_data.get('index', 'Unknown')}: {block_error}")
 
             print(f"[Blockchain.load_chain_from_storage] ✅ SUCCESS: Loaded {len(loaded_blocks)} valid blocks from storage.")
             return loaded_blocks
@@ -141,6 +187,92 @@ class Blockchain:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from storage: {e}")
             return []  # Return an empty list on any failure
 
+
+    def _compute_block_hash(self, block) -> bytes:
+        """
+        Compute block hash based on block header fields ensuring correct serialization.
+        """
+        try:
+            header_data = {
+                "index": block.index,
+                "previous_hash": block.previous_hash,
+                "merkle_root": block.merkle_root,
+                "timestamp": block.timestamp,
+                "nonce": block.nonce,
+                "difficulty": block.difficulty,
+                "miner_address": block.miner_address,
+                "transaction_signature": block.signature,
+                "reward": block.reward,
+                "fees": block.fees,
+                "version": block.version,
+            }
+
+            # ✅ Convert all fields to bytes for hashing consistently
+            header_bytes = b"".join([
+                str(header_data["index"]).encode(),
+                self._convert_to_bytes(header_data["previous_hash"]),
+                self._convert_to_bytes(header_data["merkle_root"]),
+                str(header_data["timestamp"]).encode(),
+                str(header_data["nonce"]).encode(),
+                str(header_data["difficulty"]).encode(),
+                self._convert_to_bytes(header_data["miner_address"]),
+                self._convert_to_bytes(header_data["transaction_signature"]),
+                str(header_data["reward"]).encode(),
+                str(header_data["fees"]).encode(),
+                str(header_data["version"]).encode(),
+            ])
+
+            # ✅ Ensure the computed hash is consistent
+            computed_hash = Hashing.hash(header_bytes)
+            return computed_hash
+
+        except Exception as e:
+            print(f"[Blockchain._compute_block_hash] ❌ ERROR: Failed to compute block hash: {e}")
+            return Constants.ZERO_HASH  # Return default zero hash on failure
+
+
+    def _convert_to_bytes(self, field) -> bytes:
+        """
+        Convert a field to bytes safely, handling hex strings, normal strings, and bytes.
+        """
+        if isinstance(field, bytes):
+            return field
+        elif isinstance(field, str):
+            return field.encode()
+        else:
+            print(f"[Blockchain._convert_to_bytes] ❌ WARNING: Invalid field type for hashing: {type(field)}")
+            return b""
+
+    def _validate_transaction(self, tx: dict, tx_id: str, block_index: int) -> bool:
+        """
+        Validate a transaction structure before adding it to the block.
+        """
+        try:
+            # ✅ **Ensure `tx_id` is properly formatted**
+            if not tx_id:
+                print(f"[Blockchain._validate_transaction] ❌ WARNING: Missing `tx_id` in transaction. Skipping.")
+                return False
+
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.hex()
+            elif not isinstance(tx_id, str):
+                print(f"[Blockchain._validate_transaction] ❌ WARNING: Invalid `tx_id` type. Expected str or bytes. Found: {type(tx_id)}. Skipping.")
+                return False
+
+            # ✅ **Validate inputs and outputs**
+            inputs = tx.get("inputs", [])
+            outputs = tx.get("outputs", [])
+
+            if not isinstance(inputs, list) or not isinstance(outputs, list):
+                print(f"[Blockchain._validate_transaction] ❌ WARNING: Invalid inputs/outputs format in transaction {tx_id}. Skipping.")
+                return False
+
+            print(f"[Blockchain._validate_transaction] ✅ INFO: Transaction {tx_id} in Block {block_index} is valid.")
+            return True
+
+        except Exception as e:
+            print(f"[Blockchain._validate_transaction] ❌ ERROR: Failed to validate transaction {tx_id}: {e}")
+            return False
 
     def add_block(self, block: Block, is_genesis: bool = False) -> bool:
         """
@@ -187,6 +319,22 @@ class Blockchain:
                     print(f"[Blockchain.add_block] ❌ ERROR: Missing `tx_id` in transaction. Skipping transaction in Block {block.index}.")
                     continue  # Skip this transaction
 
+                # ✅ **Handle edge cases for `tx_id` (int, bytes, hex, etc.)**
+                if isinstance(tx_id, int):
+                    tx_id = hex(tx_id)  # Convert int to hex string
+                elif isinstance(tx_id, bytes):
+                    tx_id = tx_id.hex()  # Convert bytes to hex string
+                elif not isinstance(tx_id, str):
+                    print(f"[Blockchain.add_block] ❌ ERROR: Invalid `tx_id` type in transaction. Expected str, bytes, or int. Found {type(tx_id)}. Skipping.")
+                    continue  # Skip invalid transaction
+
+                # ✅ **Ensure `tx_id` is a valid hex string**
+                try:
+                    int(tx_id, 16)  # Validate hex string
+                except ValueError:
+                    print(f"[Blockchain.add_block] ❌ ERROR: Invalid `tx_id` format. Expected hex string. Found {tx_id}. Skipping.")
+                    continue  # Skip invalid transaction
+
             # ✅ **Store block metadata and full block data**
             try:
                 self.block_metadata.store_block(block, block.difficulty)
@@ -203,11 +351,25 @@ class Blockchain:
                         print(f"[Blockchain.add_block] ❌ ERROR: Transaction in Block {block.index} is missing `tx_id`. Skipping.")
                         continue  # Skip invalid transaction
 
-                    block_hash = block.hash.hex() if isinstance(block.hash, bytes) else block.hash  # Convert bytes to hex
+                    # ✅ **Handle edge cases for `block.hash` (bytes, hex, etc.)**
+                    block_hash = block.hash
+                    if isinstance(block_hash, bytes):
+                        block_hash = block_hash.hex()  # Convert bytes to hex string
+                    elif not isinstance(block_hash, str):
+                        print(f"[Blockchain.add_block] ❌ ERROR: Invalid `block.hash` type. Expected str or bytes. Found {type(block_hash)}. Skipping.")
+                        continue  # Skip invalid block
+
+                    # ✅ **Extract inputs and outputs**
                     inputs = self._extract_inputs(tx)
                     outputs = self._extract_outputs(tx)
-                    timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
 
+                    # ✅ **Handle edge cases for `timestamp`**
+                    timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
+                    if not isinstance(timestamp, int):
+                        print(f"[Blockchain.add_block] ❌ ERROR: Invalid `timestamp` type. Expected int. Found {type(timestamp)}. Skipping.")
+                        continue  # Skip invalid transaction
+
+                    # ✅ **Store transaction**
                     self.tx_storage.store_transaction(tx_id, block_hash, inputs, outputs, timestamp)
                     print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
 
@@ -230,7 +392,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.add_block] ❌ ERROR: Failed to add Block {block.index}: {e}")
             return False
-
 
     def _convert_tx_outputs(self, outputs) -> list:
         """

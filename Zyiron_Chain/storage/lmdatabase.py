@@ -174,6 +174,7 @@ class LMDBManager:
         """
         Check database limits and warn if usage exceeds 80% of capacity.
         Ensures accurate tracking of map_size vs. actual file size.
+        Gracefully handles missing `psize` key in LMDB info.
         """
         try:
             with self.env.begin() as txn:
@@ -191,9 +192,14 @@ class LMDBManager:
                 entry_capacity = total_entries / max_capacity if max_capacity > 0 else 0
 
                 # ✅ Compute file size usage against allocated map size
-                map_size = info["map_size"]
-                last_page = info["last_pgno"]
-                page_size = info["psize"]
+                map_size = info.get("map_size", 0)
+                last_page = info.get("last_pgno", 0)
+                page_size = info.get("psize", 4096)  # Default to 4096 if `psize` is missing
+
+                if map_size <= 0:
+                    print("[LMDB WARNING] ⚠️ Invalid map_size in LMDB info. Capacity check skipped.")
+                    return
+
                 file_usage = (last_page * page_size) / map_size if map_size > 0 else 0
 
                 # ✅ Log usage warnings
@@ -207,9 +213,10 @@ class LMDBManager:
 
         except lmdb.Error as e:
             print(f"[LMDB ERROR] ❌ Failed to verify LMDB capacity: {e}")
+        except KeyError as e:
+            print(f"[LMDB ERROR] ❌ Missing key in LMDB info: {e}")
         except Exception as e:
             print(f"[LMDB ERROR] ❌ Unexpected error in capacity verification: {e}")
-
 
     def get_database_status(self):
         """

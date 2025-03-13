@@ -28,7 +28,7 @@ Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 512** for digital signat
    - **Standard Mempool** → Regular & Instant Transactions.
    - **Smart Mempool** → Smart Contract Transactions.
 ✅ **Proof-of-Work Consensus**: SHA3-384 PoW with dynamic difficulty adjustments.
-✅ **Max Supply**: 70,000,000ƶ  ZYC no havling fixed block reward a 5ƶ ZYC utill max supply is mined 140 years 
+✅ **Max Supply**: 70,000,000ƶ (ZYC) no havling fixed block reward a 5ƶ (ZYC) utill max supply It will take ~133 years to reach the full 70 million supply. Daily Issuance: 1,440 ZYC Monthly Issuance: 43,200 ZYC Yearly Issuance: 525,600 ZYC inflation rate 0.75% yearly 
    - **Smart Fund** 
 ✅ **Optimized Storage System**:
    - **LMDB**: Stores UTXOs, mempool, transactions, orphan blocks, fees, and analytics.

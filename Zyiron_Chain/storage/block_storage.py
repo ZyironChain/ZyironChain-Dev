@@ -334,7 +334,7 @@ class WholeBlockData:
 
             if file_magic_number != Constants.MAGIC_NUMBER:
                 print(f"[WholeBlockData._initialize_block_data_file] ❌ ERROR: Invalid magic number in block.data file: {hex(file_magic_number)} "
-                      f"(Expected: {hex(Constants.MAGIC_NUMBER)}).")
+                    f"(Expected: {hex(Constants.MAGIC_NUMBER)}).")
                 print("[WholeBlockData._initialize_block_data_file] ❌ WARNING: Storage corruption detected! Attempting recovery...")
 
                 # ✅ **Automatically Repair Corrupt File**

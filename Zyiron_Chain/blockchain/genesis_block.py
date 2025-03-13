@@ -143,6 +143,7 @@ class GenesisBlockManager:
     def create_and_mine_genesis_block(self) -> Block:
         """
         Creates and mines the Genesis block with full Zyiron metadata.
+        Ensures the mined hash is used directly without re-hashing.
         """
         try:
             print("[GenesisBlockManager] INFO: Checking for existing Genesis block...")
@@ -255,8 +256,6 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
-
-
 
 
 

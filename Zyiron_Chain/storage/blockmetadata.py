@@ -483,7 +483,7 @@ class BlockMetadata:
         """
         Stores block metadata in LMDB and appends block data to block.data.
         Enhanced with robust hex/bytes handling, transaction validation,
-        and improved error checking.
+        and improved error checking. Ensures no re-hashing occurs.
         """
         try:
             print(f"[BlockMetadata.store_block] INFO: Storing Block {block.index}...")
@@ -559,7 +559,7 @@ class BlockMetadata:
                 "fees": str(Decimal(block.fees).normalize() if hasattr(block, "fees") else 0),
                 "version": block.version,
                 "transactions": [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in valid_transactions],
-                "hash": block_hash_hex
+                "hash": block_hash_hex  # Use the mined hash directly
             }
 
             # File handling with magic number verification
@@ -602,8 +602,6 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.store_block] ❌ Critical Error: {e}")
             raise
-
-
 
     def _get_miner_address(self, block: Block) -> str:
         """

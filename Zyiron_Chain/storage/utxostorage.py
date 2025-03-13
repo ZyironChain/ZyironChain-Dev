@@ -6,7 +6,7 @@ import struct
 import hashlib
 import threading
 from decimal import Decimal
-from typing import Optional, Dict
+from typing import List, Optional, Dict
 
 # Adjust system path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -46,6 +46,51 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage.__init__] ERROR: Failed to initialize UTXOStorage: {e}")
             raise
+
+
+
+
+    def validate_utxos(self, transactions: List[Dict]) -> bool:
+        """
+        Validate that all transactions in a block reference valid, unspent UTXOs.
+
+        :param transactions: List of transactions to validate.
+        :return: True if all transactions are valid, False otherwise.
+        """
+        try:
+            print("[UTXOStorage.validate_utxos] INFO: Validating UTXOs for block transactions...")
+
+            for tx in transactions:
+                if not isinstance(tx, dict) or "inputs" not in tx or "tx_id" not in tx:
+                    print(f"[UTXOStorage.validate_utxos] ERROR: Invalid transaction format: {tx}")
+                    return False
+
+                for tx_input in tx["inputs"]:
+                    tx_out_id = tx_input.get("tx_out_id")
+                    output_index = tx_input.get("output_index", 0)
+
+                    if not tx_out_id or not isinstance(tx_out_id, str):
+                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing tx_out_id in transaction {tx['tx_id']}")
+                        return False
+
+                    utxo = self.get_utxo(tx_out_id, output_index)
+                    if not utxo:
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id} at index {output_index} not found.")
+                        return False
+
+                    if utxo["spent_status"]:
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id}:{output_index} is already spent.")
+                        return False
+
+            print("[UTXOStorage.validate_utxos] SUCCESS: All UTXOs validated successfully.")
+            return True
+
+        except Exception as e:
+            print(f"[UTXOStorage.validate_utxos] ERROR: Failed to validate UTXOs: {e}")
+            return False
+
+
+
 
 
     def _get_utxo_key(tx_id: bytes, output_index: int) -> bytes:

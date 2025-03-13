@@ -27,7 +27,6 @@ from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.txout import TransactionOut
 
-
 class CoinbaseTx:
     """
     Represents a block reward (coinbase) transaction.
