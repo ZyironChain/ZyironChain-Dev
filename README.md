@@ -28,7 +28,7 @@ Zyiron Chain utilizes **SHA3-384** hashing and **Falcon 512** for digital signat
    - **Standard Mempool** → Regular & Instant Transactions.
    - **Smart Mempool** → Smart Contract Transactions.
 ✅ **Proof-of-Work Consensus**: SHA3-384 PoW with dynamic difficulty adjustments.
-✅ **Max Supply**: 77,777,777 ZYC,ƶ no havling fixed block reward a 7 ZYC, utill max supply is mined 
+✅ **Max Supply**: 70,000,000ƶ  ZYC no havling fixed block reward a 5ƶ ZYC utill max supply is mined 140 years 
    - **Smart Fund** 
 ✅ **Optimized Storage System**:
    - **LMDB**: Stores UTXOs, mempool, transactions, orphan blocks, fees, and analytics.
