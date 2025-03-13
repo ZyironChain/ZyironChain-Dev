@@ -71,13 +71,14 @@ class LMDBManager:
         try:
             self.env = lmdb.open(
                 path=db_path,
-                map_size=Constants.MEMPOOL_MAX_SIZE_MB * 1024 * 1024,  # Max size in MB from constants
+                map_size=Constants.LMDB_MAP_SIZE,  # Use the correct constant
                 create=True,
                 readahead=False,
                 writemap=True,
                 meminit=False,
                 max_dbs=Constants.MAX_LMDB_DATABASES
             )
+
         except lmdb.Error as e:
             print(f"LMDB environment creation failed: {str(e)}")
             raise

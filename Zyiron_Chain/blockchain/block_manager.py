@@ -69,7 +69,7 @@ class BlockManager:
             f"[BlockManager.__init__] INIT: "
             f"Initialized on {self.network.upper()} | "
             f"Version {self.version} | "
-            f"Difficulty {hex(self.difficulty_target)}."
+            f"Difficulty {self.difficulty_target.hex()}."
         )
 
     def validate_block(self, block) -> bool:

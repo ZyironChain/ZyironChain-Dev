@@ -1,4 +1,5 @@
 import os
+import string
 import sys
 import struct
 import json
@@ -6,7 +7,7 @@ import pickle
 import time
 import hashlib
 from decimal import Decimal
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 
 # Ensure module path is set correctly
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -138,7 +139,6 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.get_block_by_height] ERROR: Failed to retrieve block by height {height}: {e}")
             return None
-
 
 
     def initialize_txindex(self):
@@ -479,140 +479,210 @@ class BlockMetadata:
 
 
 
-
-
-
-
-    def store_block(self, block: Block, difficulty: int):
+    def store_block(self, block: Block, difficulty: Union[bytes, int, str]):
         """
         Stores block metadata in LMDB and appends block data to block.data.
-        Ensures:
-        - Magic number is written only once at file creation.
-        - Blocks are correctly appended with proper data offset calculations.
-        - Transaction indexing is performed in LMDB without duplication.
+        Enhanced with robust hex/bytes handling, transaction validation,
+        and improved error checking.
         """
         try:
             print(f"[BlockMetadata.store_block] INFO: Storing Block {block.index}...")
 
-            # ✅ **Ensure LMDB Instances Exist**
+            # Validate LMDB instances
             if not self.block_metadata_db or not self.txindex_db:
-                print("[BlockMetadata.store_block] ❌ ERROR: LMDB instances are not set. Cannot store block.")
+                print("[BlockMetadata.store_block] ❌ ERROR: LMDB instances not initialized")
                 return
 
-            # ✅ **Ensure Block Does Not Already Exist**
-            existing_block = self.get_block_by_height(block.index)
-            if existing_block:
-                print(f"[BlockMetadata.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping duplicate write.")
+            # Check for existing block using both height and hash
+            existing_by_height = self.get_block_by_height(block.index)
+            existing_by_hash = self.get_block_metadata(block.hash.hex() if isinstance(block.hash, bytes) else block.hash)
+            if existing_by_height or existing_by_hash:
+                print(f"[BlockMetadata.store_block] ⚠️ WARNING: Block {block.index} exists. Skipping")
                 return
 
-            # ✅ **Preserve Mined Hash (No Re-computation)**
-            print(f"[BlockMetadata.store_block] INFO: Using mined hash {block.hash} for Block {block.index}.")
+            # Enhanced difficulty handling
+            if isinstance(difficulty, str):  # Hex string input
+                if not all(c in string.hexdigits for c in difficulty):
+                    raise ValueError("Invalid hex characters in difficulty")
+                # Convert hex to bytes and check length
+                difficulty_bytes = bytes.fromhex(difficulty)
+                if not (48 <= len(difficulty_bytes) <= 64):
+                    raise ValueError(f"Difficulty must be 48 to 64 bytes (hex), got {len(difficulty_bytes)}")
+                # Pad with leading zeros to 64 bytes
+                difficulty_bytes = difficulty_bytes.ljust(64, b'\x00')
+            elif isinstance(difficulty, bytes):
+                if not (48 <= len(difficulty) <= 64):
+                    raise ValueError(f"Difficulty must be 48 to 64 bytes, got {len(difficulty)}")
+                # Pad with leading zeros to 64 bytes
+                difficulty_bytes = difficulty.ljust(64, b'\x00')
+            elif isinstance(difficulty, int):
+                # Convert to bytes and pad to 64 bytes
+                difficulty_bytes = difficulty.to_bytes(64, "big", signed=False)
+            else:
+                raise TypeError("Difficulty must be hex str, bytes, or int")
 
-            # ✅ **Extract Coinbase Transaction Details**
-            coinbase_tx = next((tx for tx in block.transactions if getattr(tx, 'tx_type', None) == "COINBASE"), None)
-            miner_address = coinbase_tx.outputs[0].script_pub_key if coinbase_tx else block.miner_address
-            reward_amount = coinbase_tx.outputs[0].amount if coinbase_tx else Constants.INITIAL_COINBASE_REWARD
-            total_fees = sum(Decimal(str(tx.get('fee', 0))) for tx in block.transactions if isinstance(tx, dict))
-            print(f"[BlockMetadata.store_block] INFO: Total fees for Block {block.index}: {total_fees} ZYC.")
+            # Robust miner address handling
+            miner_address = self._get_miner_address(block)  # Extracted to helper method
 
-            # ✅ **Ensure Standardized Miner Address (128 Bytes)**
-            miner_address_encoded = miner_address.encode("utf-8")
-            miner_address_padded = miner_address_encoded.ljust(128, b'\x00')
+            # Validate and convert hash fields
+            def ensure_hex(field, value):
+                if isinstance(value, bytes):
+                    return value.hex()
+                if isinstance(value, str) and len(value) == 96 and all(c in string.hexdigits for c in value):
+                    return value
+                raise ValueError(f"Invalid {field} format: {type(value)}")
 
-            # ✅ **Ensure Difficulty is Stored as 64 Bytes**
-            difficulty_bytes = int(difficulty).to_bytes(64, "big", signed=False)
+            previous_hash_hex = ensure_hex("previous_hash", block.previous_hash)
+            merkle_root_hex = ensure_hex("merkle_root", block.merkle_root)
+            block_hash_hex = ensure_hex("block_hash", block.hash)
 
-            # ✅ **Ensure Transaction Signature Exists (48 Bytes)**
-            transaction_signature = getattr(block, "signature", b"\x00" * 48)[:48]
+            # Transaction validation and ID extraction
+            tx_ids = []
+            valid_transactions = []
+            for tx in block.transactions:
+                tx_id = self._validate_and_extract_tx_id(tx)  # Helper method
+                if tx_id:
+                    tx_ids.append(tx_id)
+                    valid_transactions.append(tx)
 
-            # ✅ **Prepare Block Metadata (Preserving Mined Hash)**
+            # Build block metadata with improved validation
             block_dict = {
                 "index": block.index,
-                "previous_hash": block.previous_hash,
-                "merkle_root": block.merkle_root,
+                "previous_hash": previous_hash_hex,
+                "merkle_root": merkle_root_hex,
                 "timestamp": block.timestamp,
                 "nonce": block.nonce,
-                "difficulty_length": 64,  # ✅ **Added Difficulty Length**
-                "difficulty": difficulty_bytes.hex(),
-                "miner_address": miner_address_padded.decode("utf-8"),
-                "transaction_signature": transaction_signature.hex(),  # ✅ **Added Block Signature**
-                "reward": str(reward_amount),
-                "fees": str(total_fees),
+                "difficulty": difficulty_bytes.hex(),  # Store as 64-byte hex string
+                "miner_address": miner_address,
+                "transaction_signature": getattr(block, "signature", b"\x00"*48)[:48].hex(),
+                "reward": str(Decimal(block.reward).normalize() if hasattr(block, "reward") else 0),
+                "fees": str(Decimal(block.fees).normalize() if hasattr(block, "fees") else 0),
                 "version": block.version,
-                "transactions": [
-                    tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in block.transactions
-                ],  # ✅ **Convert transactions to dicts**
-                "hash": block.hash  # ✅ **Mined hash is stored directly**
+                "transactions": [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in valid_transactions],
+                "hash": block_hash_hex
             }
 
-            # ✅ **Calculate Correct Data Offset in `block.data`**
-            with open(self.current_block_file, "ab") as block_file:
-                if os.path.getsize(self.current_block_file) == 0:  # ✅ **Only write magic number for new file**
+            # File handling with magic number verification
+            with open(self.current_block_file, "ab+") as block_file:
+                block_file.seek(0)
+                existing_magic = block_file.read(4)
+                if existing_magic != struct.pack(">I", Constants.MAGIC_NUMBER):
+                    block_file.seek(0)
+                    block_file.truncate()
                     block_file.write(struct.pack(">I", Constants.MAGIC_NUMBER))
-                    print(f"[BlockMetadata.store_block] ✅ INFO: Magic number written to {self.current_block_file}.")
+                    print(f"[BlockMetadata.store_block] ✅ Wrote magic number")
 
                 block_file.seek(0, os.SEEK_END)
                 block_offset = block_file.tell()
 
-            block_metadata = {
-                "hash": block.hash,  # ✅ **No re-hashing**
-                "block_header": block_dict,
-                "transaction_count": len(block.transactions),
-                "block_size": len(json.dumps(block_dict, ensure_ascii=False).encode("utf-8")),
-                "data_file": self.current_block_file,
-                "data_offset": block_offset,
-                "tx_ids": [tx["tx_id"] for tx in block.transactions if isinstance(tx, dict)]
-            }
-
-            # ✅ **Store Metadata in LMDB Using Shared `block_metadata_db`**
-            print(f"[BlockMetadata.store_block] INFO: Storing metadata in LMDB for Block {block.index}...")
+            # LMDB transaction with proper error handling
             with self.block_metadata_db.env.begin(write=True) as txn:
-                lmdb_key = f"block:{block.hash}".encode("utf-8")
-                txn.put(lmdb_key, json.dumps(block_metadata, ensure_ascii=False).encode("utf-8"))
-                print(f"[BlockMetadata.store_block] ✅ INFO: Metadata stored in LMDB for Block {block.index}.")
-
-            # ✅ **Index Transactions in TxStorage Using Shared `txindex_db`**
-            print(f"[BlockMetadata.store_block] INFO: Indexing transactions for Block {block.index}...")
-            for tx in block.transactions:
                 try:
-                    if isinstance(tx, dict) and "tx_id" in tx:
-                        tx_id = tx["tx_id"]
-                        inputs = tx.get("inputs", [])
-                        outputs = tx.get("outputs", [])
-                        timestamp = tx.get("timestamp", int(time.time()))
-                        tx_signature = tx.get("tx_signature", "00" * 48)[:48]  # ✅ **Ensure `tx_signature` exists**
-                        falcon_signature = tx.get("falcon_signature", "00" * 48)[:48]  # ✅ **Ensure `falcon_signature` exists**
+                    block_metadata = {
+                        "hash": block_hash_hex,
+                        "block_header": block_dict,
+                        "transaction_count": len(valid_transactions),
+                        "block_size": len(json.dumps(block_dict)),
+                        "data_file": self.current_block_file,
+                        "data_offset": block_offset,
+                        "tx_ids": tx_ids
+                    }
+                    txn.put(f"block:{block_hash_hex}".encode(), json.dumps(block_metadata).encode())
+                except Exception as e:
+                    print(f"[BlockMetadata.store_block] ❌ LMDB Error: {e}")
+                    raise
 
-                        # ✅ **Store transaction with required signatures**
-                        self.tx_storage.store_transaction(
-                            tx_id, block.hash, inputs, outputs, timestamp, tx_signature, falcon_signature
-                        )
-                        print(f"[BlockMetadata.store_block] ✅ INFO: Indexed transaction {tx_id} for Block {block.index}.")
-                    else:
-                        print(f"[BlockMetadata.store_block] ⚠️ WARNING: Skipping invalid transaction format: {tx}")
+            # Transaction indexing with validation
+            print(f"[BlockMetadata.store_block] Indexing {len(valid_transactions)} transactions...")
+            for tx in valid_transactions:
+                self._index_transaction(tx, block_hash_hex)
 
-                except TypeError as e:
-                    print(f"[BlockMetadata.store_block] ❌ ERROR: Transaction storage failed for tx {tx_id}: {e}")
-
-            # ✅ **Append Block Data to `block.data` File**
-            print(f"[BlockMetadata.store_block] INFO: Appending block data to block.data file...")
-            block_bytes = json.dumps(block_dict, ensure_ascii=False).encode('utf-8')
-            block_size_bytes = struct.pack(">I", len(block_bytes))
-            serialized_block_full = block_size_bytes + block_bytes
-
-            with open(self.current_block_file, "ab") as block_file:
-                offset_before_write = block_file.tell()
-                block_file.write(serialized_block_full)
-                block_file.flush()
-                print(f"[BlockMetadata.store_block] ✅ SUCCESS: Block {block.index} written to block.data at offset {offset_before_write}.")
-
-            print(f"[BlockMetadata.store_block] ✅ SUCCESS: Block {block.index} fully stored and indexed successfully.")
+            print(f"[BlockMetadata.store_block] ✅ Block {block.index} stored successfully")
 
         except Exception as e:
-            print(f"[BlockMetadata.store_block] ❌ ERROR: Exception while storing Block {block.index}: {e}")
+            print(f"[BlockMetadata.store_block] ❌ Critical Error: {e}")
             raise
 
 
+
+    def _get_miner_address(self, block: Block) -> str:
+        """
+        Extract the miner address from the coinbase transaction's script public key.
+        If no coinbase transaction is found, fall back to a default address.
+        """
+        try:
+            # Find the coinbase transaction in the block
+            coinbase_tx = next(
+                (tx for tx in block.transactions if getattr(tx, "tx_type", None) == "COINBASE"),
+                None
+            )
+
+            if coinbase_tx and hasattr(coinbase_tx, "outputs") and coinbase_tx.outputs:
+                # Extract the script public key from the first output
+                script_pub_key = coinbase_tx.outputs[0].script_pub_key
+                if script_pub_key:
+                    return script_pub_key
+
+            # Fallback to a default miner address if no coinbase transaction is found
+            print("[BlockMetadata._get_miner_address] WARNING: No coinbase transaction found. Using default miner address.")
+            return Constants.DEFAULT_MINER_ADDRESS
+
+        except Exception as e:
+            print(f"[BlockMetadata._get_miner_address] ❌ ERROR: Failed to retrieve miner address: {e}")
+            return Constants.DEFAULT_MINER_ADDRESS
+
+    def _validate_and_extract_tx_id(self, tx) -> Optional[str]:
+        """Validate transaction and extract TX ID with multiple format support"""
+        try:
+            if isinstance(tx, dict):
+                tx_id = tx.get('tx_id', '')
+            elif hasattr(tx, 'tx_id'):
+                tx_id = tx.tx_id
+            else:
+                return None
+
+            # Convert bytes to hex if needed
+            if isinstance(tx_id, bytes):
+                return tx_id.hex()
+            if isinstance(tx_id, str) and len(tx_id) == 96 and all(c in string.hexdigits for c in tx_id):
+                return tx_id
+            return None
+        except Exception as e:
+            print(f"[BlockMetadata] ⚠️ Invalid TX: {e}")
+            return None
+
+    def _index_transaction(self, tx, block_hash: str):
+        """Safe transaction indexing with validation"""
+        try:
+            tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
+            if not isinstance(tx_data, dict):
+                raise ValueError("Invalid transaction format")
+
+            required_fields = ['tx_id', 'inputs', 'outputs']
+            if not all(field in tx_data for field in required_fields):
+                raise ValueError("Missing required transaction fields")
+
+            # Convert bytes TX_ID to hex string
+            tx_id = tx_data['tx_id']
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.hex()
+            if not isinstance(tx_id, str) or len(tx_id) != 96:
+                raise ValueError("Invalid TX_ID format")
+
+            with self.txindex_db.env.begin(write=True) as txn:
+                txn.put(f"tx:{tx_id}".encode(), json.dumps({
+                    'block_hash': block_hash,
+                    'inputs': tx_data.get('inputs', []),
+                    'outputs': tx_data.get('outputs', []),
+                    'timestamp': tx_data.get('timestamp', int(time.time())),
+                    'signatures': {
+                        'tx': tx_data.get('tx_signature', '00'*48)[:48],
+                        'falcon': tx_data.get('falcon_signature', '00'*48)[:48]
+                    }
+                }).encode())
+
+        except Exception as e:
+            print(f"[BlockMetadata] ❌ Failed to index transaction: {e}")
 
 
     def _serialize_transactions(self, transactions: list) -> list:

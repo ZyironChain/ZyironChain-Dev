@@ -75,7 +75,6 @@ class PowManager:
     def adjust_difficulty(self, storage_manager):
         """
         Adjusts mining difficulty based on actual versus expected block times.
-
         - Retrieves stored block metadata from the storage_manager.
         - Calculates the ratio of expected time (Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * TARGET_BLOCK_TIME) 
         to actual time taken.
@@ -133,7 +132,7 @@ class PowManager:
 
             # ✅ **Calculate Difficulty Adjustment Ratio**
             ratio = expected_time / actual_time
-            ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, ratio))
+            ratio = max(Constants.MIN_DIFFICULTY_FACTOR, min(Constants.MAX_DIFFICULTY_FACTOR, ratio))  # Clamp ratio
 
             # ✅ **Apply Difficulty Adjustment**
             new_target = int(last_difficulty * ratio)
@@ -150,7 +149,6 @@ class PowManager:
         except Exception as e:
             print(f"[PowManager.adjust_difficulty] ERROR: Unexpected error during difficulty adjustment: {e}")
             return Constants.GENESIS_TARGET.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty"]["size"], "big")
-
 
 
     def get_average_block_time(self, storage_manager):

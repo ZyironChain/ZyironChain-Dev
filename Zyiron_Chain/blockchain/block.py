@@ -16,7 +16,7 @@ import os
 import json
 import time
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Union
 
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
@@ -40,22 +40,16 @@ from Zyiron_Chain.utils.deserializer import Deserializer
 
 
 class Block:
-    """
-    A single Block in the blockchain, containing:
-      - index, previous_hash, transactions
-      - merged 'header' fields: merkle_root, timestamp, nonce, difficulty, miner_address, version
-      - block hash (calculated from all header fields)
-    """
-
     def __init__(
         self,
         index: int,
-        previous_hash: bytes,
+        previous_hash: Union[str, bytes],  # Can be hex string or bytes
         transactions: List,
         timestamp: int = None,
         nonce: int = 0,
-        difficulty: bytes = None,
-        miner_address: str = None
+        difficulty: Union[str, bytes, int] = None,  # Can be hex string, bytes, or int
+        miner_address: Union[str, bytes] = None,  # Can be string or bytes
+        fees: Union[int, float, Decimal] = 0,  # Add fees attribute
     ):
         """
         Initializes a new block.
@@ -65,19 +59,48 @@ class Block:
         print(f"[Block.__init__] Initializing Block #{index}")
 
         # ✅ **Ensure previous_hash is bytes**
-        self.index = index
-        self.previous_hash = previous_hash if isinstance(previous_hash, bytes) else bytes.fromhex(previous_hash)
+        if isinstance(previous_hash, str):
+            self.previous_hash = bytes.fromhex(previous_hash)  # Convert hex string to bytes
+        elif isinstance(previous_hash, bytes):
+            self.previous_hash = previous_hash  # Use as-is
+        else:
+            raise TypeError("previous_hash must be a hex string or bytes")
 
         # ✅ **Ensure difficulty is bytes**
-        self.difficulty = difficulty if isinstance(difficulty, bytes) else difficulty.to_bytes(48, 'big')
+        if isinstance(difficulty, str):
+            self.difficulty = bytes.fromhex(difficulty)  # Convert hex string to bytes
+        elif isinstance(difficulty, bytes):
+            self.difficulty = difficulty  # Use as-is
+        elif isinstance(difficulty, int):
+            self.difficulty = difficulty.to_bytes(48, 'big')  # Convert int to bytes
+        else:
+            raise TypeError("difficulty must be a hex string, bytes, or int")
 
+        self.index = index
         self.transactions = transactions or []
-        self.miner_address = miner_address.ljust(128, "\x00").encode() if miner_address else b"\x00" * 128  # ✅ Ensure consistent 128-byte padding
+
+        # ✅ **Ensure miner_address is bytes**
+        if isinstance(miner_address, str):
+            self.miner_address = miner_address.ljust(128, "\x00").encode('utf-8')  # Encode string to bytes
+        elif isinstance(miner_address, bytes):
+            self.miner_address = miner_address  # Use as-is
+        else:
+            self.miner_address = b"\x00" * 128  # Default to 128 null bytes
+
         self.nonce = nonce
         self.timestamp = int(timestamp) if timestamp else int(time.time())
 
         # ✅ **Version from constants**
         self.version = Constants.VERSION  # This is a string (e.g., "1.00")
+
+        # ✅ **Compute the Merkle root internally**
+        self.merkle_root = self._compute_merkle_root()  # Ensure this returns bytes
+
+        # ✅ **Add fees attribute**
+        self.fees = Decimal(fees)  # Ensure fees is a Decimal for precision
+
+        # ✅ **Hash is assigned only when mined**
+        self.hash = None  # Initialize as None, will be set to bytes when mined
 
         print(f"[Block.__init__] Creating Block #{self.index}")
         print(f" - Previous Hash: {self.previous_hash.hex()}")
@@ -85,37 +108,120 @@ class Block:
         print(f" - Miner Address: {self.miner_address.decode().strip()}")
         print(f" - Timestamp: {self.timestamp}")
         print(f" - Nonce: {self.nonce}")
-
-        # ✅ **Compute the Merkle root**
-        self.merkle_root = self._compute_merkle_root()
-        print(f"[Block.__init__] Merkle Root computed: {self.merkle_root}")  # ✅ Remove .hex() since it's already a hex string
+        print(f" - Merkle Root: {self.merkle_root.hex()}")  # ✅ Print Merkle root as hex string
+        print(f" - Fees: {self.fees}")  # ✅ Print fees
 
         # ✅ **Assign Coinbase TX ID**
         self.tx_id = self._get_coinbase_tx_id()
         print(f"[Block.__init__] Assigned Coinbase TX ID: {self.tx_id}")
 
-        # ✅ **Hash is assigned only when mined**
-        self.hash = None
         print(f"[Block.__init__] Block initialized successfully.")
+        
+    def _compute_merkle_root(self) -> bytes:
+        """
+        Compute the Merkle root for the block's transactions using single SHA3-384 hashing.
+        - If no transactions, returns a hash of ZERO_HASH.
+        - Validates each transaction before hashing.
+        - Builds a pairwise tree of transaction hashes to derive the root.
+        """
+        try:
+            print("[Block._compute_merkle_root] INFO: Computing Merkle Root...")
 
-    def calculate_hash(self) -> str:
+            # Handle Empty Transaction List
+            if not self.transactions:
+                print("[Block._compute_merkle_root] WARNING: No transactions found; using ZERO_HASH.")
+                return Hashing.hash(Constants.ZERO_HASH.encode())  # ✅ Return bytes
+
+            # Convert Transactions to Hashes
+            tx_hashes = []
+            for tx in self.transactions:
+                try:
+                    # Ensure transaction is serializable
+                    tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
+                    tx_hash = Hashing.hash(tx_serialized)  # ✅ Returns bytes
+                    tx_hashes.append(tx_hash)
+
+                except Exception as e:
+                    print(f"[Block._compute_merkle_root] ❌ ERROR: Failed to serialize transaction: {e}")
+
+            # Ensure We Have Valid Transactions
+            if not tx_hashes:
+                print("[Block._compute_merkle_root] ERROR: No valid transactions found. Using ZERO_HASH.")
+                return Hashing.hash(Constants.ZERO_HASH.encode())
+
+            # Build Merkle Tree
+            while len(tx_hashes) > 1:
+                if len(tx_hashes) % 2 != 0:
+                    tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd
+
+                # Combine and hash pairs of hashes
+                new_level = []
+                for i in range(0, len(tx_hashes), 2):
+                    combined = tx_hashes[i] + tx_hashes[i + 1]  # Concatenate bytes
+                    new_hash = Hashing.hash(combined)  # Hash the combined bytes
+                    new_level.append(new_hash)
+
+                tx_hashes = new_level  # Move to next Merkle tree level
+
+            # Final Merkle Root
+            merkle_root = tx_hashes[0]  # ✅ Returns bytes
+            print(f"[Block._compute_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root.hex()}")
+            return merkle_root
+
+        except Exception as e:
+            print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
+            return Hashing.hash(Constants.ZERO_HASH.encode())  # Return ZERO_HASH on failure
+        
+
+
+
+    def calculate_hash(self) -> bytes:
         """
         Calculate the block's hash using single SHA3-384.
         """
         # Convert version to integer if it's a string
         version_int = int(float(self.version) * 100)  # Convert "1.00" to 100
+
+        # Ensure previous_hash is bytes
+        previous_hash_bytes = (
+            bytes.fromhex(self.previous_hash) if isinstance(self.previous_hash, str)
+            else self.previous_hash
+        )
+
+        # Ensure merkle_root is bytes
+        merkle_root_bytes = (
+            bytes.fromhex(self.merkle_root) if isinstance(self.merkle_root, str)
+            else self.merkle_root
+        )
+
+        # Ensure difficulty is bytes
+        difficulty_bytes = (
+            bytes.fromhex(self.difficulty) if isinstance(self.difficulty, str)
+            else self.difficulty
+        )
+
+        # Ensure miner_address is bytes
+        miner_address_bytes = (
+            self.miner_address if isinstance(self.miner_address, bytes)
+            else self.miner_address.encode('utf-8')  # Only encode if it's a string
+        )
+
+        # Convert all fields to bytes
         header_bytes = (
             version_int.to_bytes(4, 'big') +  # ✅ Convert version to bytes
             self.index.to_bytes(8, 'big') +
-            self.previous_hash +
-            bytes.fromhex(self.merkle_root) +  # ✅ Convert hex string to bytes
+            previous_hash_bytes +  # ✅ Use bytes directly
+            merkle_root_bytes +  # ✅ Use bytes directly
             self.timestamp.to_bytes(8, 'big') +
             self.nonce.to_bytes(8, 'big') +
-            self.difficulty +
-            self.miner_address
+            difficulty_bytes +  # ✅ Use bytes directly
+            miner_address_bytes  # ✅ Use bytes directly
         )
-        return Hashing.hash(header_bytes).hex()  # ✅ Properly hash bytes
-    
+
+        return Hashing.hash(header_bytes)  # ✅ Return bytes directly (no .hex())
+
+
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, i.e. the data
@@ -142,79 +248,24 @@ class Block:
 
 
 
-    def _compute_merkle_root(self) -> str:
-        """
-        Compute the Merkle root for the block's transactions using single SHA3-384 hashing.
-        - If no transactions, returns a hash of ZERO_HASH.
-        - Validates each transaction before hashing.
-        - Builds a pairwise tree of transaction hashes to derive the root.
-        """
-        try:
-            print("[Block._compute_merkle_root] INFO: Computing Merkle Root...")
-
-            # Handle Empty Transaction List
-            if not self.transactions:
-                print("[Block._compute_merkle_root] WARNING: No transactions found; using ZERO_HASH.")
-                return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # ✅ Always return a hex string
-
-            # Convert Transactions to Hashes
-            tx_hashes = []
-            for tx in self.transactions:
-                try:
-                    # Ensure transaction is serializable
-                    tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
-                    tx_serialized = json.dumps(tx_data, sort_keys=True).encode("utf-8")
-                    tx_hash = Hashing.hash(tx_serialized).hex()  # ✅ Ensure it returns a hex string
-                    tx_hashes.append(tx_hash)
-
-                except Exception as e:
-                    print(f"[Block._compute_merkle_root] ❌ ERROR: Failed to serialize transaction: {e}")
-
-            # Ensure We Have Valid Transactions
-            if not tx_hashes:
-                print("[Block._compute_merkle_root] ERROR: No valid transactions found. Using ZERO_HASH.")
-                return Hashing.hash(Constants.ZERO_HASH.encode()).hex()
-
-            # Build Merkle Tree
-            while len(tx_hashes) > 1:
-                if len(tx_hashes) % 2 != 0:
-                    tx_hashes.append(tx_hashes[-1])  # Duplicate last hash if odd
-
-                # Convert hex strings to bytes before concatenation and hashing
-                new_level = []
-                for i in range(0, len(tx_hashes), 2):
-                    combined = bytes.fromhex(tx_hashes[i]) + bytes.fromhex(tx_hashes[i + 1])
-                    new_hash = Hashing.hash(combined).hex()  # Hash the combined bytes
-                    new_level.append(new_hash)
-
-                tx_hashes = new_level  # Move to next Merkle tree level
-
-            # Final Merkle Root
-            merkle_root = tx_hashes[0]  # ✅ Ensure it remains a hex string
-            print(f"[Block._compute_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root}")
-            return merkle_root
-
-        except Exception as e:
-            print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
-            return Hashing.hash(Constants.ZERO_HASH.encode()).hex()  # Return ZERO_HASH on failure
-
 
     def to_dict(self) -> dict:
         """
         Serialize block to a dictionary with standardized field formatting.
+        Converts bytes objects to hex strings for JSON serialization.
         """
-        print("[Block.to_dict] Serializing block to dictionary.")
+        print("[Block.to_dict] INFO: Serializing block to dictionary.")
 
         return {
             "header": {
                 "version": self.version,
                 "index": self.index,
-                "previous_hash": self.previous_hash.hex(),  # ✅ Ensure bytes are stored as hex
-                "merkle_root": self.merkle_root.hex(),  # ✅ Ensure bytes are stored as hex
+                "previous_hash": self.previous_hash.hex() if isinstance(self.previous_hash, bytes) else self.previous_hash,
+                "merkle_root": self.merkle_root.hex() if isinstance(self.merkle_root, bytes) else self.merkle_root,
                 "timestamp": self.timestamp,
                 "nonce": self.nonce,
-                "difficulty": self.difficulty.hex(),  # ✅ Store difficulty as a hex string
-                "miner_address": self.miner_address.decode().strip(),  # ✅ Convert bytes to string and strip padding
+                "difficulty": self.difficulty.hex() if isinstance(self.difficulty, bytes) else self.difficulty,
+                "miner_address": self.miner_address.decode().strip() if isinstance(self.miner_address, bytes) else self.miner_address,
                 "transaction_signature": self.transaction_signature.hex() if hasattr(self, "transaction_signature") else "00" * 48,
                 "reward": getattr(self, "reward", 0),
                 "fees": getattr(self, "fees", 0),
@@ -222,8 +273,8 @@ class Block:
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
-            "tx_id": self.tx_id,
-            "hash": self.hash
+            "tx_id": self.tx_id.hex() if isinstance(self.tx_id, bytes) else self.tx_id,
+            "hash": self.hash.hex() if self.hash else None  # Convert bytes to hex string if hash exists
         }
 
 

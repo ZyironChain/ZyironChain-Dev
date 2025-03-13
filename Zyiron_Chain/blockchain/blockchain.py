@@ -188,8 +188,12 @@ class Blockchain:
                     continue  # Skip this transaction
 
             # ✅ **Store block metadata and full block data**
-            self.block_metadata.store_block(block, block.difficulty)
-            print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} metadata stored successfully.")
+            try:
+                self.block_metadata.store_block(block, block.difficulty)
+                print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} metadata stored successfully.")
+            except Exception as e:
+                print(f"[Blockchain.add_block] ❌ ERROR: Failed to store block metadata for Block {block.index}: {e}")
+                return False
 
             # ✅ **Index transactions from the block**
             for tx in block.transactions:
@@ -199,7 +203,7 @@ class Blockchain:
                         print(f"[Blockchain.add_block] ❌ ERROR: Transaction in Block {block.index} is missing `tx_id`. Skipping.")
                         continue  # Skip invalid transaction
 
-                    block_hash = block.hash
+                    block_hash = block.hash.hex() if isinstance(block.hash, bytes) else block.hash  # Convert bytes to hex
                     inputs = self._extract_inputs(tx)
                     outputs = self._extract_outputs(tx)
                     timestamp = tx.timestamp if hasattr(tx, "timestamp") else int(time.time())
@@ -226,9 +230,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.add_block] ❌ ERROR: Failed to add Block {block.index}: {e}")
             return False
-
-
-
 
 
     def _convert_tx_outputs(self, outputs) -> list:

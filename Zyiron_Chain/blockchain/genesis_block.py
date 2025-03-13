@@ -140,13 +140,9 @@ class GenesisBlockManager:
 
 
 
-
     def create_and_mine_genesis_block(self) -> Block:
         """
         Creates and mines the Genesis block with full Zyiron metadata.
-        - Uses a Coinbase transaction.
-        - Stores metadata in the Coinbase transaction.
-        - Keeps block format unchanged while ensuring metadata is retrievable.
         """
         try:
             print("[GenesisBlockManager] INFO: Checking for existing Genesis block...")
@@ -212,78 +208,60 @@ class GenesisBlockManager:
             coinbase_tx.metadata = genesis_metadata  # Embed metadata in Coinbase transaction
 
             # ✅ **Initialize Genesis Block**
+            # Convert GENESIS_TARGET from bytes to integer for difficulty
+            genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
             genesis_block = Block(
                 index=0,
-                previous_hash=Constants.ZERO_HASH,
+                previous_hash="0" * 96,  # Zero hash as a hex string
                 transactions=[coinbase_tx],
-                timestamp=int(time.time()),
-                nonce=0,
-                difficulty=Constants.GENESIS_TARGET,
-                miner_address=miner_address
+                difficulty=genesis_target_int,  # Use integer difficulty
+                miner_address=miner_address,
+                fees=0  # Set fees to 0 for the Genesis block
             )
 
             print(f"[GenesisBlockManager] INFO: Genesis Block initialized with nonce {genesis_block.nonce}")
 
-            start_time = time.time()
-            last_update = start_time
-
             # ✅ **Mine Until Difficulty Target is Met**
-            genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
-            max_difficulty = int.from_bytes(Constants.MAX_DIFFICULTY, byteorder='big')  # ✅ FIX: Uses Constants.MAX_DIFFICULTY
-            mining_status_interval = 2  # Status update every 2 seconds
+            start_time = time.time()
+            last_update_time = start_time  # For live display
 
             while True:
                 genesis_block.nonce += 1
-                computed_hash = Hashing.hash(genesis_block.calculate_hash().encode()).hex()
-
-                # ✅ **Debug Logs**
-                print(f"[DEBUG] Computed Hash (int): {int(computed_hash, 16)}")
-                print(f"[DEBUG] Genesis Target (int): {genesis_target_int}")
-                print(f"[DEBUG] Max Difficulty (int): {max_difficulty}")
+                computed_hash = genesis_block.calculate_hash()  # Returns bytes
+                computed_hash_int = int.from_bytes(computed_hash, byteorder='big')  # Convert bytes to integer
 
                 # ✅ **Ensure Hash Meets Target**
-                if int(computed_hash, 16) < genesis_target_int:
-                    genesis_block.hash = computed_hash
+                if computed_hash_int < genesis_target_int:
+                    genesis_block.hash = computed_hash  # Store hash as bytes
+                    print(f"[GenesisBlockManager] ✅ SUCCESS: Mined Genesis Block with nonce {genesis_block.nonce}")
                     break
 
-                # ✅ **Prevent Excessive Mining Difficulty**
-                if int(computed_hash, 16) > max_difficulty:
-                    print(f"[GenesisBlockManager] ❌ ERROR: Mining difficulty exceeded safe limits. Restarting mining process.")
-                    genesis_block.nonce = 0  # Reset nonce if difficulty is exceeded
-                    continue
-
-                # ✅ **Display Live Mining Status Every X Seconds**
+                # ✅ **Live Progress Tracker: Show nonce & elapsed time every second**
                 current_time = time.time()
-                if current_time - last_update >= mining_status_interval:
+                if current_time - last_update_time >= 1:
                     elapsed = int(current_time - start_time)
                     print(f"[GenesisBlockManager] LIVE: Nonce {genesis_block.nonce}, Elapsed Time: {elapsed}s")
-                    last_update = current_time
-
-            # ✅ **Genesis Block Mined Successfully**
-            print(f"[GenesisBlockManager] ✅ SUCCESS: Mined Genesis Block {genesis_block.index} with hash: {genesis_block.hash}")
-
-            # ✅ **Store Genesis Transaction in LMDB**
-            with self.block_metadata.block_metadata_db.env.begin(write=True) as txn:
-                txn.put(b"GENESIS_COINBASE", coinbase_tx.tx_id.encode("utf-8"))
-
-            # ✅ **Ensure Block Storage and Metadata Exist Before Storing**
-            if not hasattr(self, "block_metadata") or not self.block_metadata:
-                raise ValueError("[GenesisBlockManager] ERROR: BlockMetadata instance is missing.")
-
-            if not hasattr(self, "block_storage") or not self.block_storage:
-                raise ValueError("[GenesisBlockManager] ERROR: BlockStorage instance is missing.")
+                    last_update_time = current_time
 
             # ✅ **Store Genesis Block in Metadata and Block Storage**
             print("[GenesisBlockManager] INFO: Storing Genesis Block in BlockMetadata and BlockStorage...")
-            self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
-            self.block_storage.store_block(genesis_block, genesis_block.difficulty)
+            # Pass difficulty as an integer
+            self.block_metadata.store_block(genesis_block, genesis_target_int)
+            self.block_storage.store_block(genesis_block, genesis_target_int)
 
-            print(f"[GenesisBlockManager] ✅ SUCCESS: Stored Genesis block with hash: {genesis_block.hash}")
+            print(f"[GenesisBlockManager] ✅ SUCCESS: Stored Genesis block with hash: {genesis_block.hash.hex()}")
             return genesis_block
 
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
+
+
+
+
+
+
+
 
 
     def print_genesis_metadata(self):

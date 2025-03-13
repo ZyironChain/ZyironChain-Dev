@@ -242,6 +242,9 @@ class WholeBlockData:
             difficulty_length_bytes = difficulty_length.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["difficulty_length"]["size"], "big")
 
             # ✅ **Ensure Fees Collected is Exactly 8 Bytes**
+            # Handle missing fees attribute
+            if not hasattr(block, "fees"):
+                block.fees = 0  # Default to 0 if fees is missing
             fees_collected_int = int(block.fees * (10**8))  # Convert Decimal to int
             fees_collected_bytes = fees_collected_int.to_bytes(Constants.BLOCK_STORAGE_OFFSETS["fees_collected"]["size"], "big")
 
@@ -289,8 +292,6 @@ class WholeBlockData:
         except Exception as e:
             print(f"[WholeBlockData.store_block] ERROR: Failed to store block {block.index}: {e}")
             raise
-
-
 
 
 
