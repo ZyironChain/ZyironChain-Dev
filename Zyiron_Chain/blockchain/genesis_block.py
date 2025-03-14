@@ -202,21 +202,8 @@ class GenesisBlockManager:
                     "Zur": "Hebrew word for strength and foundation (Psalm 18:2)",
                     "Iron": "Symbolizes power and endurance (Daniel 2:40)"
                 },
-                "biblical_references": {
-                    "Proverbs 13:22": "A good person leaves an inheritance for their children's children, but a sinner's wealth is stored up for the righteous.",
-                    "1 Peter 4:10": "Each of you should use whatever gift you have received to serve others, as faithful stewards of God's grace in its various forms.",
-                    "John 14:27": "Peace I leave with you; my peace I give you. I do not give to you as the world gives. Do not let your hearts be troubled and do not be afraid.",
-                    "Proverbs 27:17": "As iron sharpens iron, so one person sharpens another."
-                },
                 "created_by": "Anthony Henriquez",
                 "creation_date": "Thursday, March 6, 2025 | 2:26 PM",
-                "market_data": {
-                    "Bitcoin (BTC)": "$89,864.99",
-                    "Litecoin (LTC)": "$104.73",
-                    "US Inflation Rate": "3%",
-                    "Crypto Market Capitalization": "$2.94 Trillion",
-                    "Special Event": "President Trump signs executive order officially creating a Bitcoin Strategic Reserve."
-                },
                 "signature_hashes": {
                     "Signature Hash 1": "a44972faa4624f6334bbe9ec3091283811b2d908f4639d35b1862d7bdf127c1191f5bf6b5948a979e358fd1dc4caf5fe",
                     "Signature Hash 2": "c76c3ac18080527165d8a2cad1b0bf2764508b2f16ef9640e02ddfbaad721e1e15717a83ec85839453bbe553ea30273b"
@@ -233,11 +220,16 @@ class GenesisBlockManager:
             coinbase_tx.fee = Decimal("0")
             coinbase_tx.metadata = genesis_metadata  # Embed metadata in Coinbase transaction
 
+            # ✅ **Ensure Coinbase TX ID is correctly set**
+            if not hasattr(coinbase_tx, "tx_id") or not isinstance(coinbase_tx.tx_id, str):
+                coinbase_tx.tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True).encode()).hex()
+                print(f"[GenesisBlockManager] INFO: Generated Coinbase TX ID: {coinbase_tx.tx_id}")
+
             # ✅ **Initialize Genesis Block**
             genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
             genesis_block = Block(
                 index=0,
-                previous_hash=Constants.ZERO_HASH,  # Use Constants.ZERO_HASH for consistency
+                previous_hash=Constants.ZERO_HASH.encode() if isinstance(Constants.ZERO_HASH, str) else Constants.ZERO_HASH,  # ✅ Ensure bytes
                 transactions=[coinbase_tx],
                 difficulty=genesis_target_int,  # Use integer difficulty
                 miner_address=miner_address,
@@ -258,7 +250,7 @@ class GenesisBlockManager:
 
                 # ✅ **Ensure Hash Meets Target**
                 if computed_hash_int < genesis_target_int:
-                    genesis_block.hash = computed_hash  # Store hash as bytes
+                    genesis_block.hash = computed_hash.hex() if isinstance(computed_hash, bytes) else computed_hash  # ✅ Ensure hex string
                     print(f"[GenesisBlockManager] ✅ SUCCESS: Mined Genesis Block with nonce {genesis_block.nonce}")
                     break
 
@@ -271,16 +263,24 @@ class GenesisBlockManager:
 
             # ✅ **Store Genesis Block in Metadata and Block Storage**
             print("[GenesisBlockManager] INFO: Storing Genesis Block in BlockMetadata and BlockStorage...")
-            # Pass difficulty as an integer
-            self.block_metadata.store_block(genesis_block, genesis_target_int)
-            self.block_storage.store_block(genesis_block, genesis_target_int)
 
-            print(f"[GenesisBlockManager] ✅ SUCCESS: Stored Genesis block with hash: {genesis_block.hash.hex()}")
+            # ✅ **Ensure `previous_hash`, `hash`, and `merkle_root` are stored correctly**
+            genesis_block.previous_hash = genesis_block.previous_hash.hex() if isinstance(genesis_block.previous_hash, bytes) else genesis_block.previous_hash
+            genesis_block.merkle_root = genesis_block._compute_merkle_root().hex() if isinstance(genesis_block._compute_merkle_root(), bytes) else genesis_block._compute_merkle_root()
+            genesis_block.hash = genesis_block.hash.hex() if isinstance(genesis_block.hash, bytes) else genesis_block.hash
+
+            # ✅ **Securely Store the Genesis Block**
+            self.store_genesis_block(genesis_block)
+
+            print(f"[GenesisBlockManager] ✅ SUCCESS: Stored Genesis block with hash: {genesis_block.hash}")
             return genesis_block
 
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
+
+
+
 
 
 
@@ -358,18 +358,22 @@ class GenesisBlockManager:
             # ✅ **Check Previous Hash**
             if not isinstance(genesis_block.previous_hash, str) or genesis_block.previous_hash != Constants.ZERO_HASH:
                 raise ValueError(
-                    "[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block has an invalid previous hash."
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block has an invalid previous hash.\n"
+                    f"  - Expected: {Constants.ZERO_HASH}\n"
+                    f"  - Found: {genesis_block.previous_hash}"
                 )
 
             # ✅ **Ensure Block Hash is a Valid SHA3-384 Hex String**
             if (
                 not isinstance(genesis_block.hash, str) or 
-                len(genesis_block.hash) != Constants.SHA3_384_HASH_SIZE or 
-                not all(c in "0123456789abcdef" for c in genesis_block.hash)
+                len(genesis_block.hash) != Constants.SHA3_384_HASH_SIZE * 2 or 
+                not all(c in "0123456789abcdef" for c in genesis_block.hash.lower())
             ):
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block hash is not a valid SHA3-384 hash.\n"
-                    f"Expected Length: {Constants.SHA3_384_HASH_SIZE}, Found: {len(genesis_block.hash)}"
+                    f"  - Expected Length: {Constants.SHA3_384_HASH_SIZE * 2}\n"
+                    f"  - Found: {len(genesis_block.hash)}\n"
+                    f"  - Hash: {genesis_block.hash}"
                 )
 
             # ✅ **Check Difficulty Target Compliance**
@@ -379,8 +383,8 @@ class GenesisBlockManager:
             if block_hash_int >= genesis_target_int:
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block hash does not meet difficulty target.\n"
-                    f"Expected Target: {hex(genesis_target_int)}\n"
-                    f"Found: {genesis_block.hash}"
+                    f"  - Expected Target: {hex(genesis_target_int)}\n"
+                    f"  - Found: {genesis_block.hash}"
                 )
 
             # ✅ **Ensure Coinbase Transaction Exists**
@@ -402,8 +406,8 @@ class GenesisBlockManager:
             if coinbase_tx.tx_id != expected_tx_id:
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Coinbase transaction TX ID mismatch.\n"
-                    f"Expected: {expected_tx_id}\n"
-                    f"Found: {coinbase_tx.tx_id}"
+                    f"  - Expected: {expected_tx_id}\n"
+                    f"  - Found: {coinbase_tx.tx_id}"
                 )
 
             # ✅ **Verify Merkle Root Integrity**
@@ -411,16 +415,16 @@ class GenesisBlockManager:
             if genesis_block.merkle_root != expected_merkle_root:
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Merkle root does not match transaction hashes.\n"
-                    f"Expected: {expected_merkle_root}\n"
-                    f"Found: {genesis_block.merkle_root}"
+                    f"  - Expected: {expected_merkle_root}\n"
+                    f"  - Found: {genesis_block.merkle_root}"
                 )
 
             # ✅ **Check Version Compatibility**
             if not hasattr(genesis_block, "version") or genesis_block.version != Constants.VERSION:
                 raise ValueError(
                     f"[GenesisBlockManager.validate_genesis_block] ERROR: Version mismatch in Genesis block.\n"
-                    f"Expected: {Constants.VERSION}\n"
-                    f"Found: {genesis_block.version}"
+                    f"  - Expected: {Constants.VERSION}\n"
+                    f"  - Found: {genesis_block.version}"
                 )
 
             # ✅ **Validate Embedded Metadata**
@@ -524,7 +528,7 @@ class GenesisBlockManager:
             return None
 
 
-    def store_genesis_block(self, genesis_block: Block):
+    def store_genesis_block(self, genesis_block: Block) -> Block:
         """
         Stores the Genesis block in both LMDB metadata and block storage.
 
@@ -535,6 +539,9 @@ class GenesisBlockManager:
 
         Args:
             genesis_block (Block): The Genesis block to store.
+
+        Returns:
+            Block: The stored Genesis block.
         """
         try:
             print("[GenesisBlockManager.store_genesis_block] INFO: Storing Genesis block...")
@@ -600,6 +607,11 @@ class GenesisBlockManager:
 
                 else:
                     print(f"[GenesisBlockManager.store_genesis_block] ⚠️ WARNING: Skipping invalid transaction format.")
+
+            # ✅ **Verify Stored Genesis Block for Integrity**
+            stored_genesis_block = self.block_metadata.get_block_by_height(0)
+            if not stored_genesis_block or stored_genesis_block.hash != genesis_block.hash:
+                raise ValueError("[GenesisBlockManager.store_genesis_block] ❌ ERROR: Genesis block verification failed after storage.")
 
             print(f"[GenesisBlockManager.store_genesis_block] ✅ SUCCESS: Genesis block stored with hash: {genesis_block.hash}")
             return genesis_block
