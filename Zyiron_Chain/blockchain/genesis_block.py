@@ -46,10 +46,25 @@ class GenesisBlockManager:
     - Provides detailed print statements for debugging.
     - Sends the Genesis block to the correct storage modules.
     """
+    genesis_block_offset = Constants.BLOCK_STORAGE_OFFSETS["block_height"]["start"]
 
     GENESIS_HASH = None  # Optionally set a predefined genesis hash (hex string) to bypass mining
 
+
     def __init__(self, block_storage: WholeBlockData, block_metadata: BlockMetadata, key_manager: KeyManager, chain, block_manager):
+        """
+        Manages the creation, validation, and storage of the Genesis block.
+
+        Args:
+            block_storage (WholeBlockData): The block storage handler.
+            block_metadata (BlockMetadata): The block metadata database.
+            key_manager (KeyManager): Key manager for cryptographic signing and verification.
+            chain: Blockchain instance.
+            block_manager: Block manager instance.
+        """
+        if not key_manager:
+            raise ValueError("[GenesisBlockManager.__init__] ❌ ERROR: `key_manager` cannot be None.")
+
         self.block_storage = block_storage
         self.block_metadata = block_metadata
         self.key_manager = key_manager
@@ -57,14 +72,14 @@ class GenesisBlockManager:
         self.block_manager = block_manager
         self.network = Constants.NETWORK
         self.genesis_lock = Lock()  # Thread lock to prevent multiple Genesis blocks
-        print(f"[GenesisBlockManager.__init__] Initialized for network: {self.network}")
+        print(f"[GenesisBlockManager.__init__] ✅ INFO: Initialized for network: {self.network}")
 
     def ensure_genesis_block(self):
         """
         Ensures the Genesis block exists in storage.
         - First checks if it's already stored.
         - If missing, attempts retrieval by the Genesis Coinbase transaction ID (`tx_id`).
-        - Validates existence in both LMDB and `block.data`.
+        - Validates existence in both LMDB and `block.data` with proper offset handling.
         - Only mines a new Genesis block if all lookups fail.
         """
         with self.genesis_lock:  # Ensure thread safety
@@ -93,41 +108,49 @@ class GenesisBlockManager:
                     print("[GenesisBlockManager.ensure_genesis_block] WARNING: Retrieved Genesis block is invalid or missing.")
 
                 # ✅ **Check if Genesis Block Exists in Block Storage (`block.data`)**
-                latest_block = self.block_storage.get_latest_block()
-                if latest_block and hasattr(latest_block, "index") and latest_block.index == 0:
-                    print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Loaded Genesis Block from block.data with hash: {latest_block.hash}")
-                    return latest_block
+                print("[GenesisBlockManager.ensure_genesis_block] INFO: Checking block.data for Genesis block at correct offset...")
 
-                # 🚨 **No Valid Genesis Block Found – Attempt Direct Retrieval from `block.data`**
-                print("[GenesisBlockManager.ensure_genesis_block] ⚠️ WARNING: No valid Genesis block found in metadata. Checking block.data...")
+                # ✅ **Use Network Standard Offset for Genesis Block**
+                genesis_block_offset = Constants.BLOCK_STORAGE_OFFSETS["block_height"]["start"]
 
-                # ✅ **Use Constants-Based Offset for Genesis Block**
-                genesis_block_offset = Constants.BLOCK_STORAGE_OFFSETS["magic_number"]["start"]
-                block_from_storage = self.block_storage.get_block_from_data_file(genesis_block_offset)
+                # ✅ **Ensure `block.data` exists and is large enough before reading**
+                if os.path.exists(self.block_storage.current_block_file):
+                    with open(self.block_storage.current_block_file, "rb") as f:
+                        f.seek(0, os.SEEK_END)  # Move to end
+                        file_size = f.tell()
 
-                if block_from_storage and hasattr(block_from_storage, "index") and block_from_storage.index == 0:
-                    print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block retrieved from block.data with hash: {block_from_storage.hash}")
-
-                    # ✅ **Ensure the block matches the expected Genesis hash**
-                    expected_genesis_hash = Constants.ZERO_HASH  # ✅ FIX: Replace incorrect BLOCk_HASH with Constants.ZERO_HASH
-                    if block_from_storage.hash == expected_genesis_hash:
-                        print("[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block matches expected hash.")
-                        return block_from_storage
+                    if file_size < genesis_block_offset:
+                        print(f"[GenesisBlockManager.ensure_genesis_block] WARNING: `block.data` is too small ({file_size} bytes), expected at least {genesis_block_offset}.")
                     else:
-                        print("[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis Block hash mismatch. Expected:", expected_genesis_hash)
+                        block_from_storage = self.block_storage.get_block_from_data_file(genesis_block_offset)
+
+                        if block_from_storage and hasattr(block_from_storage, "index") and block_from_storage.index == 0:
+                            print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block retrieved from block.data with hash: {block_from_storage.hash}")
+
+                            # ✅ **Ensure the block matches the expected Genesis hash**
+                            expected_genesis_hash = Hashing.hash(json.dumps(block_from_storage.to_dict(), sort_keys=True).encode()).hex()
+                            if block_from_storage.hash == expected_genesis_hash:
+                                print("[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Genesis Block matches expected hash.")
+                                return block_from_storage
+                            else:
+                                print("[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis Block hash mismatch. Expected:", expected_genesis_hash)
 
                 else:
-                    print("[GenesisBlockManager.ensure_genesis_block] WARNING: Genesis Block not found in block.data.")
+                    print("[GenesisBlockManager.ensure_genesis_block] WARNING: `block.data` file not found.")
 
                 # 🚨 **No Valid Genesis Block Found – Proceed to Mining a New One**
                 print("[GenesisBlockManager.ensure_genesis_block] ⚠️ WARNING: No valid Genesis block found, proceeding to mine a new one...")
 
+                # ✅ **Ensure Key Manager is Available**
+                if not self.key_manager:
+                    raise RuntimeError("[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Key Manager is not initialized. Cannot create Genesis block.")
+
                 # ✅ **Create and Mine the Genesis Block**
                 genesis_block = self.create_and_mine_genesis_block()
 
-                # ✅ **Store Genesis Block in BlockMetadata & BlockStorage**
+                # ✅ **Ensure Genesis Block is Stored at Correct Offset in `block.data`**
                 self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
-                self.block_storage.store_block(genesis_block, genesis_block.difficulty)
+                self.block_storage.store_block_at_offset(genesis_block, genesis_block_offset)
 
                 print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: New Genesis block created with hash: {genesis_block.hash}")
                 return genesis_block
@@ -156,10 +179,12 @@ class GenesisBlockManager:
                 if stored_genesis_block:
                     return stored_genesis_block
 
-            # ✅ **Retrieve Miner Address**
+            # ✅ **Retrieve Miner Address from Default Keys**
             miner_address = self.key_manager.get_default_public_key(self.network, "miner")
             if not miner_address:
-                raise ValueError("[GenesisBlockManager] ERROR: Failed to retrieve miner address.")
+                raise ValueError("[GenesisBlockManager] ERROR: Failed to retrieve miner address from default keys.")
+
+            print(f"[GenesisBlockManager] INFO: Using default miner address: {miner_address}")
 
             # ✅ **Define Zyiron Chain Metadata for Genesis Block**
             genesis_metadata = {
@@ -209,15 +234,15 @@ class GenesisBlockManager:
             coinbase_tx.metadata = genesis_metadata  # Embed metadata in Coinbase transaction
 
             # ✅ **Initialize Genesis Block**
-            # Convert GENESIS_TARGET from bytes to integer for difficulty
             genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
             genesis_block = Block(
                 index=0,
-                previous_hash="0" * 96,  # Zero hash as a hex string
+                previous_hash=Constants.ZERO_HASH,  # Use Constants.ZERO_HASH for consistency
                 transactions=[coinbase_tx],
                 difficulty=genesis_target_int,  # Use integer difficulty
                 miner_address=miner_address,
-                fees=0  # Set fees to 0 for the Genesis block
+                fees=Decimal(0),  # Set fees to 0 for the Genesis block
+                magic_number=Constants.MAGIC_NUMBER  # Use Constants.MAGIC_NUMBER for consistency
             )
 
             print(f"[GenesisBlockManager] INFO: Genesis Block initialized with nonce {genesis_block.nonce}")
@@ -256,10 +281,6 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
-
-
-
-
 
 
 
@@ -503,8 +524,6 @@ class GenesisBlockManager:
             return None
 
 
-
-
     def store_genesis_block(self, genesis_block: Block):
         """
         Stores the Genesis block in both LMDB metadata and block storage.
@@ -534,9 +553,27 @@ class GenesisBlockManager:
             print("[GenesisBlockManager.store_genesis_block] INFO: Storing block in LMDB metadata...")
             self.block_metadata.store_block(genesis_block, genesis_block.difficulty)
 
-            # ✅ **Store Genesis Block in Block Storage (`block.data`)**
-            print("[GenesisBlockManager.store_genesis_block] INFO: Storing block in block.data...")
-            self.block_storage.store_block(genesis_block, genesis_block.difficulty)
+            # ✅ **Use Standardized Network Offset for Genesis Block Storage (`block.data`)**
+            genesis_block_offset = Constants.BLOCK_STORAGE_OFFSETS["block_height"]["start"]
+            print(f"[GenesisBlockManager.store_genesis_block] INFO: Storing Genesis block at offset {genesis_block_offset} in block.data...")
+
+            # ✅ **Serialize Genesis Block into Binary Format**
+            genesis_block_binary = self.block_storage._serialize_block_to_binary(genesis_block)
+
+            # ✅ **Ensure `block.data` is at least large enough before writing Genesis block**
+            with open(self.block_storage.current_block_file, "r+b") as f:
+                f.seek(0, os.SEEK_END)  # Move to the end of the file
+                file_size = f.tell()  # Get current file size
+
+                if file_size < genesis_block_offset:  # If file is too small, extend it
+                    print(f"[GenesisBlockManager.store_genesis_block] INFO: Expanding `block.data` to fit Genesis block.")
+                    f.seek(genesis_block_offset - 1)
+                    f.write(b"\x00")  # Write a single null byte to extend file
+
+                f.seek(genesis_block_offset)  # Now, safely move to offset
+                f.write(genesis_block_binary)
+
+            print("[GenesisBlockManager.store_genesis_block] ✅ SUCCESS: Genesis block stored correctly in block.data.")
 
             # ✅ **Index Genesis Transactions in `txindex_db`**
             print("[GenesisBlockManager.store_genesis_block] INFO: Indexing Genesis transactions in txindex_db...")

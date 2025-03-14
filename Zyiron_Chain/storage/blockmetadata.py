@@ -256,8 +256,9 @@ class BlockMetadata:
     def _deserialize_block_from_binary(self, block_data: bytes) -> Optional[Block]:
         """
         Deserialize binary block data back into a Block object.
-        - Ensures difficulty (64B), miner address (128B), and signature (48B) are properly deserialized.
+        - Ensures difficulty (48B), miner address (128B), and signature (48B) are properly deserialized.
         - Extracts transactions while maintaining correct structure.
+        - Handles edge cases for data conversion and unexpected data formats.
 
         Returns:
             Block object if deserialization is successful, otherwise None.
@@ -266,7 +267,7 @@ class BlockMetadata:
             print("[BlockMetadata._deserialize_block_from_binary] INFO: Starting block deserialization...")
 
             # ✅ **Define Standardized Header Format**
-            header_format = ">I 48s 48s Q I B64s 128s 48s Q Q I"
+            header_format = ">I 48s 48s Q I 48s 128s 48s Q Q I"
             base_header_size = struct.calcsize(header_format)
             print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Expected header size: {base_header_size} bytes.")
 
@@ -283,7 +284,6 @@ class BlockMetadata:
                     merkle_root,
                     timestamp,
                     nonce,
-                    difficulty_length,
                     difficulty_bytes,
                     miner_address_bytes,
                     transaction_signature,
@@ -304,28 +304,44 @@ class BlockMetadata:
                 print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Struct unpacking failed: {e}")
                 return None
 
-            # ✅ **Validate Difficulty (Always 64 Bytes)**
-            if len(difficulty_bytes) != 64:
-                print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Difficulty size incorrect (expected 64 bytes).")
+            # ✅ **Validate Difficulty (Must Be Exactly 48 Bytes)**
+            if len(difficulty_bytes) != 48:
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Difficulty size incorrect (expected 48 bytes, found {len(difficulty_bytes)} bytes).")
                 return None
-            difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
-            print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Difficulty value: {difficulty_int}.")
+
+            try:
+                difficulty_int = int.from_bytes(difficulty_bytes, "big", signed=False)
+                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Difficulty value: {difficulty_int}.")
+            except Exception as e:
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to convert difficulty to integer: {e}")
+                return None
 
             # ✅ **Process Miner Address (Ensure Proper Decoding, Always 128 Bytes)**
-            miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
-            print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Miner address: {miner_address_str}.")
+            try:
+                miner_address_str = miner_address_bytes.rstrip(b'\x00').decode("utf-8")
+                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Miner address: {miner_address_str}.")
+            except UnicodeDecodeError as e:
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to decode miner address: {e}")
+                return None
 
             # ✅ **Ensure Transaction Signature is Always 48 Bytes**
-            transaction_signature = transaction_signature[:48]
+            if len(transaction_signature) != 48:
+                print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Transaction signature size incorrect (expected 48 bytes).")
+                return None
 
-            # ✅ **Extract Transaction Count (4 bytes)**
-            tx_count_offset = base_header_size
+            # ✅ **Retrieve Transaction Count Offset Using `BLOCK_STORAGE_OFFSETS`**
+            tx_count_offset = Constants.BLOCK_STORAGE_OFFSETS["transaction_count"]["start"]
+
             if len(block_data) < tx_count_offset + 4:
                 print("[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Block data is missing transaction count.")
                 return None
 
-            tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
-            print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Block {block_height} contains {tx_count} transaction(s).")
+            try:
+                tx_count = struct.unpack(">I", block_data[tx_count_offset:tx_count_offset + 4])[0]
+                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Block {block_height} contains {tx_count} transaction(s).")
+            except struct.error as e:
+                print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to unpack transaction count: {e}")
+                return None
 
             tx_data_offset = tx_count_offset + 4
             transactions = []
@@ -339,10 +355,13 @@ class BlockMetadata:
                     print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Missing transaction size at index {i}.")
                     return None
 
-                tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
-                tx_data_offset += 4
-
-                print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Transaction {i} size: {tx_size} bytes.")
+                try:
+                    tx_size = struct.unpack(">I", block_data[tx_data_offset:tx_data_offset + 4])[0]
+                    tx_data_offset += 4
+                    print(f"[BlockMetadata._deserialize_block_from_binary] INFO: Transaction {i} size: {tx_size} bytes.")
+                except struct.error as e:
+                    print(f"[BlockMetadata._deserialize_block_from_binary] ❌ ERROR: Failed to unpack transaction size: {e}")
+                    return None
 
                 # ✅ **Ensure full transaction data is available**
                 if tx_data_offset + tx_size > len(block_data):
@@ -545,7 +564,7 @@ class BlockMetadata:
                 "reward": str(Decimal(block.reward).normalize() if hasattr(block, "reward") else 0),
                 "fees": str(Decimal(block.fees).normalize() if hasattr(block, "fees") else 0),
                 "version": block.version,
-                "transactions": [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in valid_transactions],
+                "transactions": [tx.to_dict() if hasattr(tx, 'to_dict') else tx for tx in valid_transactions],
                 "hash": block_hash_hex  # Use the mined hash directly
             }
 
@@ -589,7 +608,6 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata.store_block] ❌ Critical Error: {e}")
             raise
-
 
     def _get_miner_address(self, block: Block) -> str:
         """
@@ -897,7 +915,7 @@ class BlockMetadata:
         """
         Serialize a Block into binary format.
         - Ensures all fields have correct sizes:
-            - Difficulty (64B)
+            - Difficulty (48B)
             - Miner Address (128B)
             - Signature (48B)
         - Packs header fields and transactions in a standardized format.
@@ -925,9 +943,9 @@ class BlockMetadata:
             timestamp = int(header.get("timestamp", time.time()))
             nonce = int(header.get("nonce", 0))
 
-            # ✅ **Ensure difficulty is stored correctly (64 bytes)**
-            difficulty_hex = header.get("difficulty", "00" * 64)  # Default to zeroed-out difficulty
-            difficulty_bytes = bytes.fromhex(difficulty_hex).rjust(64, b'\x00')
+            # ✅ **Ensure difficulty is stored correctly (48 bytes)**
+            difficulty_hex = header.get("difficulty", "00" * 48)  # Default to zeroed-out difficulty
+            difficulty_bytes = bytes.fromhex(difficulty_hex).rjust(48, b'\x00')
 
             # ✅ **Ensure Difficulty Length (1 byte)**
             difficulty_packed = struct.pack(">B", len(difficulty_bytes)) + difficulty_bytes
@@ -951,7 +969,7 @@ class BlockMetadata:
             print(f"[BlockMetadata] INFO: Header fields - Index: {block_height}, Timestamp: {timestamp}, Nonce: {nonce}.")
 
             # ✅ **Pack header fields into binary format**
-            header_format = ">I 48s 48s Q I B64s 128s 48s Q Q I"
+            header_format = ">I 48s 48s Q I B48s 128s 48s Q Q I"
             header_data = struct.pack(
                 header_format,
                 block_height,
@@ -959,7 +977,6 @@ class BlockMetadata:
                 merkle_root,
                 timestamp,
                 nonce,
-                len(difficulty_bytes),
                 difficulty_bytes,
                 miner_address_padded,
                 transaction_signature,
@@ -1013,6 +1030,7 @@ class BlockMetadata:
         except Exception as e:
             print(f"[BlockMetadata] ❌ ERROR: Failed to serialize block {block.index}: {e}")
             raise
+
 
 
 

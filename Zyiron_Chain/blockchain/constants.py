@@ -111,6 +111,15 @@ class Constants:
         "regnet": int.from_bytes(b"\x5A\x59\x52\x33", "big")
     }
     MAGIC_NUMBER = MAGIC_NUMBERS[NETWORK]
+        #"mainnet": 0x5A594331
+        #"testnet": 0x5A595432
+        #"regnet": 0x5A595233
+
+
+
+
+
+
 
     # 🔹 **UTXO Flags**
     UTXO_FLAGS = {
@@ -152,16 +161,13 @@ class Constants:
     #SEVEN_MIN_TARGET = bytes.fromhex(
         #"0000003999999999999A0000000000000000000000000000000000000000000000000000000000000000000000000000"
     
-
     # About 1-second block time target (good for RegNet)
     #ONE_SEC_TARGET = bytes.fromhex(
         #"000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
 
-
     # About 5-minute block time target (good for TestNet/MainNet)
     #FIVE_MIN_TARGET = bytes.fromhex(
         #"0000003FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
-
 
     # About 2-minute block time target (ideal for TestNet)
     # TWO_MIN_TARGET = bytes.fromhex(
@@ -248,7 +254,7 @@ class Constants:
 
     # 🔹 **Transaction Confirmation Requirements**
     TRANSACTION_CONFIRMATION_SETTINGS = {
-        "mainnet": {"STANDARD": 8, "SMART": 5, "INSTANT": 2, "COINBASE": 12},
+        "mainnet": {"STANDARD": 8, "SMART": 4, "INSTANT": 2, "COINBASE": 12},
         "testnet": {"STANDARD": 3, "SMART": 2, "INSTANT": 1, "COINBASE": 6},
         "regnet": {"STANDARD": 6, "SMART": 4, "INSTANT": 2, "COINBASE": 8}
     }

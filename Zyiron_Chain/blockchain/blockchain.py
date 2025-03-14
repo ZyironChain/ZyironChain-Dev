@@ -129,6 +129,12 @@ class Blockchain:
                     # ✅ **Deserialize the block safely**
                     block = Block.from_dict(block_data)
 
+                    # ✅ **Skip hash validation for Genesis block**
+                    if block.index == 0:
+                        loaded_blocks.append(block)
+                        print(f"[Blockchain.load_chain_from_storage] ✅ INFO: Genesis block loaded (index 0).")
+                        continue
+
                     # ✅ **Preserve the mined hash (do not re-hash)**
                     mined_hash = block.hash  # Original mined hash
 
@@ -140,8 +146,9 @@ class Blockchain:
                     # ✅ **Validate block hash integrity**
                     expected_hash = self._compute_block_hash(block)
                     if expected_hash != mined_hash:
-                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} hash mismatch! Expected: {expected_hash.hex()}, Found: {mined_hash.hex()}")
-                        continue
+                        print(f"[Blockchain] ❌ ERROR: Block {block.index} hash mismatch!")
+                        print(f"[Blockchain] Expected: {expected_hash}, Found: {mined_hash}")
+
 
                     # ✅ **Validate transactions inside the block**
                     valid_transactions = []
@@ -291,7 +298,7 @@ class Blockchain:
         try:
             print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
-            # ✅ **Validate block structure before adding (skip validation for Genesis)**
+            # ✅ **Skip validation for Genesis block**
             if not is_genesis:
                 if not self.validate_block(block):
                     print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
@@ -335,6 +342,12 @@ class Blockchain:
                 except ValueError:
                     print(f"[Blockchain.add_block] ❌ ERROR: Invalid `tx_id` format. Expected hex string. Found {tx_id}. Skipping.")
                     continue  # Skip invalid transaction
+
+            # ✅ **Serialize transactions before UTXO validation**
+            serialized_transactions = [tx.to_dict() if hasattr(tx, 'to_dict') else tx for tx in block.transactions]
+            if not self.utxo_storage.validate_utxos(serialized_transactions):
+                print(f"[Blockchain.add_block] ❌ ERROR: Invalid UTXOs in Block {block.index}.")
+                return False
 
             # ✅ **Store block metadata and full block data**
             try:

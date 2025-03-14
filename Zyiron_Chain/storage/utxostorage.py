@@ -6,7 +6,7 @@ import struct
 import hashlib
 import threading
 from decimal import Decimal
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 # Adjust system path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -50,34 +50,58 @@ class UTXOStorage:
 
 
 
-    def validate_utxos(self, block: Block) -> bool:
+    def validate_utxos(self, transactions: Union[List[Dict], Block]) -> bool:
         """
-        Validate that all transactions in a block reference valid, unspent UTXOs.
+        Validate that all transactions reference valid, unspent UTXOs.
 
-        :param block: The Block object containing transactions.
+        :param transactions: A list of transaction dictionaries or a Block object.
         :return: True if all transactions are valid, False otherwise.
         """
         try:
-            print(f"[UTXOStorage.validate_utxos] INFO: Validating UTXOs for Block {block.index}...")
+            print(f"[UTXOStorage.validate_utxos] INFO: Validating UTXOs...")
 
-            # Ensure block has transactions
-            if not hasattr(block, "transactions") or not isinstance(block.transactions, list):
-                print(f"[UTXOStorage.validate_utxos] ERROR: Block {block.index} has no transactions.")
+            # Handle both Block object and list of transactions
+            if isinstance(transactions, Block):
+                print(f"[UTXOStorage.validate_utxos] INFO: Validating UTXOs for Block {transactions.index}...")
+                transactions = transactions.transactions
+            elif not isinstance(transactions, list):
+                print(f"[UTXOStorage.validate_utxos] ERROR: Invalid input type. Expected Block or list of transactions, got {type(transactions)}.")
                 return False
 
-            for tx in block.transactions:
-                if not isinstance(tx, dict) or "inputs" not in tx or "tx_id" not in tx:
+            # Ensure transactions exist
+            if not transactions:
+                print(f"[UTXOStorage.validate_utxos] ERROR: No transactions provided.")
+                return False
+
+            for tx in transactions:
+                # Serialize transaction if it's an object
+                if hasattr(tx, "to_dict"):
+                    tx = tx.to_dict()
+
+                # Ensure transaction is a dictionary
+                if not isinstance(tx, dict):
                     print(f"[UTXOStorage.validate_utxos] ERROR: Invalid transaction format: {tx}")
+                    return False
+
+                # Ensure required fields exist
+                if "inputs" not in tx or "tx_id" not in tx:
+                    print(f"[UTXOStorage.validate_utxos] ERROR: Missing required fields in transaction: {tx}")
                     return False
 
                 tx_id = tx["tx_id"]  # Extract transaction ID
 
+                # Validate inputs
                 for tx_input in tx["inputs"]:
+                    if not isinstance(tx_input, dict):
+                        print(f"[UTXOStorage.validate_utxos] ERROR: Invalid input format in transaction {tx_id}.")
+                        return False
+
                     tx_out_id = tx_input.get("tx_out_id")
                     output_index = tx_input.get("output_index", 0)
 
+                    # Validate tx_out_id
                     if not tx_out_id or not isinstance(tx_out_id, str):
-                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing tx_out_id in transaction {tx_id}")
+                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing or invalid tx_out_id in transaction {tx_id}.")
                         return False
 
                     # Retrieve UTXO from storage
@@ -91,11 +115,11 @@ class UTXOStorage:
                         print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id}:{output_index} is already spent in tx {tx_id}.")
                         return False
 
-            print(f"[UTXOStorage.validate_utxos] ✅ SUCCESS: All UTXOs validated successfully for Block {block.index}.")
+            print(f"[UTXOStorage.validate_utxos] ✅ SUCCESS: All UTXOs validated successfully.")
             return True
 
         except Exception as e:
-            print(f"[UTXOStorage.validate_utxos] ❌ ERROR: Failed to validate UTXOs for Block {block.index}: {e}")
+            print(f"[UTXOStorage.validate_utxos] ❌ ERROR: Failed to validate UTXOs: {e}")
             return False
 
 
@@ -386,46 +410,6 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOManager.update_utxos] ❌ ERROR: Failed updating UTXOs: {e}")
             raise
-
-
-
-    def get_utxo(self, tx_id: bytes, output_index: int) -> Optional[dict]:
-        """
-        Retrieve a UTXO from LMDB in binary format and deserialize it.
-
-        :param tx_id: Transaction ID (48 bytes, SHA3-384 hash).
-        :param output_index: Output index (4 bytes, unsigned int).
-        :return: UTXO dictionary if found, None otherwise.
-        """
-        try:
-            # ✅ Ensure valid transaction ID length (48 bytes)
-            if not isinstance(tx_id, bytes) or len(tx_id) != 48:
-                raise ValueError(f"[UTXOStorage.get_utxo] ERROR: Invalid tx_id length. Expected 48B, got {len(tx_id)}B.")
-
-            # ✅ Generate Binary Key for UTXO Retrieval
-            utxo_key = b"utxo:" + tx_id + struct.pack(">I", output_index)
-
-            # ✅ Fetch from LMDB
-            with self.utxo_db.env.begin() as txn:
-                utxo_value = txn.get(utxo_key)
-
-            if not utxo_value:
-                print(f"[UTXOStorage.get_utxo] WARNING: UTXO {tx_id.hex()} at index {output_index} not found.")
-                return None
-
-            # ✅ Deserialize Binary UTXO Data
-            utxo_data = self._deserialize_utxo(utxo_value)
-            print(f"[UTXOStorage.get_utxo] SUCCESS: Retrieved UTXO {tx_id.hex()} at index {output_index}.")
-            return utxo_data
-
-        except Exception as e:
-            print(f"[UTXOStorage.get_utxo] ERROR: Failed to retrieve UTXO {tx_id.hex()} at index {output_index}: {e}")
-            return None
-
-
-
-
-
 
 
 

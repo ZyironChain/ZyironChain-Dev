@@ -43,46 +43,44 @@ class Block:
     def __init__(
         self,
         index: int,
-        previous_hash: Union[str, bytes],  # Can be hex string or bytes
+        previous_hash: Union[str, bytes],
         transactions: List,
         timestamp: int = None,
         nonce: int = 0,
-        difficulty: Union[str, bytes, int] = None,  # Can be hex string, bytes, or int
-        miner_address: Union[str, bytes] = None,  # Can be string or bytes
-        fees: Union[int, float, Decimal] = 0,  # Add fees attribute
+        difficulty: Union[str, bytes, int] = None,
+        miner_address: Union[str, bytes] = None,
+        fees: Union[int, float, Decimal] = 0,
+        magic_number: int = None,  # ✅ Add `magic_number`
     ):
-        """
-        Initializes a new block.
-        - Ensures all required fields are present.
-        - Computes the Merkle root and block hash.
-        - Handles multiple data formats (bytes, hex, int) with proper conversions.
-        """
         print(f"[Block.__init__] Initializing Block #{index}")
 
-        # ✅ **Ensure previous_hash is bytes**
-        if isinstance(previous_hash, str):  
-            self.previous_hash = bytes.fromhex(previous_hash)  # Convert hex string to bytes
+        # ✅ Assign magic number
+        self.magic_number = magic_number if magic_number is not None else Constants.MAGIC_NUMBER
+
+        # ✅ Ensure previous_hash is bytes
+        if isinstance(previous_hash, str):
+            self.previous_hash = bytes.fromhex(previous_hash)
         elif isinstance(previous_hash, bytes):
             self.previous_hash = previous_hash
         else:
             raise TypeError("previous_hash must be a hex string or bytes")
 
-        # ✅ **Ensure difficulty is bytes**
-        if isinstance(difficulty, str):  
+        # ✅ Ensure difficulty is bytes
+        if isinstance(difficulty, str):
             self.difficulty = bytes.fromhex(difficulty)
-        elif isinstance(difficulty, bytes):  
+        elif isinstance(difficulty, bytes):
             self.difficulty = difficulty
         elif isinstance(difficulty, int):
-            self.difficulty = difficulty.to_bytes(48, 'big')  # Convert int to bytes
+            self.difficulty = difficulty.to_bytes(48, 'big')
         else:
             raise TypeError("difficulty must be a hex string, bytes, or int")
 
         self.index = index
         self.transactions = transactions or []
 
-        # ✅ **Ensure miner_address is bytes**
-        if isinstance(miner_address, str):  
-            self.miner_address = miner_address.ljust(128, "\x00").encode('utf-8')
+        # ✅ Ensure miner_address is bytes
+        if isinstance(miner_address, str):
+            self.miner_address = miner_address.ljust(128, "\x00").encode("utf-8")
         elif isinstance(miner_address, bytes):
             self.miner_address = miner_address
         else:
@@ -91,32 +89,35 @@ class Block:
         self.nonce = nonce
         self.timestamp = int(timestamp) if timestamp else int(time.time())
 
-        # ✅ **Ensure version is set from constants**
+        # ✅ Set version internally
         self.version = Constants.VERSION  # Example: "1.00"
 
-        # ✅ **Compute Merkle root internally**
+        # ✅ Compute Merkle root internally
         self.merkle_root = self._compute_merkle_root()
 
-        # ✅ **Ensure fees are handled properly**
-        self.fees = Decimal(fees)  
+        # ✅ Ensure fees are handled properly
+        self.fees = Decimal(fees)
 
-        # ✅ **Initialize hash as None (set when mined)**
-        self.hash = None  
+        # ✅ Initialize hash as None (set when mined)
+        self.hash = None
 
         print(f"[Block.__init__] Creating Block #{self.index}")
+        print(f" - Magic Number: {hex(self.magic_number)}")  # ✅ Print magic number
         print(f" - Previous Hash: {self.previous_hash.hex()}")
-        print(f" - Difficulty: {hex(int.from_bytes(self.difficulty, 'big'))}")  
+        print(f" - Difficulty: {hex(int.from_bytes(self.difficulty, 'big'))}")
         print(f" - Miner Address: {self.miner_address.decode(errors='ignore').strip()}")
         print(f" - Timestamp: {self.timestamp}")
         print(f" - Nonce: {self.nonce}")
         print(f" - Merkle Root: {self.merkle_root.hex()}")
         print(f" - Fees: {self.fees}")
+        print(f" - Version: {self.version}")
 
-        # ✅ **Assign Coinbase TX ID**
+        # ✅ Assign Coinbase TX ID
         self.tx_id = self._get_coinbase_tx_id()
         print(f"[Block.__init__] Assigned Coinbase TX ID: {self.tx_id}")
 
         print(f"[Block.__init__] Block initialized successfully.")
+
 
     def to_json(self) -> str:
         """Serializes the Block to a JSON string with proper conversions."""
@@ -327,6 +328,9 @@ class Block:
     def from_dict(cls, data: dict) -> "Block":
         """
         Deserialize a block from a dictionary, ensuring proper type conversions and safety checks.
+        - Handles edge cases for missing or invalid fields.
+        - Ensures proper type conversion for all fields.
+        - Preserves the original hash if available; otherwise, computes it.
         """
         try:
             print("[Block.from_dict] INFO: Reconstructing block from dict.")
@@ -341,38 +345,57 @@ class Block:
                     raise ValueError(f"[Block.from_dict] ❌ ERROR: Missing required field '{field}' in 'header'.")
 
             # ✅ **Convert difficulty back to bytes (ensure exactly 48 bytes)**
-            if isinstance(data["header"]["difficulty"], str):
-                difficulty_bytes = bytes.fromhex(data["header"]["difficulty"]).ljust(48, b'\x00')[:48]
-            elif isinstance(data["header"]["difficulty"], bytes):
-                difficulty_bytes = data["header"]["difficulty"].ljust(48, b'\x00')[:48]
-            else:
-                print("[Block.from_dict] ❌ ERROR: Invalid difficulty format, using zero difficulty.")
+            try:
+                if isinstance(data["header"]["difficulty"], str):
+                    difficulty_bytes = bytes.fromhex(data["header"]["difficulty"]).ljust(48, b'\x00')[:48]
+                elif isinstance(data["header"]["difficulty"], bytes):
+                    difficulty_bytes = data["header"]["difficulty"].ljust(48, b'\x00')[:48]
+                else:
+                    print("[Block.from_dict] ❌ ERROR: Invalid difficulty format, using zero difficulty.")
+                    difficulty_bytes = b'\x00' * 48  # Fallback
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to process difficulty: {e}")
                 difficulty_bytes = b'\x00' * 48  # Fallback
 
             # ✅ **Ensure previous_hash and merkle_root are properly decoded from hex**
-            if isinstance(data["header"]["previous_hash"], str):
-                previous_hash_bytes = bytes.fromhex(data["header"]["previous_hash"])
-            elif isinstance(data["header"]["previous_hash"], bytes):
-                previous_hash_bytes = data["header"]["previous_hash"]
-            else:
-                print("[Block.from_dict] ❌ ERROR: Invalid previous_hash format, using zero hash.")
+            try:
+                if isinstance(data["header"]["previous_hash"], str):
+                    previous_hash_bytes = bytes.fromhex(data["header"]["previous_hash"])
+                elif isinstance(data["header"]["previous_hash"], bytes):
+                    previous_hash_bytes = data["header"]["previous_hash"]
+                else:
+                    print("[Block.from_dict] ❌ ERROR: Invalid previous_hash format, using zero hash.")
+                    previous_hash_bytes = Constants.ZERO_HASH  # Fallback
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to process previous_hash: {e}")
                 previous_hash_bytes = Constants.ZERO_HASH  # Fallback
 
-            if isinstance(data["header"]["merkle_root"], str):
-                merkle_root_bytes = bytes.fromhex(data["header"]["merkle_root"])
-            elif isinstance(data["header"]["merkle_root"], bytes):
-                merkle_root_bytes = data["header"]["merkle_root"]
-            else:
-                print("[Block.from_dict] ❌ ERROR: Invalid merkle_root format, using zero hash.")
+            try:
+                if isinstance(data["header"]["merkle_root"], str):
+                    merkle_root_bytes = bytes.fromhex(data["header"]["merkle_root"])
+                elif isinstance(data["header"]["merkle_root"], bytes):
+                    merkle_root_bytes = data["header"]["merkle_root"]
+                else:
+                    print("[Block.from_dict] ❌ ERROR: Invalid merkle_root format, using zero hash.")
+                    merkle_root_bytes = Constants.ZERO_HASH  # Fallback
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to process merkle_root: {e}")
                 merkle_root_bytes = Constants.ZERO_HASH  # Fallback
 
-            # ✅ **Ensure miner address is properly encoded**
-            if isinstance(data["header"]["miner_address"], str):
-                miner_address_bytes = data["header"]["miner_address"].encode("utf-8").ljust(128, b'\x00')[:128]
-            elif isinstance(data["header"]["miner_address"], bytes):
-                miner_address_bytes = data["header"]["miner_address"].ljust(128, b'\x00')[:128]
-            else:
-                print("[Block.from_dict] ❌ ERROR: Invalid miner_address format, using empty address.")
+            # ✅ **Ensure miner address is properly decoded from hex**
+            try:
+                if isinstance(data["header"]["miner_address"], str):
+                    # Convert hex string to bytes
+                    miner_address_bytes = bytes.fromhex(data["header"]["miner_address"])
+                    # Pad or truncate to exactly 128 bytes
+                    miner_address_bytes = miner_address_bytes.ljust(128, b'\x00')[:128]
+                elif isinstance(data["header"]["miner_address"], bytes):
+                    miner_address_bytes = data["header"]["miner_address"].ljust(128, b'\x00')[:128]
+                else:
+                    print("[Block.from_dict] ❌ ERROR: Invalid miner_address format, using empty address.")
+                    miner_address_bytes = b'\x00' * 128  # Fallback
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to process miner_address: {e}")
                 miner_address_bytes = b'\x00' * 128  # Fallback
 
             # ✅ **Rebuild transaction objects safely**
@@ -395,30 +418,42 @@ class Block:
                     continue  # Skip failing transactions
 
             # ✅ **Construct Block object with properly formatted fields**
-            block = cls(
-                index=int(data["header"]["index"]),
-                previous_hash=previous_hash_bytes,
-                transactions=rebuilt_transactions,
-                timestamp=int(data["header"]["timestamp"]),
-                nonce=int(data["header"]["nonce"]),
-                difficulty=difficulty_bytes,
-                miner_address=miner_address_bytes
-            )
+            try:
+                block = cls(
+                    index=int(data["header"]["index"]),
+                    previous_hash=previous_hash_bytes,
+                    transactions=rebuilt_transactions,
+                    timestamp=int(data["header"]["timestamp"]),
+                    nonce=int(data["header"]["nonce"]),
+                    difficulty=difficulty_bytes,
+                    miner_address=miner_address_bytes
+                )
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to construct block: {e}")
+                raise
 
             # ✅ **Assign optional fields with proper conversion**
-            block.tx_id = data.get("tx_id", None)
-            block.transaction_signature = (
-                bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))[:48]
-            )
-            block.reward = Decimal(str(data["header"].get("reward", "0")))  # Convert to Decimal for precision
-            block.fees = Decimal(str(data["header"].get("fees", "0")))  # Convert to Decimal for safe handling
-            block.version = str(data["header"].get("version", "1.00"))  # Default version
+            try:
+                block.tx_id = data.get("tx_id", None)
+                block.transaction_signature = (
+                    bytes.fromhex(data["header"].get("transaction_signature", "00" * 48))[:48]
+                )
+                block.reward = Decimal(str(data["header"].get("reward", "0")))  # Convert to Decimal for precision
+                block.fees = Decimal(str(data["header"].get("fees", "0")))  # Convert to Decimal for safe handling
+                block.version = str(data["header"].get("version", "1.00"))  # Default version
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to assign optional fields: {e}")
+                raise
 
             # ✅ **Preserve hash if already mined; otherwise, compute it**
-            if "hash" in data and isinstance(data["hash"], str):
-                block.hash = bytes.fromhex(data["hash"])
-            else:
-                block.hash = block.calculate_hash()
+            try:
+                if "hash" in data and isinstance(data["hash"], str):
+                    block.hash = bytes.fromhex(data["hash"])
+                else:
+                    block.hash = block.calculate_hash()
+            except (ValueError, TypeError) as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to process block hash: {e}")
+                raise
 
             print(f"[Block.from_dict] ✅ SUCCESS: Block #{block.index} reconstructed successfully.")
             return block
@@ -426,6 +461,7 @@ class Block:
         except Exception as e:
             print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}")
             raise
+
 
 
     def __repr__(self) -> str:
