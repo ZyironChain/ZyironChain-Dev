@@ -26,7 +26,7 @@ from Zyiron_Chain.utils.deserializer import Deserializer
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
 from Zyiron_Chain.storage.utxostorage import UTXOStorage
-
+from Zyiron_Chain.storage.block_storage import BlockStorage
 
 class TransactionManager:
     """
@@ -37,21 +37,18 @@ class TransactionManager:
 
     def __init__(
         self,
-        block_storage,     # For retrieving block data if needed
-        block_metadata,    # For retrieving block headers / ordering
-        tx_storage,        # For checking transaction existence, storing TX data
-        utxo_manager: UTXOManager,  # UTXOManager instance for UTXO lookups
-        key_manager        # KeyManager for retrieving keys
+        block_storage: BlockStorage,  # ✅ Updated to use BlockStorage
+        tx_storage,  # ✅ Keep
+        utxo_manager: UTXOManager,  # ✅ Keep
+        key_manager  # ✅ Keep
     ):
         """
-        :param block_storage: Module handling full block storage (WholeBlockData).
-        :param block_metadata: Module handling block metadata (BlockMetadata).
+        :param block_storage: BlockStorage instance for full block retrieval.
         :param tx_storage: Module for transaction indexing (TxStorage).
         :param utxo_manager: UTXOManager instance for UTXO lookups.
         :param key_manager: KeyManager for retrieving keys.
         """
-        self.block_storage = block_storage
-        self.block_metadata = block_metadata
+        self.block_storage = block_storage  # ✅ Uses BlockStorage instead of BlockMetadata
         self.tx_storage = tx_storage
         self.utxo_manager = utxo_manager
         self.key_manager = key_manager
@@ -62,15 +59,14 @@ class TransactionManager:
         # ✅ Initialize LMDB Storage for Transactions, UTXOs, and Indexes
         utxo_db = LMDBManager(Constants.get_db_path("utxo"))
         utxo_history_db = LMDBManager(Constants.get_db_path("utxo_history"))
-        txindex_db = LMDBManager(Constants.get_db_path("txindex"))  # ✅ Required for Falcon-512 storage
+        txindex_db = LMDBManager(Constants.get_db_path("txindex"))
 
+        # ✅ Corrected UTXOStorage initialization
         self.utxo_storage = UTXOStorage(
-            utxo_db=utxo_db,
-            utxo_history_db=utxo_history_db,
-            utxo_manager=utxo_manager
+            utxo_manager=utxo_manager  # ✅ Pass utxo_manager instead of utxo_db
         )
 
-        self.txindex_db = txindex_db  # ✅ Store txindex for Falcon-512 signature storage
+        self.txindex_db = txindex_db
 
         # ✅ Initialize the two mempools
         self.standard_mempool = StandardMempool(
@@ -90,8 +86,6 @@ class TransactionManager:
               f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | "
               f"Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}% | "
               f"TX Index DB: {Constants.get_db_path('txindex')}")
-
-
     
     def create_transaction(self, sender, recipient_address=None, amount=None, fee=None, transaction_type="STANDARD", **kwargs):
         """

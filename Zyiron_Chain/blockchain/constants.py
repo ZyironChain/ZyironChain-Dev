@@ -113,7 +113,8 @@ class Constants:
     UTXO_FLAG = UTXO_FLAGS[NETWORK]
 
 
-    LMDB_MAP_SIZE = 128   # ✅ Convert 128MB → Bytes (128 * 1024 * 1024)
+# In Constants class:
+    LMDB_MAP_SIZE = 128 * 1024 * 1024  # 128MB (was incorrectly set to 1024 bytes)
 
     
     DATABASES = {

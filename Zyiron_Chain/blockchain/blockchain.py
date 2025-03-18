@@ -47,7 +47,6 @@ class Blockchain:
         self,
         tx_storage=None,      # Handles transaction indexing (TxStorage).
         utxo_storage=None,    # Manages UTXOs (UTXOStorage).
-        wallet_index=None,    # Wallet-related operations (WalletStorage).
         transaction_manager=None,  # Transaction handling (TransactionManager).
         key_manager=None,  # Manages cryptographic keys (KeyManager).
         full_block_store=None  # ✅ Handles full block storage in LMDB.
@@ -68,7 +67,6 @@ class Blockchain:
             # ✅ Initialize storage modules
             self.tx_storage = tx_storage
             self.utxo_storage = utxo_storage
-            self.wallet_index = wallet_index
             self.transaction_manager = transaction_manager
             self.key_manager = key_manager
 
@@ -103,7 +101,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.__init__] ❌ ERROR: Blockchain initialization failed: {e}")
             raise
-
 
 
     def load_chain_from_storage(self) -> list:

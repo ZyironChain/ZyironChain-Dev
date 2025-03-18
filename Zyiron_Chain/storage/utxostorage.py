@@ -21,6 +21,12 @@ from Zyiron_Chain.blockchain.block import Block
 
 
 
+import threading
+from typing import Dict
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+
 class UTXOStorage:
     """
     UTXOStorage manages unspent transaction outputs (UTXOs) and UTXO history in LMDB.
@@ -35,8 +41,20 @@ class UTXOStorage:
     Detailed print statements are provided for each operation and error condition.
     """
 
-    def __init__(self, utxo_manager):
+    def __init__(self, utxo_manager: UTXOManager):
+        """
+        Initialize UTXOStorage.
+
+        Args:
+            utxo_manager: An instance of UTXOManager.
+        """
         try:
+            # ✅ Ensure utxo_manager is valid
+            if not isinstance(utxo_manager, UTXOManager):
+                raise ValueError("[UTXOStorage.__init__] ERROR: Invalid utxo_manager instance provided.")
+
+            self.utxo_manager = utxo_manager  # ✅ Store UTXOManager reference
+
             # ✅ Determine the correct database paths based on the active network
             network_flag = Constants.NETWORK
             db_paths = Constants.NETWORK_DATABASES.get(network_flag)
@@ -53,19 +71,18 @@ class UTXOStorage:
             # ✅ Initialize LMDB for UTXO storage
             self.utxo_db = LMDBManager(utxo_db_path)
             self.utxo_history_db = LMDBManager(utxo_history_db_path)
-            self.utxo_manager = utxo_manager  # Expects utxo_manager to have methods like get_all_utxos()
-            self._cache: Dict[str, dict] = {}
+
+            # ✅ Local Cache for UTXO Lookups
+            self._cache: Dict[str, dict] = {} # type: ignore
             self._db_lock = threading.Lock()
 
-            print(f"[UTXOStorage.__init__] SUCCESS: UTXOStorage initialized for {network_flag}.")
+            print(f"[UTXOStorage.__init__] ✅ SUCCESS: UTXOStorage initialized for {network_flag}.")
             print(f"[UTXOStorage.__init__] INFO: UTXO Database Path: {utxo_db_path}")
             print(f"[UTXOStorage.__init__] INFO: UTXO History Database Path: {utxo_history_db_path}")
 
         except Exception as e:
-            print(f"[UTXOStorage.__init__] ERROR: Failed to initialize UTXOStorage: {e}")
+            print(f"[UTXOStorage.__init__] ❌ ERROR: Failed to initialize UTXOStorage: {e}")
             raise
-
-
 
 
     def validate_utxos(self, transactions: Union[List[Dict], Block]) -> bool:

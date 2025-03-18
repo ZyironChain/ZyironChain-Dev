@@ -22,6 +22,10 @@ from threading import Lock
 from Zyiron_Chain.accounts.key_manager import KeyManager
 import struct
 
+import os
+from threading import Lock
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+from Zyiron_Chain.blockchain.constants import Constants
 
 class BlockStorage:
     """
@@ -29,7 +33,7 @@ class BlockStorage:
     
     Responsibilities:
       - Store block headers (metadata) in LMDB.
-      - Store full blocks in LMDB (`full_block_chain.lmdb`).
+      - Store full blocks in LMDB (`full_block_chain/0001.lmdb`, `0002.lmdb`, etc.).
       - Use single SHA3-384 hashing.
       - Provide detailed print statements for every major step and error.
       - Ensure thread safety with locks.
@@ -60,13 +64,22 @@ class BlockStorage:
             self.block_metadata_db = LMDBManager(Constants.DATABASES["block_metadata"])
             self.txindex_db = LMDBManager(Constants.DATABASES["txindex"])
 
-            # ✅ **Step 2: Determine the Latest LMDB File for Blocks**
+            # ✅ **Step 2: Ensure `full_block_chain/` Directory Exists**
+            self.blockchain_dir = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, "full_block_chain")
+            os.makedirs(self.blockchain_dir, exist_ok=True)  # ✅ Create if missing
+
+            # ✅ **Step 3: Determine the Latest LMDB File in `full_block_chain/`**
             lmdb_files = sorted([
-                f for f in os.listdir(Constants.BLOCKCHAIN_STORAGE_PATH)
-                if f.startswith("full_block_chain")
+                f for f in os.listdir(self.blockchain_dir) if f.endswith(".lmdb") and f.isdigit()
             ])
-            latest_lmdb = lmdb_files[-1] if lmdb_files else "full_block_chain_1.lmdb"
-            self.full_block_store = LMDBManager(os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, latest_lmdb))
+
+            if lmdb_files:
+                latest_lmdb = os.path.join(self.blockchain_dir, lmdb_files[-1])  # ✅ Use last numbered LMDB file
+            else:
+                latest_lmdb = os.path.join(self.blockchain_dir, "0001.lmdb")  # ✅ Start with "0001.lmdb"
+
+            # ✅ **Initialize LMDB Storage with the latest or new block file**
+            self.full_block_store = LMDBManager(latest_lmdb)
 
             print(f"[BlockStorage.__init__] ✅ Using LMDB file: {latest_lmdb}")
 
@@ -74,31 +87,74 @@ class BlockStorage:
             print(f"[BlockStorage.__init__] ❌ ERROR: Initialization failed: {e}")
             raise
 
+    def _set_latest_block_file(self):
+        """
+        ✅ Ensures full_block_chain/ directory exists inside BLOCKCHAIN_STORAGE_PATH.
+        ✅ Scans full_block_chain/ for the latest LMDB file.
+        ✅ If no files exist, creates 0001.lmdb as the first file.
+        ✅ Stores the latest LMDB file path in self.current_block_file.
+        """
+        try:
+            # ✅ **Ensure `full_block_chain/` Directory Exists**
+            self.blockchain_dir = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, "full_block_chain")
+            os.makedirs(self.blockchain_dir, exist_ok=True)
+
+            # ✅ **Scan for existing LMDB files inside `full_block_chain/`**
+            existing_files = sorted([
+                f for f in os.listdir(self.blockchain_dir) if f.endswith(".lmdb") and f[:-5].isdigit()
+            ])
+
+            if existing_files:
+                # ✅ **Get the latest LMDB file based on number sequence**
+                latest_file = existing_files[-1]
+            else:
+                # ✅ **If no files exist, create `0001.lmdb`**
+                latest_file = "0001.lmdb"
+
+            # ✅ **Set the path for the latest LMDB file**
+            self.current_block_file = os.path.join(self.blockchain_dir, latest_file)
+
+            print(f"[BlockStorage._set_latest_block_file] ✅ Using block storage file: {self.current_block_file}")
+
+        except Exception as e:
+            print(f"[BlockStorage._set_latest_block_file] ❌ ERROR: Failed to set latest block file: {e}")
+
 
 
     def _check_and_rollover_lmdb(self):
         """
-        Checks if the current LMDB file exceeds 512MB.
-        If it does, rolls over to a new LMDB file for storing new blocks.
+        Checks if the current LMDB file exceeds the size limit.
+        If it does, rolls over to a new sequential LMDB file inside `full_block_chain/`.
         """
         try:
-            lmdb_path = Constants.DATABASES["full_block_chain"]
-            lmdb_file = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, lmdb_path)
-            
-            # ✅ **Check LMDB file size**
-            if os.path.exists(lmdb_file) and os.path.getsize(lmdb_file) >= Constants.BLOCK_DATA_FILE_SIZE_BYTES:
-                print(f"[BlockStorage] INFO: LMDB file {lmdb_file} exceeds 512MB. Rolling over to a new file.")
+            # ✅ **Ensure `full_block_chain/` Directory Exists**
+            if not os.path.exists(self.blockchain_dir):
+                os.makedirs(self.blockchain_dir, exist_ok=True)
 
-                # ✅ **Determine next LMDB file number**
-                file_count = len([f for f in os.listdir(Constants.BLOCKCHAIN_STORAGE_PATH) if f.startswith("full_block_chain")])
-                new_lmdb_file = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, f"full_block_chain_{file_count + 1}.lmdb")
+            # ✅ **Check the current LMDB file size**
+            current_lmdb_file = self.full_block_store.env.path()
+            if os.path.exists(current_lmdb_file) and os.path.getsize(current_lmdb_file) >= Constants.BLOCK_DATA_FILE_SIZE_BYTES:
+                print(f"[BlockStorage] INFO: LMDB file {current_lmdb_file} exceeded {Constants.BLOCK_DATA_FILE_SIZE_BYTES} bytes. Rolling over...")
 
-                # ✅ **Close existing LMDB environment before switching**
+                # ✅ **Determine the next available file number inside `full_block_chain/`**
+                existing_files = sorted([
+                    f for f in os.listdir(self.blockchain_dir) if f.endswith(".lmdb") and f.isdigit()
+                ])
+                
+                if existing_files:
+                    next_file_number = int(existing_files[-1]) + 1  # ✅ Increment the last file number
+                else:
+                    next_file_number = 1  # ✅ Start from 1 if no files exist
+
+                new_lmdb_file = os.path.join(self.blockchain_dir, f"{next_file_number:04d}.lmdb")  # Format as "0001.lmdb"
+
+                # ✅ **Close the existing LMDB environment before switching**
                 self.full_block_store.env.close()
 
-                # ✅ **Switch to new LMDB file**
+                # ✅ **Switch to the new LMDB file**
                 self.full_block_store = LMDBManager(new_lmdb_file)
-                print(f"[BlockStorage] ✅ New LMDB file created: {new_lmdb_file}")
+
+                print(f"[BlockStorage] ✅ Rolled over to new LMDB file: {new_lmdb_file}")
 
         except Exception as e:
             print(f"[BlockStorage] ❌ ERROR: Failed to check LMDB rollover: {e}")
@@ -212,13 +268,17 @@ class BlockStorage:
         """
         Stores a block in LMDB.
         - Ensures difficulty is stored as an integer.
-        - Calls `_check_and_rollover_lmdb()` to prevent LMDB from exceeding 512MB.
+        - Calls `_check_and_rollover_lmdb()` to prevent LMDB from exceeding the size limit.
+        - Uses `full_block_chain/` directory for storage.
         """
         try:
             print(f"[BlockStorage.store_block] INFO: Storing Block {block.index}...")
 
             # ✅ **Check and Rollover LMDB if needed**
             self._check_and_rollover_lmdb()
+
+            # ✅ **Ensure Latest Block File Path is Set**
+            self._set_latest_block_file()
 
             # ✅ **Check If Block Already Exists in `full_block_store`**
             with self.full_block_store.env.begin() as txn:
@@ -268,7 +328,7 @@ class BlockStorage:
                 "hash": block_hash  # ✅ Use the mined hash directly
             }
 
-            # ✅ **Store Full Block in `full_block_store`**
+            # ✅ **Store Full Block in `full_block_chain/` LMDB File**
             with self.full_block_store.env.begin(write=True) as txn:
                 txn.put(f"block:{block_hash}".encode(), json.dumps(block_metadata).encode())
 
@@ -278,11 +338,12 @@ class BlockStorage:
                 for tx in valid_transactions:
                     txn.put(f"tx:{tx.tx_id}".encode(), block_hash.encode())
 
-            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully in LMDB.")
+            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully in `{self.current_block_file}`.")
 
         except Exception as e:
             print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
             raise
+
 
 
     def _block_to_storage_format(self, block: Block) -> Dict:
