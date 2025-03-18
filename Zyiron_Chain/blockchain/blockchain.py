@@ -24,7 +24,8 @@ import time
 # -------------------------------------------------------------------------
 from Zyiron_Chain.storage.block_storage import BlockStorage
 from Zyiron_Chain.blockchain.block_manager import BlockManager
-from Zyiron_Chain.blockchain. block import Block
+from Zyiron_Chain.blockchain.block import Block
+
 from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # Hypothetical genesis block generator
 
 # Constants might be needed for difficulty, chain name, etc.
@@ -79,8 +80,8 @@ class Blockchain:
             # ✅ In-memory blockchain representation
             self.chain = []
 
-            # ✅ Initialize Proof-of-Work Manager
-            self.pow_manager = PowManager()
+            # ✅ Initialize Proof-of-Work Manager with block storage
+            self.pow_manager = PowManager(self.block_storage)
 
             # ✅ Load chain from storage
             self.load_chain_from_storage()
@@ -108,17 +109,18 @@ class Blockchain:
             print(f"[Blockchain.__init__] ❌ ERROR: Blockchain initialization failed: {e}")
             raise
 
+
     def load_chain_from_storage(self) -> list:
         """
         Load the blockchain from LMDB storage into memory with validation.
         - Retrieves full blocks directly from `full_block_chain.lmdb`.
         - Ensures all transactions are valid before adding to the in-memory chain.
-        - Ensures UTXO consistency before blocks are added.
+        - Verifies UTXO consistency before blocks are added.
         """
         try:
             print("[Blockchain.load_chain_from_storage] INFO: Loading blockchain from LMDB...")
 
-            # ✅ Retrieve full blocks from LMDB
+            # ✅ **Retrieve full blocks from LMDB**
             stored_blocks = self.full_block_store.get_all_blocks()
             if not stored_blocks:
                 print("[Blockchain.load_chain_from_storage] ❌ WARNING: No blocks found in LMDB.")
@@ -129,9 +131,19 @@ class Blockchain:
 
             for block_data in stored_blocks:
                 try:
-                    # ✅ **Ensure block data is valid before processing**
-                    if not isinstance(block_data, dict) or "index" not in block_data or "hash" not in block_data:
-                        continue  # Skip corrupted blocks
+                    # ✅ **Handle both legacy and new block formats**
+                    if "header" in block_data:
+                        header = block_data["header"]
+                    else:
+                        # Legacy format where header fields are at root level
+                        header = block_data
+                        block_data = {"header": header, "transactions": block_data.get("transactions", [])}
+
+                    # ✅ **Ensure block header contains required fields**
+                    required_fields = {"index", "previous_hash", "hash", "timestamp", "nonce", "difficulty"}
+                    if not required_fields.issubset(header.keys()):
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Missing fields in block header: {header}")
+                        continue  # Skip incomplete block headers
 
                     # ✅ **Deserialize the block safely**
                     block = Block.from_dict(block_data)
@@ -149,6 +161,7 @@ class Blockchain:
 
                     # ✅ **Validate block**
                     if not self.validate_block(block):
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} failed validation.")
                         continue  # Skip invalid blocks
 
                     # ✅ **Ensure transactions are valid before adding to the block**
@@ -156,11 +169,13 @@ class Blockchain:
                     for tx in block.transactions:
                         tx_id = tx.get("tx_id") if isinstance(tx, dict) else getattr(tx, "tx_id", None)
                         if not tx_id:
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction missing tx_id in Block {block.index}. Skipping...")
                             continue  # Skip transactions missing a tx_id
 
                         # ✅ **Ensure transaction exists in LMDB**
                         stored_tx = self.tx_storage.get_transaction(tx_id)
                         if not stored_tx:
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction {tx_id} not found in storage. Skipping...")
                             continue  # Skip transactions that aren't in storage
 
                         # ✅ **Add valid transactions**
@@ -170,6 +185,7 @@ class Blockchain:
 
                     # ✅ **Ensure UTXO integrity**
                     if not self.utxo_storage.validate_utxos(block):
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has invalid UTXOs. Skipping...")
                         continue  # Skip blocks with invalid UTXOs
 
                     loaded_blocks.append(block)  # Add validated block to the in-memory chain
@@ -184,6 +200,7 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from LMDB: {e}")
             return []  # Return an empty list on any failure
+
 
     def _compute_block_hash(self, block) -> str:
         """
@@ -316,8 +333,12 @@ class Blockchain:
                     # ✅ **Retrieve block hash directly as a string**
                     block_hash = block.hash if isinstance(block.hash, str) else str(block.hash)
 
-                    # ✅ **Store transaction in LMDB**
-                    self.tx_storage.store_transaction(tx_id, block_hash, tx)
+                    # ✅ **Extract outputs and timestamp from the transaction**
+                    outputs = tx.get("outputs") if isinstance(tx, dict) else getattr(tx, "outputs", [])
+                    timestamp = tx.get("timestamp") if isinstance(tx, dict) else getattr(tx, "timestamp", int(time.time()))
+
+                    # ✅ **Store transaction in LMDB with required parameters**
+                    self.tx_storage.store_transaction(tx_id, block_hash, tx, outputs, timestamp)
                     print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
 
                 except Exception as e:
@@ -514,19 +535,20 @@ class Blockchain:
                 print("[Blockchain.validate_chain] ❌ ERROR: No blocks found in LMDB storage.")
                 return False
 
-            # ✅ **Sort Blocks by Height**
-            sorted_blocks = sorted(stored_blocks, key=lambda b: b["header"]["index"])
+            # ✅ **Sort Blocks by Height (No More `header`)**
+            sorted_blocks = sorted(stored_blocks, key=lambda b: b["index"])
 
             # ✅ **Validate Block Linkage & Transaction Integrity**
             prev_hash = Constants.ZERO_HASH
             for block_meta in sorted_blocks:
                 try:
+                    # ✅ **Deserialize Block Properly**
                     block = Block.from_dict(block_meta)
                     if not block:
-                        print(f"[Blockchain.validate_chain] ❌ ERROR: Failed to deserialize block at height {block_meta['header']['index']}.")
+                        print(f"[Blockchain.validate_chain] ❌ ERROR: Failed to deserialize block at height {block_meta.get('index', 'UNKNOWN')}.")
                         return False
 
-                    # ✅ **Check Previous Hash Consistency**
+                    # ✅ **Check Previous Hash Consistency (Skip for Genesis Block)**
                     if block.index > 0 and block.previous_hash != prev_hash:
                         print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} has an invalid previous hash. "
                             f"Expected {prev_hash}, Found {block.previous_hash}")
@@ -541,7 +563,7 @@ class Blockchain:
                     prev_hash = block.hash  # ✅ Update previous hash for the next block
 
                 except Exception as block_error:
-                    print(f"[Blockchain.validate_chain] ❌ ERROR: Block validation failed at index {block_meta.get('header', {}).get('index', 'UNKNOWN')}: {block_error}")
+                    print(f"[Blockchain.validate_chain] ❌ ERROR: Block validation failed at index {block_meta.get('index', 'UNKNOWN')}: {block_error}")
                     return False
 
             print("[Blockchain.validate_chain] ✅ SUCCESS: Blockchain validation complete.")
@@ -550,7 +572,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_chain] ❌ ERROR: Blockchain validation failed: {e}")
             return False
-
 
 
     def purge_chain():

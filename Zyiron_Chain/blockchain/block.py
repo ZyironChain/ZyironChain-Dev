@@ -22,7 +22,7 @@ from typing import List, Optional, Union
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 sys.path.append(project_root)
 
-from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.blockchain.constants import Constants, store_transaction_signature
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 
@@ -197,48 +197,50 @@ class Block:
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, formatted for LMDB storage.
-        Ensures all fields are stored as hex strings instead of bytes.
+        Ensures all fields are stored as properly formatted hex strings or default values.
         """
         return {
-            "version": self.version,
-            "index": self.index,
-            "previous_hash": self.previous_hash if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
-            "merkle_root": self.merkle_root if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
-            "timestamp": self.timestamp,
-            "nonce": self.nonce,
-            "difficulty": self.difficulty if isinstance(self.difficulty, str) else "00" * 48,  # Default 48-byte hex
-            "miner_address": self.miner_address if isinstance(self.miner_address, str) else "00" * 128,  # Default 128-byte hex
+            "version": str(self.version) if hasattr(self, "version") else "1.00",
+            "index": int(self.index),
+            "previous_hash": str(self.previous_hash) if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
+            "merkle_root": str(self.merkle_root) if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
+            "timestamp": int(self.timestamp),
+            "nonce": int(self.nonce),
+            "difficulty": str(self.difficulty) if isinstance(self.difficulty, str) else "00" * 48,  # Default 48-byte hex
+            "miner_address": str(self.miner_address) if isinstance(self.miner_address, str) else "00" * 128,  # Default 128-byte hex
+            "transaction_signature": str(getattr(self, "transaction_signature", "00" * 48)),  # Ensure valid hex
+            "reward": str(getattr(self, "reward", 0)),  # Convert reward to string for JSON storage
+            "fees": str(getattr(self, "fees", 0))  # Convert fees to string for consistency
         }
+
 
     def to_dict(self) -> dict:
         """
         Serialize block to a dictionary with standardized field formatting.
-        Ensures all fields are converted to hex strings for LMDB storage.
+        Ensures all fields are converted to proper formats for LMDB storage.
         """
         print("[Block.to_dict] INFO: Serializing block to dictionary for LMDB storage.")
 
         return {
-            "header": {
-                "version": self.version,
-                "index": self.index,
-                "previous_hash": self.previous_hash if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
-                "merkle_root": self.merkle_root if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
-                "timestamp": self.timestamp,
-                "nonce": self.nonce,
-                "difficulty": self.difficulty if isinstance(self.difficulty, str) else "00" * 48,  # Default 48-byte hex
-                "miner_address": self.miner_address if isinstance(self.miner_address, str) else "00" * 128,  # Default 128-byte hex
-                "transaction_signature": (
-                    self.transaction_signature if isinstance(self.transaction_signature, str) else "00" * 48
-                ) if hasattr(self, "transaction_signature") else "00" * 48,  # Default 48-byte hex
-                "reward": str(getattr(self, "reward", 0)),  # Convert to string for JSON storage
-                "fees": str(getattr(self, "fees", 0)),  # Convert to string for precision
+            "header": {  # ✅ Ensure header is included
+                "version": str(self.version) if hasattr(self, "version") else "1.00",
+                "index": int(self.index),
+                "previous_hash": str(self.previous_hash) if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
+                "merkle_root": str(self.merkle_root) if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
+                "timestamp": int(self.timestamp),
+                "nonce": int(self.nonce),
+                "difficulty": str(self.difficulty) if isinstance(self.difficulty, str) else "00" * 48,  
+                "miner_address": str(self.miner_address) if isinstance(self.miner_address, str) else "00" * 128,
+                "transaction_signature": str(getattr(self, "transaction_signature", "00" * 48)), 
+                "reward": str(getattr(self, "reward", 0)),  
+                "fees": str(getattr(self, "fees", 0)),  
             },
             "transactions": [
                 tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in self.transactions
             ],
-            "tx_id": self.tx_id if isinstance(self.tx_id, str) else Constants.ZERO_HASH,
-            "hash": self.hash if isinstance(self.hash, str) else Constants.ZERO_HASH,
+            "hash": str(self.hash) if isinstance(self.hash, str) else Constants.ZERO_HASH
         }
+
 
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
@@ -251,31 +253,32 @@ class Block:
         try:
             print("[Block.from_dict] INFO: Reconstructing block from dict.")
 
-            # ✅ Validate required fields
-            required_fields = ["index", "previous_hash", "transactions", "timestamp", "nonce", "difficulty", "miner_address"]
-            if "header" not in data:
-                raise ValueError("[Block.from_dict] ❌ ERROR: 'header' section missing in input data.")
+            # ✅ Check if block uses new structure (has 'header')
+            if "header" in data:
+                header = data["header"]
+            else:
+                # ✅ Handle legacy format where header fields are at root level
+                header = data
+                print("[Block.from_dict] ⚠️ WARNING: Missing 'header' field. Using legacy format.")
 
-            for field in required_fields:
-                if field not in data["header"]:
-                    raise ValueError(f"[Block.from_dict] ❌ ERROR: Missing required field '{field}' in 'header'.")
+            required_fields = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "miner_address"}
 
-            # ✅ Convert difficulty back to a hex string
-            difficulty_hex = data["header"].get("difficulty", "00" * 48)  # Default to 48-byte hex
+            if not required_fields.issubset(header.keys()):
+                missing_fields = required_fields - set(header.keys())
+                raise ValueError(f"[Block.from_dict] ❌ ERROR: Missing required fields in 'header': {missing_fields}")
 
-            # ✅ Ensure previous_hash and merkle_root are properly converted
-            previous_hash = data["header"].get("previous_hash", Constants.ZERO_HASH)
-            merkle_root = data["header"].get("merkle_root", Constants.ZERO_HASH)
+            # ✅ Ensure proper field conversion
+            difficulty_hex = str(header.get("difficulty", "00" * 48))  # Default 48-byte hex
+            previous_hash = str(header.get("previous_hash", Constants.ZERO_HASH))
+            merkle_root = str(header.get("merkle_root", Constants.ZERO_HASH))
+            miner_address = str(header.get("miner_address", "00" * 128))  # Default 128-byte hex
 
-            # ✅ Ensure miner address is properly formatted
-            miner_address = data["header"].get("miner_address", "00" * 128)  # Default to 128-byte hex
-
-            # ✅ Rebuild transaction objects safely
+            # ✅ Rebuild transactions safely
             rebuilt_transactions = []
             for tx_data in data.get("transactions", []):
                 if not isinstance(tx_data, dict):
                     print(f"[Block.from_dict] ❌ ERROR: Transaction must be a dict, got {type(tx_data)}. Skipping.")
-                    continue  # Skip invalid transactions
+                    continue  
 
                 tx_type = tx_data.get("type", "STANDARD").upper()
                 try:
@@ -287,16 +290,16 @@ class Block:
                         rebuilt_transactions.append(Transaction.from_dict(tx_data))
                 except Exception as tx_error:
                     print(f"[Block.from_dict] ❌ ERROR: Failed to parse transaction {tx_data.get('tx_id', 'UNKNOWN')}: {tx_error}")
-                    continue  # Skip failing transactions
+                    continue  
 
             # ✅ Construct Block object with properly formatted fields
             try:
                 block = cls(
-                    index=int(data["header"]["index"]),
+                    index=int(header["index"]),
                     previous_hash=previous_hash,
                     transactions=rebuilt_transactions,
-                    timestamp=int(data["header"]["timestamp"]),
-                    nonce=int(data["header"]["nonce"]),
+                    timestamp=int(header["timestamp"]),
+                    nonce=int(header["nonce"]),
                     difficulty=difficulty_hex,
                     miner_address=miner_address
                 )
@@ -306,18 +309,17 @@ class Block:
 
             # ✅ Assign optional fields with proper conversion
             try:
-                block.tx_id = data.get("tx_id", Constants.ZERO_HASH)
-                block.transaction_signature = data["header"].get("transaction_signature", "00" * 48)
-                block.reward = Decimal(str(data["header"].get("reward", "0")))  # Convert to Decimal for precision
-                block.fees = Decimal(str(data["header"].get("fees", "0")))  # Convert to Decimal for safe handling
-                block.version = str(data["header"].get("version", "1.00"))  # Default version
+                block.transaction_signature = str(header.get("transaction_signature", "00" * 48))
+                block.reward = Decimal(str(header.get("reward", "0")))
+                block.fees = Decimal(str(header.get("fees", "0")))
+                block.version = str(header.get("version", "1.00"))
             except (ValueError, TypeError) as e:
                 print(f"[Block.from_dict] ❌ ERROR: Failed to assign optional fields: {e}")
                 raise
 
             # ✅ Preserve hash if already mined; otherwise, compute it
             try:
-                block.hash = data.get("hash", block.calculate_hash())
+                block.hash = str(data.get("hash", block.calculate_hash()))
             except (ValueError, TypeError) as e:
                 print(f"[Block.from_dict] ❌ ERROR: Failed to process block hash: {e}")
                 raise
@@ -328,6 +330,7 @@ class Block:
         except Exception as e:
             print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}")
             raise
+
 
     def __repr__(self) -> str:
         """
@@ -347,15 +350,23 @@ class Block:
         """
         Retrieves the `tx_id` of the Coinbase transaction, if present.
         """
-        print("[Block._get_coinbase_tx_id] Searching for Coinbase TX.")
+        print("[Block._get_coinbase_tx_id] INFO: Searching for Coinbase TX.")
 
         for tx in self.transactions:
-            tx_type = tx.get("type", "").upper() if isinstance(tx, dict) else getattr(tx, "tx_type", "").upper()
-            tx_id = tx.get("tx_id", None) if isinstance(tx, dict) else getattr(tx, "tx_id", None)
+            # Ensure transaction has a dictionary representation
+            tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx
+
+            # Validate transaction format
+            if not isinstance(tx_dict, dict):
+                print(f"[Block._get_coinbase_tx_id] ❌ ERROR: Invalid transaction format in Block {self.index}. Skipping.")
+                continue
+
+            tx_type = tx_dict.get("type", "").upper()
+            tx_id = tx_dict.get("tx_id", None)
 
             if tx_type == "COINBASE" and tx_id:
                 print(f"[Block._get_coinbase_tx_id] ✅ Found Coinbase TX with ID: {tx_id}")
                 return tx_id  # Return Coinbase transaction ID
 
-        print("[Block._get_coinbase_tx_id] ❌ No Coinbase TX found.")
+        print("[Block._get_coinbase_tx_id] ❌ ERROR: No Coinbase TX found in this block.")
         return None  # If no Coinbase TX exists

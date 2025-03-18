@@ -366,22 +366,22 @@ class UTXOStorage:
 
             with self._db_lock:
                 with self.utxo_db.env.begin(write=True) as utxo_txn, \
-                     self.utxo_history_db.env.begin(write=True) as history_txn:
+                    self.utxo_history_db.env.begin(write=True) as history_txn:
 
                     # ✅ **Step 1: Remove Spent UTXOs**
                     for tx in block.transactions:
                         if hasattr(tx, "inputs"):
                             for tx_input in tx.inputs:
                                 utxo_key = f"utxo:{tx_input.tx_id}:{tx_input.output_index}"
-                                spent_utxo = utxo_txn.get(utxo_key)
+                                spent_utxo = utxo_txn.get(utxo_key.encode())
 
                                 if spent_utxo:
                                     # ✅ **Move Spent UTXO to History**
                                     history_key = f"spent_utxo:{tx_input.tx_id}:{tx_input.output_index}:{block.timestamp}"
-                                    history_txn.put(history_key, spent_utxo)
+                                    history_txn.put(history_key.encode(), spent_utxo)
 
                                     # ✅ **Delete Spent UTXO**
-                                    utxo_txn.delete(utxo_key)
+                                    utxo_txn.delete(utxo_key.encode())
                                     print(f"[UTXOStorage.update_utxos] ✅ INFO: Spent UTXO {tx_input.tx_id}:{tx_input.output_index} archived.")
 
                                 else:
@@ -390,18 +390,18 @@ class UTXOStorage:
                     # ✅ **Step 2: Add New UTXOs**
                     for tx in block.transactions:
                         for idx, output in enumerate(tx.outputs):
-                            # ✅ **Validate Required Fields in UTXO**
-                            if not all(hasattr(output, attr) for attr in ["amount", "script_pub_key", "locked"]):
-                                print(f"[UTXOStorage.update_utxos] ❌ ERROR: Invalid UTXO format in transaction {tx.tx_id}, skipping.")
-                                continue
-
-                            # ✅ **Convert Dictionary Outputs to `TransactionOut` Objects**
+                            # ✅ **Check If Output Is a Valid Dictionary**
                             if isinstance(output, dict):
                                 try:
-                                    output = TransactionOut.from_dict(output)
+                                    output = TransactionOut.from_dict(output)  # Convert to TransactionOut
                                 except Exception as e:
-                                    print(f"[UTXOStorage.update_utxos] ❌ ERROR: Failed to convert output at index {idx}: {e}")
+                                    print(f"[UTXOStorage.update_utxos] ❌ ERROR: Failed to convert output at index {idx} in transaction {tx.tx_id}: {e}")
                                     continue
+
+                            # ✅ **Ensure Output Has Required Fields**
+                            if not isinstance(output, TransactionOut) or not all(hasattr(output, attr) for attr in ["amount", "script_pub_key", "locked"]):
+                                print(f"[UTXOStorage.update_utxos] ❌ ERROR: Invalid UTXO format in transaction {tx.tx_id}, skipping output {idx}.")
+                                continue
 
                             # ✅ **Format UTXO Data as JSON**
                             utxo_data = json.dumps({
@@ -414,12 +414,12 @@ class UTXOStorage:
                                 "spent_status": False
                             }, sort_keys=True)
 
-                            utxo_key = f"utxo:{tx.tx_id}:{idx}"
-                            utxo_txn.put(utxo_key, utxo_data)
+                            utxo_key = f"utxo:{tx.tx_id}:{idx}".encode()
+                            utxo_txn.put(utxo_key, utxo_data.encode())
 
                             # ✅ **Store New UTXO in `utxo_history.lmdb`**
-                            history_key = f"new_utxo:{tx.tx_id}:{idx}:{block.timestamp}"
-                            history_txn.put(history_key, utxo_data)
+                            history_key = f"new_utxo:{tx.tx_id}:{idx}:{block.timestamp}".encode()
+                            history_txn.put(history_key, utxo_data.encode())
 
                             print(f"[UTXOStorage.update_utxos] ✅ INFO: Added new UTXO {tx.tx_id}:{idx}, amount {output.amount}.")
 

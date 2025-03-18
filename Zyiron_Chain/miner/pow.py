@@ -15,6 +15,15 @@ class PowManager:
     - Retrieves necessary constants from Constants.
     - Provides detailed print statements for progress and errors.
     """
+
+    def __init__(self, block_storage):
+        """
+        Initializes PowManager with access to block storage.
+
+        :param block_storage: The storage handler for full blocks.
+        """
+        self.block_storage = block_storage  # ✅ Ensure `block_storage` is properly assigned
+
     def perform_pow(self, block):
         """
         Performs Proof-of-Work (PoW) by incrementing the nonce until a valid hash is found.
@@ -73,18 +82,11 @@ class PowManager:
     def adjust_difficulty(self):
         """
         Adjusts mining difficulty based on actual versus expected block times.
-        - Retrieves stored block metadata from `block_storage`.
-        - Calculates the ratio of expected time (Constants.DIFFICULTY_ADJUSTMENT_INTERVAL * TARGET_BLOCK_TIME) 
-          to actual time taken.
-        - Clamps the adjustment ratio within allowed min/max factors.
-        - Ensures difficulty is **strictly stored as an integer**.
-        
-        Returns:
-            int: The new difficulty target stored as an **integer**.
         """
         try:
             print("[PowManager.adjust_difficulty] INFO: Initiating difficulty adjustment...")
 
+            # ✅ **Retrieve all stored blocks**
             stored_blocks = self.block_storage.get_all_blocks()  # ✅ Uses `block_storage`
             num_blocks = len(stored_blocks)
 
@@ -94,15 +96,21 @@ class PowManager:
 
             # ✅ **Use Last Block's Difficulty**
             last_block = stored_blocks[-1]
-            if "header" not in last_block or "difficulty" not in last_block["header"]:
-                print("[PowManager.adjust_difficulty] ERROR: Last block is missing header or difficulty.")
+            if "difficulty" not in last_block:
+                print("[PowManager.adjust_difficulty] ERROR: Last block is missing difficulty field.")
                 return Constants.GENESIS_TARGET
 
             try:
-                last_diff_str = str(last_block["header"].get("difficulty", Constants.GENESIS_TARGET))
-                last_difficulty = int(last_diff_str, 16) if last_diff_str.startswith("0x") else int(last_diff_str)
+                last_diff_str = str(last_block.get("difficulty", Constants.GENESIS_TARGET)).lower().strip()
+                
+                # Ensure it starts with `0x`, otherwise convert manually
+                if last_diff_str.startswith("0x"):
+                    last_difficulty = int(last_diff_str, 16)  # ✅ Proper conversion from hex
+                else:
+                    last_difficulty = int("0x" + last_diff_str, 16)  # ✅ Force hex conversion if `0x` is missing
+
             except ValueError as e:
-                print(f"[PowManager.adjust_difficulty] ERROR: Failed to convert last difficulty: {e}")
+                print(f"[PowManager.adjust_difficulty] ERROR: Failed to convert last difficulty: {e} | Value: {last_diff_str}")
                 return Constants.GENESIS_TARGET
 
             # ✅ **Ensure Enough Blocks for Difficulty Adjustment**
@@ -112,10 +120,10 @@ class PowManager:
 
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
 
-            # ✅ **Ensure Timestamps Exist and Are Valid**
+            # ✅ **Ensure Timestamps Exist**
             try:
-                last_timestamp = int(last_block["header"].get("timestamp", 0))
-                first_timestamp = int(first_block["header"].get("timestamp", 0))
+                last_timestamp = int(last_block.get("timestamp", 0))
+                first_timestamp = int(first_block.get("timestamp", 0))
             except (ValueError, TypeError) as e:
                 print(f"[PowManager.adjust_difficulty] ERROR: Invalid timestamp format: {e}")
                 return last_difficulty

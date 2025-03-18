@@ -59,12 +59,12 @@ class CoinbaseTx:
 
         self.type = "COINBASE"
         self.fee = Decimal("0")
-
         self.metadata = {}
 
+        self.size = None  # Ensure attribute exists before estimation
         self.size = self._estimate_size()
-        print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
 
+        print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
         print(f"[CoinbaseTx.__init__] ✅ SUCCESS: CoinbaseTx initialized for miner: {miner_address}")
 
     def _generate_tx_id(self) -> str:
@@ -94,7 +94,6 @@ class CoinbaseTx:
         except Exception as e:
             print(f"[CoinbaseTx._estimate_size] ❌ ERROR: Failed to estimate size: {e}")
             return 0
-
 
     def to_dict(self) -> Dict:
         """

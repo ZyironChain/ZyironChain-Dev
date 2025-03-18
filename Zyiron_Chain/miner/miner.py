@@ -30,61 +30,53 @@ class Miner:
         self,
         blockchain,
         block_manager,
-        block_storage,   # ✅ Uses `block_storage` for block retrieval
+        block_storage,
         transaction_manager,
         key_manager,
         mempool_storage,
-        genesis_block_manager=None  
+        genesis_block_manager=None
     ):
         """
         Initialize the Miner.
-
-        :param blockchain: The blockchain instance.
-        :param block_manager: The BlockManager instance.
-        :param block_storage: The storage handler for full blocks and metadata. ✅ Adjusted
-        :param transaction_manager: The transaction manager instance.
-        :param key_manager: The key manager instance.
-        :param mempool_storage: The mempool storage instance.
-        :param genesis_block_manager: The GenesisBlockManager instance (optional).
         """
         print("[Miner.__init__] INFO: Initializing Miner...")
 
-        # ✅ **Validate required components**
-        if not blockchain:
-            raise ValueError("[Miner.__init__] ERROR: `blockchain` instance is required.")
-        if not block_manager:
-            raise ValueError("[Miner.__init__] ERROR: `block_manager` instance is required.")
-        if not block_storage:
-            raise ValueError("[Miner.__init__] ERROR: `block_storage` instance is required.")  
-        if not transaction_manager:
-            raise ValueError("[Miner.__init__] ERROR: `transaction_manager` instance is required.")
-        if not key_manager:
-            raise ValueError("[Miner.__init__] ERROR: `key_manager` instance is required.")
-        if not mempool_storage:
-            raise ValueError("[Miner.__init__] ERROR: `mempool_storage` instance is required.")
+        # ✅ **Ensure required components are provided**
+        required_params = {
+            "blockchain": blockchain,
+            "block_manager": block_manager,
+            "block_storage": block_storage,
+            "transaction_manager": transaction_manager,
+            "key_manager": key_manager,
+            "mempool_storage": mempool_storage,
+        }
+
+        for param_name, param_value in required_params.items():
+            if not param_value:
+                raise ValueError(f"[Miner.__init__] ERROR: `{param_name}` instance is required.")
 
         # ✅ **Assign instances**
         self.blockchain = blockchain
         self.block_manager = block_manager
-        self.block_storage = block_storage  # ✅ Uses `block_storage` instead of `block_manager`
+        self.block_storage = block_storage
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.mempool_storage = mempool_storage
-        self.genesis_block_manager = genesis_block_manager  
+        self.genesis_block_manager = genesis_block_manager
 
-        # ✅ **Ensure Block Size is Dynamically Set (0MB - 10MB)**
-        self.current_block_size = max(0, min(10, Constants.MAX_BLOCK_SIZE_MB / (1024 * 1024)))
+        # ✅ **Initialize Proof-of-Work Manager**
+        self.pow_manager = PowManager(block_storage)
 
-        self.network = Constants.NETWORK
-        self.chain = self.block_storage.get_all_blocks()  # ✅ Uses `block_storage` to fetch all blocks
-
-        # ✅ **Initialize mining lock**
+        # ✅ **Initialize Mining Lock**
         self._mining_lock = Lock()
-        print("[Miner.__init__] INFO: Mining lock initialized.")
+
+        # ✅ **Initialize Current Block Size**
+        self.current_block_size = Constants.INITIAL_BLOCK_SIZE_MB  # 🔹 Default to 0MB - 10MB
 
         print("[Miner.__init__] INFO: Miner initialized successfully.")
-        print(f"[Miner.__init__] INFO: Current block size dynamically set to {self.current_block_size:.2f} MB.")
-        print(f"[Miner.__init__] INFO: Miner running on {self.network.upper()} network.")
+        print(f"[Miner.__init__] INFO: Initial block size set to {self.current_block_size} MB.")
+
+
 
     def _calculate_block_size(self):
         """
@@ -94,7 +86,11 @@ class Miner:
         try:
             print("[Miner._calculate_block_size] INFO: Retrieving pending transactions from mempool...")
 
-            # ✅ **Retrieve pending transactions from mempool**
+            # ✅ **Ensure current_block_size is initialized**
+            if not hasattr(self, "current_block_size"):
+                self.current_block_size = Constants.INITIAL_BLOCK_SIZE_MB  # Default to initial block size
+
+            # ✅ **Retrieve pending transactions from mempool with dynamic block size**
             pending_txs = self.mempool_storage.get_pending_transactions(self.current_block_size)
 
             if not isinstance(pending_txs, list):
@@ -105,8 +101,8 @@ class Miner:
             print(f"[Miner._calculate_block_size] INFO: Retrieved {tx_count} transactions from mempool.")
 
             # ✅ **Fetch Constants for Block Sizing**
-            min_size_mb = Constants.BLOCK_SIZE_RANGE[0] / (1024 * 1024)  # Convert bytes to MB
-            max_size_mb = Constants.BLOCK_SIZE_RANGE[1] / (1024 * 1024)  # Convert bytes to MB
+            min_size_mb = Constants.MIN_BLOCK_SIZE_MB  # Use predefined constant
+            max_size_mb = Constants.MAX_BLOCK_SIZE_MB  # Use predefined constant
 
             min_tx_count = 0  # ✅ Set lower bound for transaction count
             max_tx_count = 30000  # ✅ Set upper bound for transaction count
@@ -128,11 +124,11 @@ class Miner:
             standard_txs, smart_txs = [], []
             
             for tx in pending_txs:
-                if not hasattr(tx, "tx_id") or not hasattr(tx, "size"):
+                if not isinstance(tx, dict) or "tx_id" not in tx or "size" not in tx:
                     print(f"[Miner._calculate_block_size] WARNING: Skipping invalid transaction: {tx}")
                     continue
 
-                tx_id = tx.tx_id if isinstance(tx.tx_id, str) else str(tx.tx_id)
+                tx_id = str(tx["tx_id"])  # Ensure string format
 
                 if any(tx_id.startswith(prefix) for prefix in Constants.TRANSACTION_MEMPOOL_MAP["STANDARD"]["prefixes"]):
                     standard_txs.append(tx)
@@ -140,8 +136,8 @@ class Miner:
                     smart_txs.append(tx)
 
             # ✅ **Calculate Total Transaction Sizes (MB)**
-            total_standard_size_mb = sum(tx.size / (1024 * 1024) for tx in standard_txs if hasattr(tx, "size"))
-            total_smart_size_mb = sum(tx.size / (1024 * 1024) for tx in smart_txs if hasattr(tx, "size"))
+            total_standard_size_mb = sum(tx["size"] / (1024 * 1024) for tx in standard_txs)
+            total_smart_size_mb = sum(tx["size"] / (1024 * 1024) for tx in smart_txs)
 
             print(f"[Miner._calculate_block_size] INFO: Standard TXs: {len(standard_txs)}, Smart TXs: {len(smart_txs)}")
             print(f"[Miner._calculate_block_size] INFO: Total Standard TX Size: {total_standard_size_mb:.2f} MB")
@@ -348,7 +344,6 @@ class Miner:
             return False
 
 
-            
     def mining_loop(self, network=None):
         """
         Continuous mining loop:
@@ -414,8 +409,8 @@ class Miner:
                 total_supply = self.block_storage.get_total_mined_supply()  # ✅ Uses `block_storage`
                 print(f"[Miner.mining_loop] INFO: Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY}).")
 
-                # ✅ **Dynamically Adjust Difficulty**
-                new_difficulty = self.block_manager.calculate_target()
+                # ✅ **Dynamically Adjust Difficulty Using PowManager**
+                new_difficulty = self.pow_manager.adjust_difficulty()  # ✅ FIXED
                 print(f"[Miner.mining_loop] INFO: Difficulty adjusted on {network.upper()} to: {new_difficulty}")
 
                 block_height += 1
@@ -434,7 +429,7 @@ class Miner:
                     print(f"[Miner.mining_loop] INFO: Last valid block TX ID: {last_block.tx_id}")
                 else:
                     print("[Miner.mining_loop] ERROR: No valid blocks found in the chain. Stopping mining.")
-                break
+                break 
 
 
 
@@ -576,7 +571,7 @@ class Miner:
         - Retrieves transactions from mempool and includes coinbase transaction.
         - Enforces max supply constraints.
         """
-        with self.mining_lock:
+        with self._mining_lock:
             try:
                 print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
@@ -608,10 +603,9 @@ class Miner:
                 block_height = last_block.index + 1
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
 
-                # ✅ **Adjust Difficulty Based on the Latest Block**
+                # ✅ **Adjust Difficulty Using PowManager**
                 print("[Miner.mine_block] INFO: Calculating difficulty target.")
-                current_target = self.block_manager.calculate_target()
-                current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
+                current_target = self.pow_manager.adjust_difficulty()
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
                 # ✅ **Retrieve Miner Address**
@@ -622,16 +616,9 @@ class Miner:
                     return None
                 print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}.")
 
-                # ✅ **Calculate Block Size Based on Mempool Load**
-                print("[Miner.mine_block] INFO: Calculating block size based on mempool load.")
-                self._calculate_block_size()
-                print(f"[Miner.mine_block] INFO: Current block size set to {self.current_block_size:.2f} MB.")
-
                 # ✅ **Retrieve Pending Transactions from Mempool**
                 print("[Miner.mine_block] INFO: Retrieving pending transactions from mempool.")
-                pending_txs = self.transaction_manager.mempool.get_pending_transactions(
-                    block_size_mb=self.current_block_size
-                ) or []
+                pending_txs = self.transaction_manager.mempool.get_pending_transactions(self.current_block_size) or []
                 print(f"[Miner.mine_block] INFO: Retrieved {len(pending_txs)} pending transactions.")
 
                 total_fees = sum(tx["fee"] for tx in pending_txs if "fee" in tx)
@@ -656,7 +643,7 @@ class Miner:
                     fees_collected=total_fees
                 )
 
-                # ✅ **Perform Proof-of-Work**
+                # ✅ **Perform Proof-of-Work Using PowManager**
                 print("[Miner.mine_block] INFO: Starting Proof-of-Work.")
                 final_hash, final_nonce, attempts = self.pow_manager.perform_pow(new_block)
                 print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final hash: {final_hash[:12]}...")

@@ -437,7 +437,8 @@ class GenesisBlockManager:
             print("[GenesisBlockManager.prevent_duplicate_genesis] INFO: Checking for existing Genesis block...")
 
             # ✅ **Check Block Storage (LMDB)**
-            existing_block = self.block_storage.get_block_by_index(0)
+            existing_block = self.block_storage.get_block_by_height(0)
+
             if existing_block:
                 print(f"[GenesisBlockManager.prevent_duplicate_genesis] ✅ Found Genesis block in block storage with hash {existing_block.hash}")
 
