@@ -116,6 +116,7 @@ class Start:
         self.block_manager = BlockManager(
             blockchain=self.blockchain,
             block_storage=self.block_storage,
+            block_metadata=self.block_storage,  # Added missing block_metadata argument
             tx_storage=self.tx_storage,
             transaction_manager=self.transaction_manager
         )

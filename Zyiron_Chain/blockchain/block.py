@@ -54,9 +54,10 @@ class Block:
         transactions: List,
         timestamp: Optional[int] = None,
         nonce: int = 0,
-        difficulty: str = None,
+        difficulty: Union[int, str] = None,
         miner_address: str = None,
         fees: Union[int, float, Decimal] = 0,
+        version: str = Constants.VERSION  # ✅ Default to Constants.VERSION
     ):
         """
         Initializes a Block object with:
@@ -68,16 +69,26 @@ class Block:
             print(f"[Block.__init__] INFO: Initializing Block #{index}")
 
             # ✅ Validate `previous_hash`
-            if not isinstance(previous_hash, str) or len(previous_hash) != Constants.SHA3_384_HASH_SIZE * 2:
+            if not isinstance(previous_hash, str) or len(previous_hash) != 96:
+                print(f"[DEBUG] previous_hash received: {previous_hash}")
                 raise ValueError("[Block.__init__] ❌ ERROR: `previous_hash` must be a valid SHA3-384 hex string")
 
             self.previous_hash = previous_hash
 
-            # ✅ Validate `difficulty`
-            if difficulty is None or not isinstance(difficulty, str) or len(difficulty) != 96:
-                raise ValueError("[Block.__init__] ❌ ERROR: `difficulty` must be a 96-character hex string")
+            # ✅ Validate and Convert `difficulty`
+            if difficulty is None:
+                raise ValueError("[Block.__init__] ❌ ERROR: `difficulty` cannot be None")
 
-            self.difficulty = difficulty
+            if isinstance(difficulty, int):
+                # Convert integer difficulty to 96-character hex string
+                self.difficulty = f"{difficulty:0>96x}"
+            elif isinstance(difficulty, str) and len(difficulty) == 96:
+                # Use as-is if already a 96-character hex string
+                self.difficulty = difficulty
+            else:
+                raise ValueError(
+                    f"[Block.__init__] ❌ ERROR: `difficulty` must be a 96-character hex string or integer. Got: {difficulty}"
+                )
 
             # ✅ Assign block properties
             self.index = index
@@ -103,13 +114,14 @@ class Block:
             # ✅ Assign Coinbase TX ID
             self.tx_id = self._get_coinbase_tx_id()
 
-            print(f"[Block.__init__] ✅ SUCCESS: Block #{self.index} initialized.")
+            # ✅ Assign version (ensures compatibility with `Constants.VERSION`)
+            self.version = version
+
+            print(f"[Block.__init__] ✅ SUCCESS: Block #{self.index} initialized with version {self.version}.")
 
         except Exception as e:
             print(f"[Block.__init__] ❌ ERROR: Block initialization failed: {e}")
             raise
-
-
 
     def _compute_merkle_root(self) -> str:
         """
@@ -154,8 +166,6 @@ class Block:
             print(f"[Block._compute_merkle_root] ❌ ERROR: Merkle root computation failed: {e}")
             return Constants.ZERO_HASH
 
-
-
     def calculate_hash(self) -> str:
         """
         Calculate the block's hash using single SHA3-384.
@@ -184,7 +194,6 @@ class Block:
             print(f"[Block.calculate_hash] ❌ ERROR: Failed to compute block hash: {e}")
             return Constants.ZERO_HASH  # ✅ Return zero hash on failure
 
-
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, formatted for LMDB storage.
@@ -200,12 +209,6 @@ class Block:
             "difficulty": self.difficulty if isinstance(self.difficulty, str) else "00" * 48,  # Default 48-byte hex
             "miner_address": self.miner_address if isinstance(self.miner_address, str) else "00" * 128,  # Default 128-byte hex
         }
-
-
-
-
-
-
 
     def to_dict(self) -> dict:
         """
@@ -236,8 +239,6 @@ class Block:
             "tx_id": self.tx_id if isinstance(self.tx_id, str) else Constants.ZERO_HASH,
             "hash": self.hash if isinstance(self.hash, str) else Constants.ZERO_HASH,
         }
-
-
 
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
@@ -328,8 +329,6 @@ class Block:
             print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}")
             raise
 
-
-
     def __repr__(self) -> str:
         """
         String representation for debugging.
@@ -343,7 +342,6 @@ class Block:
             f"prev={prev_hash_display} merkle={merkle_display} "
             f"tx_count={len(self.transactions)}>"
         )
-
 
     def _get_coinbase_tx_id(self) -> Optional[str]:
         """

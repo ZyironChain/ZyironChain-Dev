@@ -64,6 +64,12 @@ class Blockchain:
             # ✅ Initialize LMDB storage for full blocks (merged storage)
             self.full_block_store = full_block_store or LMDBManager(Constants.DATABASES["full_block_chain"])
 
+            # ✅ Initialize BlockStorage
+            self.block_storage = BlockStorage(
+                tx_storage=tx_storage,
+                key_manager=key_manager
+            )
+
             # ✅ Initialize storage modules
             self.tx_storage = tx_storage
             self.utxo_storage = utxo_storage
@@ -85,7 +91,7 @@ class Blockchain:
 
                 # ✅ Initialize Genesis Block Manager
                 self.genesis_block_manager = GenesisBlockManager(
-                    full_block_store=self.full_block_store,
+                    block_storage=self.block_storage,  # Correct parameter name and type
                     key_manager=self.key_manager,
                     chain=self.chain,
                     block_manager=self
@@ -101,7 +107,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.__init__] ❌ ERROR: Blockchain initialization failed: {e}")
             raise
-
 
     def load_chain_from_storage(self) -> list:
         """
@@ -295,7 +300,7 @@ class Blockchain:
 
             # ✅ **Store full block in LMDB**
             try:
-                self.full_block_store.store_block(block)
+                self.full_block_store.store_block(block)  # No 'difficulty' argument needed
                 print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} stored successfully.")
             except Exception as e:
                 print(f"[Blockchain.add_block] ❌ ERROR: Failed to store block {block.index}: {e}")

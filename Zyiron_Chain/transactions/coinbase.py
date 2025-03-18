@@ -85,11 +85,16 @@ class CoinbaseTx:
         Estimate transaction size based on JSON serialization.
         """
         try:
+            if not hasattr(self, "to_dict") or not callable(self.to_dict):
+                print(f"[CoinbaseTx._estimate_size] ❌ ERROR: 'CoinbaseTx' object has no 'to_dict' method.")
+                return 0
+
             estimated_size = len(json.dumps(self.to_dict()).encode("utf-8"))
             return estimated_size
         except Exception as e:
             print(f"[CoinbaseTx._estimate_size] ❌ ERROR: Failed to estimate size: {e}")
             return 0
+
 
     def to_dict(self) -> Dict:
         """

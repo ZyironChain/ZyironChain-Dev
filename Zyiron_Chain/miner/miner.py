@@ -581,14 +581,14 @@ class Miner:
                 print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
 
-                # ✅ **Ensure BlockStorage is Properly Initialized**
-                if not hasattr(self, "block_storage") or not self.block_storage:
-                    print("[Miner.mine_block] ERROR: `block_storage` not initialized. Cannot retrieve latest block.")
+                # ✅ **Ensure BlockManager is Properly Initialized**
+                if not hasattr(self, "block_manager") or not self.block_manager:
+                    print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot retrieve latest block.")
                     return None
 
                 # ✅ **Get the Latest Block**
                 print("[Miner.mine_block] INFO: Checking for latest block.")
-                last_block = self.block_storage.get_latest_block()
+                last_block = self.block_manager.get_latest_block()
 
                 if not last_block:
                     print("[Miner.mine_block] WARNING: No previous block found. Ensuring Genesis block exists.")
@@ -600,7 +600,7 @@ class Miner:
                     print("[Miner.mine_block] INFO: Creating Genesis block using GenesisBlockManager.")
                     self.genesis_block_manager.ensure_genesis_block()
 
-                    last_block = self.block_storage.get_latest_block()
+                    last_block = self.block_manager.get_latest_block()
                     if not last_block:
                         print("[Miner.mine_block] ERROR: Failed to retrieve or create Genesis block. Stopping mining.")
                         return None
@@ -610,7 +610,7 @@ class Miner:
 
                 # ✅ **Adjust Difficulty Based on the Latest Block**
                 print("[Miner.mine_block] INFO: Calculating difficulty target.")
-                current_target = self.block_storage.calculate_target()
+                current_target = self.block_manager.calculate_target()
                 current_target = max(min(current_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
@@ -671,9 +671,9 @@ class Miner:
                 new_block.nonce = final_nonce
                 print(f"[Miner.mine_block] INFO: Block updated with final hash and nonce {final_nonce}.")
 
-                # ✅ **Store Block Using BlockStorage**
-                print("[Miner.mine_block] INFO: Storing block in BlockStorage.")
-                self.block_storage.store_block(new_block)
+                # ✅ **Store Block Using BlockManager**
+                print("[Miner.mine_block] INFO: Storing block in BlockManager.")
+                self.block_manager.add_block(new_block)
                 print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
                 elapsed_time = int(time.time() - start_time)

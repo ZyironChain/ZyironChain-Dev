@@ -86,7 +86,8 @@ class GenesisBlockManager:
                 print("[GenesisBlockManager.ensure_genesis_block] INFO: Checking for existing Genesis block...")
 
                 # ✅ **Check if Genesis Block Exists in LMDB Storage**
-                existing_genesis = self.block_storage.get_block_by_index(0)
+                existing_genesis = self.block_storage.get_block_by_height(0)
+
                 if existing_genesis:
                     print(f"[GenesisBlockManager.ensure_genesis_block] ✅ INFO: Genesis Block found with hash {existing_genesis.hash}")
                     return existing_genesis
@@ -135,7 +136,8 @@ class GenesisBlockManager:
             print("[GenesisBlockManager] INFO: Checking for existing Genesis block...")
 
             # ✅ **Check for Existing Genesis Block in Storage**
-            existing_genesis = self.block_storage.get_block_by_index(0)
+            existing_genesis = self.block_storage.get_block_by_height(0)
+
             if existing_genesis:
                 print(f"[GenesisBlockManager] INFO: Genesis block already exists with hash: {existing_genesis.hash}")
                 return existing_genesis
@@ -158,8 +160,17 @@ class GenesisBlockManager:
                     "A digital economic structure designed to be immutable, transparent, and resistant to manipulation.",
                     "Symbolic of strength and endurance, derived from biblical and metallurgical themes, representing an unshakable financial kingdom."
                 ],
+                "etymology": {
+                    "Zion": "Divine city of righteousness and justice (Isaiah 2:3)",
+                    "Zur": "Hebrew word for strength and foundation (Psalm 18:2)",
+                    "Iron": "Symbolizes power and endurance (Daniel 2:40)"
+                },
                 "created_by": "Anthony Henriquez",
                 "creation_date": "Thursday, March 6, 2025 | 2:26 PM",
+                "signature_hashes": {
+                    "Signature Hash 1": "a44972faa4624f6334bbe9ec3091283811b2d908f4639d35b1862d7bdf127c1191f5bf6b5948a979e358fd1dc4caf5fe",
+                    "Signature Hash 2": "c76c3ac18080527165d8a2cad1b0bf2764508b2f16ef9640e02ddfbaad721e1e15717a83ec85839453bbe553ea30273b"
+                },
                 "Genesis Block End": "***************************Genesis Block***************************"
             }
 
@@ -177,20 +188,30 @@ class GenesisBlockManager:
                 coinbase_tx.tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True).encode()).hex()
                 print(f"[GenesisBlockManager] INFO: Generated Coinbase TX ID: {coinbase_tx.tx_id}")
 
+            # ✅ **Convert Difficulty to 96-character Hex String**
+            difficulty = Constants.GENESIS_TARGET
+            if isinstance(difficulty, int):
+                difficulty_hex = f"{difficulty:0>96x}"  # Convert integer to 96-character hex string
+            elif isinstance(difficulty, str) and len(difficulty) == 96:
+                difficulty_hex = difficulty  # Use as-is if already a 96-character hex string
+            else:
+                raise ValueError(
+                    f"[GenesisBlockManager] ❌ ERROR: Invalid difficulty value. Expected 96-character hex or integer, got: {difficulty}"
+                )
+
             # ✅ **Initialize Genesis Block**
-            genesis_target_int = int(Constants.GENESIS_TARGET, 16)  # Convert target to integer
             genesis_block = Block(
                 index=0,
                 previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
-                difficulty=genesis_target_int,  # Use integer difficulty
+                difficulty=difficulty_hex,  # ✅ Now verified as a correct hex string
                 miner_address=miner_address,
-                fees=Decimal(0)  # Set fees to 0 for the Genesis block
+                fees=Decimal(0)
             )
 
             print(f"[GenesisBlockManager] INFO: Genesis Block initialized with nonce {genesis_block.nonce}")
 
-            # ✅ **Mine Until Difficulty Target is Met**
+            # ✅ **Mining Process**
             start_time = time.time()
             last_update_time = start_time  # For live display
 
@@ -198,6 +219,7 @@ class GenesisBlockManager:
                 genesis_block.nonce += 1
                 computed_hash = genesis_block.calculate_hash()
                 computed_hash_int = int(computed_hash, 16)  # Convert hex string to integer
+                genesis_target_int = int(difficulty_hex, 16)  # Convert difficulty target to integer
 
                 # ✅ **Ensure Hash Meets Target**
                 if computed_hash_int < genesis_target_int:
@@ -222,6 +244,185 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
+
+
+
+
+    def print_genesis_metadata(self):
+        """
+        Retrieves and prints the Genesis Block metadata from the Coinbase transaction.
+        """
+        try:
+            print("[GenesisBlockManager] INFO: Retrieving Genesis Block Metadata...")
+
+            # ✅ Fetch the Genesis Block
+            stored_tx_id = self.block_metadata.get_transaction_id("GENESIS_COINBASE")
+            if not stored_tx_id:
+                print("[GenesisBlockManager] ERROR: Genesis Coinbase transaction not found.")
+                return
+
+            genesis_block = self.block_metadata.get_block_by_tx_id(stored_tx_id)
+            if not genesis_block:
+                print("[GenesisBlockManager] ERROR: Genesis block not found.")
+                return
+
+            # ✅ Retrieve the Coinbase Transaction
+            coinbase_tx = genesis_block.transactions[0] if genesis_block.transactions else None
+            if not coinbase_tx:
+                print("[GenesisBlockManager] ERROR: Coinbase transaction missing from Genesis block.")
+                return
+
+            # ✅ **Debug Transaction Data**
+            print("[DEBUG] Full Transaction Data:")
+            print(coinbase_tx.to_dict())  # Ensure metadata is present
+
+            # ✅ **Ensure Metadata Exists**
+            if not hasattr(coinbase_tx, "metadata") or not coinbase_tx.metadata:
+                print("[GenesisBlockManager] ERROR: Metadata is missing from Coinbase transaction!")
+                return
+
+            # ✅ **Print the Metadata**
+            print("\n*************************** Genesis Block Metadata ***************************")
+            for key, value in coinbase_tx.metadata.items():
+                if isinstance(value, dict):
+                    print(f"{key}:")
+                    for subkey, subvalue in value.items():
+                        print(f"  - {subkey}: {subvalue}")
+                elif isinstance(value, list):
+                    print(f"{key}:")
+                    for item in value:
+                        print(f"  - {item}")
+                else:
+                    print(f"{key}: {value}")
+            print("********************************************************************************\n")
+
+        except Exception as e:
+            print(f"[GenesisBlockManager] ERROR: Failed to retrieve Genesis Block metadata: {e}")
+
+
+
+    def validate_genesis_block(self, genesis_block) -> bool:
+        """
+        Validate the Genesis block:
+        - Index must be 0 and previous_hash must equal Constants.ZERO_HASH.
+        - The block hash must be a valid SHA3-384 hex string and meet the difficulty target.
+        - Ensures that the Coinbase transaction exists and is valid.
+        - Validates that the Merkle root is correctly derived.
+        - Checks version compatibility and embedded metadata.
+        """
+        try:
+            print("[GenesisBlockManager.validate_genesis_block] INFO: Validating Genesis block integrity...")
+
+            # ✅ **Check Index**
+            if not isinstance(genesis_block.index, int) or genesis_block.index != 0:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block index must be 0, found {genesis_block.index}."
+                )
+
+            # ✅ **Check Previous Hash**
+            if not isinstance(genesis_block.previous_hash, str) or genesis_block.previous_hash != Constants.ZERO_HASH:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block has an invalid previous hash.\n"
+                    f"  - Expected: {Constants.ZERO_HASH}\n"
+                    f"  - Found: {genesis_block.previous_hash}"
+                )
+
+            # ✅ **Ensure Block Hash is a Valid SHA3-384 Hex String**
+            if (
+                not isinstance(genesis_block.hash, str) or 
+                len(genesis_block.hash) != Constants.SHA3_384_HASH_SIZE * 2 or 
+                not all(c in "0123456789abcdef" for c in genesis_block.hash.lower())
+            ):
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block hash is not a valid SHA3-384 hash.\n"
+                    f"  - Expected Length: {Constants.SHA3_384_HASH_SIZE * 2}\n"
+                    f"  - Found: {len(genesis_block.hash)}\n"
+                    f"  - Hash: {genesis_block.hash}"
+                )
+
+            # ✅ **Check Difficulty Target Compliance**
+            block_hash_int = int(genesis_block.hash, 16)
+            genesis_target_int = int.from_bytes(Constants.GENESIS_TARGET, byteorder='big')
+
+            if block_hash_int >= genesis_target_int:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block hash does not meet difficulty target.\n"
+                    f"  - Expected Target: {hex(genesis_target_int)}\n"
+                    f"  - Found: {genesis_block.hash}"
+                )
+
+            # ✅ **Ensure Coinbase Transaction Exists**
+            if not genesis_block.transactions or len(genesis_block.transactions) == 0:
+                raise ValueError(
+                    "[GenesisBlockManager.validate_genesis_block] ERROR: Genesis block must contain a Coinbase transaction."
+                )
+
+            coinbase_tx = genesis_block.transactions[0]
+
+            # ✅ **Ensure Coinbase Transaction Has a Valid `tx_id`**
+            if not hasattr(coinbase_tx, "tx_id") or not isinstance(coinbase_tx.tx_id, str):
+                raise ValueError(
+                    "[GenesisBlockManager.validate_genesis_block] ERROR: Coinbase transaction must have a valid `tx_id`."
+                )
+
+            # ✅ **Ensure Coinbase TX ID is Correct**
+            expected_tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True).encode()).hex()
+            if coinbase_tx.tx_id != expected_tx_id:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Coinbase transaction TX ID mismatch.\n"
+                    f"  - Expected: {expected_tx_id}\n"
+                    f"  - Found: {coinbase_tx.tx_id}"
+                )
+
+            # ✅ **Verify Merkle Root Integrity**
+            expected_merkle_root = genesis_block._compute_merkle_root()
+            if genesis_block.merkle_root != expected_merkle_root:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Merkle root does not match transaction hashes.\n"
+                    f"  - Expected: {expected_merkle_root}\n"
+                    f"  - Found: {genesis_block.merkle_root}"
+                )
+
+            # ✅ **Check Version Compatibility**
+            if not hasattr(genesis_block, "version") or genesis_block.version != Constants.VERSION:
+                raise ValueError(
+                    f"[GenesisBlockManager.validate_genesis_block] ERROR: Version mismatch in Genesis block.\n"
+                    f"  - Expected: {Constants.VERSION}\n"
+                    f"  - Found: {genesis_block.version}"
+                )
+
+            # ✅ **Validate Embedded Metadata**
+            if not hasattr(coinbase_tx, "metadata") or not isinstance(coinbase_tx.metadata, dict):
+                raise ValueError("[GenesisBlockManager.validate_genesis_block] ERROR: Missing or invalid Genesis metadata.")
+
+            required_metadata_keys = [
+                "Genesis Block", "name", "description", "created_by", "creation_date", "signature_hashes"
+            ]
+            for key in required_metadata_keys:
+                if key not in coinbase_tx.metadata:
+                    raise ValueError(f"[GenesisBlockManager.validate_genesis_block] ERROR: Missing metadata key: {key}")
+
+            # ✅ **Ensure Metadata is in the Correct Format**
+            if not isinstance(coinbase_tx.metadata.get("description"), list):
+                raise ValueError("[GenesisBlockManager.validate_genesis_block] ERROR: 'description' field must be a list.")
+
+            if not isinstance(coinbase_tx.metadata.get("signature_hashes"), dict):
+                raise ValueError("[GenesisBlockManager.validate_genesis_block] ERROR: 'signature_hashes' field must be a dictionary.")
+
+            # ✅ **Check `created_by` Format**
+            if not isinstance(coinbase_tx.metadata.get("created_by"), str):
+                raise ValueError("[GenesisBlockManager.validate_genesis_block] ERROR: 'created_by' field must be a string.")
+
+            # ✅ **Check `creation_date` Format**
+            if not isinstance(coinbase_tx.metadata.get("creation_date"), str):
+                raise ValueError("[GenesisBlockManager.validate_genesis_block] ERROR: 'creation_date' field must be a string.")
+
+            print("[GenesisBlockManager.validate_genesis_block] ✅ SUCCESS: Genesis block validated successfully.")
+            return True
+
+        except Exception as e:
+            print(f"[GenesisBlockManager.validate_genesis_block] ❌ ERROR: Genesis block validation failed: {e}")
+            return False
 
 
 

@@ -58,15 +58,15 @@ class BlockManager:
 
             # ✅ Ensure essential components are initialized
             if not blockchain:
-                raise ValueError("[BlockManager.__init__] ERROR: `blockchain` instance is required.")
+                raise ValueError("[BlockManager.__init__] ERROR: blockchain instance is required.")
             if not block_storage:
-                raise ValueError("[BlockManager.__init__] ERROR: `block_storage` instance is required.")
+                raise ValueError("[BlockManager.__init__] ERROR: block_storage instance is required.")
             if not block_metadata:
-                raise ValueError("[BlockManager.__init__] ERROR: `block_metadata` instance is required.")
+                raise ValueError("[BlockManager.__init__] ERROR: block_metadata instance is required.")
             if not tx_storage:
-                raise ValueError("[BlockManager.__init__] ERROR: `tx_storage` instance is required.")
+                raise ValueError("[BlockManager.__init__] ERROR: tx_storage instance is required.")
             if not transaction_manager:
-                raise ValueError("[BlockManager.__init__] ERROR: `transaction_manager` instance is required.")
+                raise ValueError("[BlockManager.__init__] ERROR: transaction_manager instance is required.")
 
             # ✅ Assign core components
             self.blockchain = blockchain

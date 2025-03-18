@@ -258,16 +258,28 @@ class BlockStorage:
             print(f"[BlockStorage.block_meta] ❌ ERROR: Unexpected error: {e}")
             return None
 
-
-
+    def _convert_difficulty_to_int(self, difficulty) -> int:
+        """
+        Convert difficulty to an integer.
+        - Handles bytes, hex strings, and integers.
+        - Raises ValueError for invalid formats.
+        """
+        if isinstance(difficulty, int):
+            return difficulty
+        elif isinstance(difficulty, str):
+            return int(difficulty, 16)  # ✅ Properly handle hex strings
+        elif isinstance(difficulty, bytes):
+            return int.from_bytes(difficulty, byteorder='big')
+        else:
+            raise ValueError(f"Invalid difficulty format: {difficulty}")
 
 
 
     
-    def store_block(self, block: Block, difficulty: Union[bytes, int, str]):
+    def store_block(self, block: Block):
         """
         Stores a block in LMDB.
-        - Ensures difficulty is stored as an integer.
+        - Retrieves difficulty from the block.
         - Calls `_check_and_rollover_lmdb()` to prevent LMDB from exceeding the size limit.
         - Uses `full_block_chain/` directory for storage.
         """
@@ -288,8 +300,8 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping.")
                 return
 
-            # ✅ **Ensure Difficulty is Stored as an Integer**
-            difficulty_int = self._convert_difficulty_to_int(difficulty)
+            # ✅ **Retrieve Difficulty from Block and Convert to Integer**
+            difficulty_int = self._convert_difficulty_to_int(block.difficulty)
 
             # ✅ **Ensure Miner Address is a Proper String**
             miner_address = str(block.miner_address)
@@ -323,7 +335,7 @@ class BlockStorage:
                 "transaction_signature": getattr(block, "signature", "0" * 96),
                 "reward": str(Decimal(block.reward).normalize() if hasattr(block, "reward") else 0),
                 "fees": str(Decimal(block.fees).normalize() if hasattr(block, "fees") else 0),
-                "version": block.version,
+                "version": getattr(block, "version", Constants.VERSION),  # ✅ Use Constants.VERSION
                 "transactions": [tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in valid_transactions],
                 "hash": block_hash  # ✅ Use the mined hash directly
             }
@@ -343,8 +355,6 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
             raise
-
-
 
     def _block_to_storage_format(self, block: Block) -> Dict:
         """
@@ -393,7 +403,8 @@ class BlockStorage:
                 "difficulty": difficulty,
                 "miner_address": miner_address,
                 "transactions": transactions,
-                "size": block_size
+                "size": block_size,
+                "version": getattr(block, "version", Constants.VERSION)  # ✅ Use Constants.VERSION
             }
 
         except Exception as e:
