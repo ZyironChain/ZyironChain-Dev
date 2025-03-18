@@ -43,7 +43,7 @@ def store_transaction_signature(tx_id: bytes, falcon_signature: bytes, txindex_p
     sha3_384_hash = hashlib.sha3_384(falcon_signature + salt).digest()
 
     # ✅ Ensure the LMDB environment is opened correctly
-    env = lmdb.open(txindex_path, map_size=128 * 1024 * 1024, max_dbs=1)
+    env = lmdb.open(txindex_path, map_size=512 * 1024 * 1024, max_dbs=1)
 
     # ✅ Store full Falcon-512 signature + salt in `txindex.lmdb`
     try:
@@ -101,24 +101,7 @@ class Constants:
     ADDRESS_PREFIX = NETWORK_ADDRESS_PREFIXES[NETWORK]
 
 
-    MAX_LMDB_DATABASES = 200
-
-    # 🔹 **Magic Numbers**
-# ✅ Store the magic number in **big endian** (matching block.data format)
-    MAGIC_NUMBERS = {
-        "mainnet": int.from_bytes(b"\x5A\x59\x43\x31", "big"),
-        "testnet": int.from_bytes(b"\x5A\x59\x54\x32", "big"),
-        "regnet": int.from_bytes(b"\x5A\x59\x52\x33", "big")
-    }
-    MAGIC_NUMBER = MAGIC_NUMBERS[NETWORK]
-        #"mainnet": 0x5A594331
-        #"testnet": 0x5A595432
-        #"regnet": 0x5A595233
-
-
-
-
-
+    MAX_LMDB_DATABASES = 150
 
 
     # 🔹 **UTXO Flags**
@@ -130,7 +113,7 @@ class Constants:
     UTXO_FLAG = UTXO_FLAGS[NETWORK]
 
 
-    LMDB_MAP_SIZE = 128 * 1024 * 1024  # ✅ Convert 128MB → Bytes (128 * 1024 * 1024)
+    LMDB_MAP_SIZE = 128   # ✅ Convert 128MB → Bytes (128 * 1024 * 1024)
 
     
     DATABASES = {
@@ -145,18 +128,18 @@ class Constants:
     # 🔹 **Block Header Flags**
     BLOCK_HEADER_FLAGS = {
         "mainnet": "",
-        "testnet": "TEST-0002",
+       "testnet": "TEST-0002",
         "regnet": "REG-0003"
     }
     BLOCK_HEADER_FLAG = BLOCK_HEADER_FLAGS[NETWORK]
 
-    # 🔹 **Genesis & Mining Parameters**
 
     # In Constants class:
-# In Constants class:
-    GENESIS_TARGET = bytes.fromhex("000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
-    MAX_DIFFICULTY = bytes.fromhex("0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
-    MIN_DIFFICULTY = bytes.fromhex("000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")  # Minimum difficulty (hardest)
+    # ✅ Define difficulty targets as hexadecimal strings
+    GENESIS_TARGET = "000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    MAX_DIFFICULTY = "0000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    MIN_DIFFICULTY = "000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+ # Minimum difficulty (hardest)
     # About 7-minute block time target
     #SEVEN_MIN_TARGET = bytes.fromhex(
         #"0000003999999999999A0000000000000000000000000000000000000000000000000000000000000000000000000000"
@@ -202,12 +185,16 @@ class Constants:
     }
 
     # ✅ **Apply Network-Specific Block Size Limits**
+    # ✅ **Apply Network-Specific Block Size Limits (0MB - 10MB)**
     BLOCK_SIZE_RANGE = MAX_BLOCK_SIZE_SETTINGS[NETWORK]
-    MIN_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[0]  # ✅ Minimum Block Size (0MB)
-    MAX_BLOCK_SIZE_BYTES = BLOCK_SIZE_RANGE[1]  # ✅ Maximum Block Size (10MB)
+    MIN_BLOCK_SIZE_MB = BLOCK_SIZE_RANGE[0] // (1024 * 1024)  # ✅ Allow 0MB as minimum
+    MAX_BLOCK_SIZE_MB = min(10, BLOCK_SIZE_RANGE[1] // (1024 * 1024))  # ✅ Cap at 10MB
 
-    # ✅ **Explicitly Set Initial Block Size**
-    INITIAL_BLOCK_SIZE_MB = (MIN_BLOCK_SIZE_BYTES / (1024 * 1024)) if MIN_BLOCK_SIZE_BYTES > 0 else 0  # ✅ Ensures 0MB allowed
+
+
+        # ✅ **Explicitly Set Initial Block Size (0MB - 10MB)**
+    INITIAL_BLOCK_SIZE_MB = max(0, min(10, MAX_BLOCK_SIZE_MB))  # ✅ Ensures range between 0MB and 10MB
+
 
 
     # ✅ **Time Drift Configuration**
@@ -266,100 +253,22 @@ class Constants:
 
 # 🔹 **Database Configuration**
     # Define the maximum block data file size before a new one is created (512 MB)
-    BLOCK_DATA_FILE_SIZE_BYTES = 512 * 1024 * 1024  # ✅ Convert MB → Bytes (512MB)
-
-
-
-    # ✅ Standardized Block Storage Offsets (Matches block.data format)
-    BLOCK_STORAGE_OFFSETS = {
-        "magic_number": {
-            "start": 0, "size": 4,
-            "desc": "4-byte Network Identifier (Magic Number)"
-        },
-        "block_length": {
-            "start": 4, "size": 8,
-            "desc": "8-byte Unsigned Long Long, ensures block length within limits"
-        },
-        "block_hash": {
-            "start": 12, "size": 48,
-            "desc": "48-byte SHA3-384 Block Hash"
-        },
-        "previous_hash": {
-            "start": 60, "size": 48,
-            "desc": "48-byte SHA3-384 Previous Block Hash"
-        },
-        "merkle_root": {
-            "start": 108, "size": 48,
-            "desc": "48-byte SHA3-384 Merkle Root"
-        },
-        "block_height": {
-            "start": 156, "size": 8,
-            "desc": "8-byte Unsigned Long Long Block Height"
-        },
-        "timestamp": {
-            "start": 164, "size": 8,
-            "desc": "8-byte Block Timestamp"
-        },
-        "difficulty_length": {
-            "start": 172, "size": 1,
-            "desc": "1-byte Difficulty Length (size marker)"
-        },
-        "difficulty": {
-            "start": 173, "size": 48,
-            "desc": "64-byte Difficulty Target (first 48 bytes are significant, rest are zeros)"
-        },
-        "nonce": {
-            "start": 237, "size": 8,
-            "desc": "8-byte Unsigned Long Long Nonce"
-        },
-        "miner_address": {
-            "start": 245, "size": 128,
-            "desc": "128-byte Falcon-512 Public Key of Miner"
-        },
-        "transaction_signature": {
-            "start": 373, "size": 48,
-            "desc": "48-byte SHA3-384 Transaction Signature"
-        },
-        "falcon_signature": {
-            "start": 421, "size": 700,
-            "desc": "700-byte Falcon-512 Digital Signature"
-        },
-        "reward": {
-            "start": 1121, "size": 8,
-            "desc": "8-byte Block Reward"
-        },
-        "fees_collected": {
-            "start": 1129, "size": 8,
-            "desc": "8-byte Total Fees Collected"
-        },
-        "block_version": {
-            "start": 1137, "size": 4,
-            "desc": "4-byte Block Version"
-        },
-        "transaction_count": {
-            "start": 1141, "size": 4,
-            "desc": "4-byte Number of Transactions"
-        },
-        "metadata": {
-            "start": 1145, "size": 256,
-            "desc": "256-byte Truncated Metadata (Dynamic Storage)"
-        },
-        "transactions": {
-            "start": 1401, "size": None,
-            "desc": "Variable-Length Transactions (Starts after all metadata)"
-        }
-    }
+    BLOCK_DATA_FILE_SIZE_BYTES = 512  # ✅ Convert MB → Bytes (512MB)
 
 
 
 
 
 
-    # Network Database Configuration
+
+
+
+
+# Network Database Configuration
     NETWORK_DATABASES = {
         "mainnet": {
             "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "full_block_chain": f"{BLOCKCHAIN_STORAGE_PATH}full_block_chain.lmdb",  # 📦 Stores full block records in LMDB with 512MB rollover
             "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata.lmdb",  # 📜 Stores block headers & metadata
             "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
             "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)
@@ -371,7 +280,7 @@ class Constants:
         },
         "testnet": {
             "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "full_block_chain": f"{BLOCKCHAIN_STORAGE_PATH}full_block_chain_Testnet.lmdb",  # 📦 Stores full block records in LMDB with 512MB rollover
             "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Testnet.lmdb",  # 📜 Stores block headers & metadata
             "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Testnet.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
             "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Testnet.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)
@@ -383,7 +292,7 @@ class Constants:
         },
         "regnet": {
             "folder": f"{BLOCKCHAIN_STORAGE_PATH}",  # 📂 Root blockchain storage directory
-            "block_data": f"{BLOCKCHAIN_STORAGE_PATH}block_data/",  # 📦 Stores full block records (binary format)
+            "full_block_chain": f"{BLOCKCHAIN_STORAGE_PATH}full_block_chain_Regnet.lmdb",  # 📦 Stores full block records in LMDB with 512MB rollover
             "block_metadata": f"{BLOCKCHAIN_STORAGE_PATH}block_metadata_Regnet.lmdb",  # 📜 Stores block headers & metadata
             "txindex": f"{BLOCKCHAIN_STORAGE_PATH}txindex_Regnet.lmdb",  # 🔗 Stores transaction IDs + Falcon-512 signatures (salt + signature)
             "utxo": f"{BLOCKCHAIN_STORAGE_PATH}utxo_Regnet.lmdb",  # 💰 Stores unspent transaction outputs (UTXOs)

@@ -46,7 +46,7 @@ class Transaction:
         :param outputs: List of TransactionOut objects.
         :param tx_id: Optional transaction ID (auto-generated if not provided).
         :param utxo_manager: Optional UTXOManager for retrieving UTXO data.
-        :param tx_type: Transaction type, e.g. "STANDARD" or "COINBASE".
+        :param tx_type: Transaction type, e.g., "STANDARD" or "COINBASE".
         :param fee_model: Optional FeeModel instance for dynamic fee calculation.
         """
         try:
@@ -59,13 +59,13 @@ class Transaction:
                 raise TypeError("All outputs must be instances of TransactionOut.")
 
             # ✅ Assign UTXO Manager (create default if not provided)
-            self.utxo_manager = utxo_manager if utxo_manager else self._get_default_utxo_manager()
+            self.utxo_manager = utxo_manager if utxo_manager else None  # No automatic UTXOManager creation
 
-            # ✅ Ensure inputs and outputs are instances of correct classes
-            self.inputs = [inp if isinstance(inp, TransactionIn) else TransactionIn.from_dict(inp) for inp in inputs]
-            self.outputs = [out if isinstance(out, TransactionOut) else TransactionOut.from_dict(out) for out in outputs]
+            # ✅ Ensure inputs and outputs are correctly formatted instances
+            self.inputs = inputs
+            self.outputs = outputs
 
-            # ✅ Set timestamp and ensure transaction type is formatted correctly
+            # ✅ Set timestamp and transaction type formatting
             self.timestamp = int(time.time())
             self.type = tx_type.upper().strip()
             if self.type not in ["STANDARD", "COINBASE"]:
@@ -81,12 +81,16 @@ class Transaction:
             # ✅ Compute transaction hash
             self.hash = self.calculate_hash()
 
-            # ✅ Initialize FeeModel (if not provided, use a default one)
-            self.fee_model = fee_model if fee_model else FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
+            # ✅ Assign FeeModel if provided, else default to None
+            self.fee_model = fee_model
 
-            # ✅ Compute transaction size and minimum fee
+            # ✅ Compute transaction size (optional, used for fee calculation)
             self.size = self._calculate_size()
-            self.fee = max(self._calculate_fee(), Decimal(Constants.MIN_TRANSACTION_FEE))
+
+            # ✅ Calculate fee only if fee_model is provided
+            self.fee = Decimal(Constants.MIN_TRANSACTION_FEE) if not self.fee_model else max(
+                self._calculate_fee(), Decimal(Constants.MIN_TRANSACTION_FEE)
+            )
 
             print(f"[TRANSACTION INFO] Created transaction {self.tx_id} | Type: {self.type} | Fee: {self.fee} | Size: {self.size} bytes")
 
@@ -94,30 +98,30 @@ class Transaction:
             print(f"[TRANSACTION ERROR] Failed to initialize transaction: {e}")
             raise ValueError("Transaction initialization failed due to an unexpected error.")
 
+
     def _generate_tx_id(self) -> str:
         """
-        Generate a unique transaction ID using single SHA3-384 hashing with a time-based salt.
+        Generate a unique transaction ID using single SHA3-384 hashing.
         Ensures a hex-encoded string output for consistency.
         """
         try:
-            # ✅ Ensure prefix is properly retrieved (fallback to empty string)
+            # ✅ Retrieve prefix for transaction type
             prefix = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [""])[0]
 
-            # ✅ Create time-based salt using SHA3-384
-            salt = hashlib.sha3_384(str(time.time()).encode()).hexdigest()
+            # ✅ Use high-resolution time-based salt
+            salt = str(time.time_ns())  # Nanosecond precision for uniqueness
 
             # ✅ Construct transaction data to hash
-            tx_data = f"{prefix}{self.timestamp}{salt}"
-            tx_id_bytes = Hashing.hash(tx_data.encode())
+            tx_data = f"{prefix}{self.timestamp}{salt}".encode()
 
-            # ✅ Ensure tx_id is returned as a hex string
-            tx_id = tx_id_bytes.hex()
+            # ✅ Compute SHA3-384 hash
+            tx_id = hashlib.sha3_384(tx_data).hexdigest()
 
             print(f"[TRANSACTION _generate_tx_id INFO] Generated tx_id: {tx_id}")
             return tx_id
         except Exception as e:
             print(f"[TRANSACTION _generate_tx_id ERROR] Failed to generate tx_id: {e}")
-            return Constants.ZERO_HASH  # Return default zero hash in case of failure
+            return Constants.ZERO_HASH  # Fallback to zero hash
 
     def calculate_hash(self) -> str:
         """
@@ -126,24 +130,21 @@ class Transaction:
         Ensures the result is a hex-encoded string.
         """
         try:
-            # ✅ Safely extract input and output data
-            input_data = "".join(getattr(inp, "tx_out_id", "") for inp in self.inputs)
-            output_data = "".join(f"{getattr(out, 'script_pub_key', '')}{getattr(out, 'amount', '')}" for out in self.outputs)
+            # ✅ Serialize inputs and outputs into a deterministic format
+            input_data = "".join(inp.tx_out_id for inp in self.inputs)
+            output_data = "".join(f"{out.script_pub_key}{out.amount}" for out in self.outputs)
 
             # ✅ Construct hashable transaction string
-            combined_data = f"{self.tx_id}{self.timestamp}{input_data}{output_data}"
+            tx_string = f"{self.tx_id}{self.timestamp}{input_data}{output_data}".encode()
 
             # ✅ Compute SHA3-384 hash
-            tx_hash_bytes = Hashing.hash(combined_data.encode())
-
-            # ✅ Ensure hash is returned as a hex string
-            tx_hash = tx_hash_bytes.hex()
+            tx_hash = hashlib.sha3_384(tx_string).hexdigest()
 
             print(f"[TRANSACTION calculate_hash INFO] Computed hash for {self.tx_id}: {tx_hash[:24]}...")
             return tx_hash
         except Exception as e:
             print(f"[TRANSACTION calculate_hash ERROR] {e}")
-            return Constants.ZERO_HASH  # Return default zero hash if hashing fails
+            return Constants.ZERO_HASH  # Fallback in case of failure
 
     def _calculate_size(self) -> int:
         """
@@ -151,35 +152,34 @@ class Transaction:
         For non-coinbase transactions, require at least one input and one output.
         For coinbase, require at least one output.
         """
-        if self.type != "COINBASE":
-            if not self.inputs or not self.outputs:
-                print("[TRANSACTION _calculate_size ERROR] Non-coinbase transaction must have at least one input and one output.")
-                raise ValueError("Transaction must have at least one input and one output.")
-        else:
-            if not self.outputs:
-                print("[TRANSACTION _calculate_size ERROR] Coinbase transaction must have at least one output.")
-                raise ValueError("Coinbase transaction must have at least one output.")
-
         try:
-            # Calculate the size of the input fields
-            input_size = sum(len(inp.to_dict()) for inp in self.inputs)
-            
-            # Calculate the size of the output fields
-            output_size = sum(len(out.to_dict()) for out in self.outputs)
-            
-            # Calculate metadata size based on standardized data structure
-            # Metadata includes fixed-length fields like tx_id, hash, and timestamp
-            meta_size = len(self.tx_id) + len(self.hash) + 8  # 8 bytes for timestamp
-            
-            # Total transaction size is the sum of all components
+            # ✅ Ensure valid input/output counts based on transaction type
+            if self.type != "COINBASE":
+                if not self.inputs or not self.outputs:
+                    print("[TRANSACTION _calculate_size ERROR] Non-coinbase transaction must have at least one input and one output.")
+                    raise ValueError("Transaction must have at least one input and one output.")
+            else:
+                if not self.outputs:
+                    print("[TRANSACTION _calculate_size ERROR] Coinbase transaction must have at least one output.")
+                    raise ValueError("Coinbase transaction must have at least one output.")
+
+            # ✅ Calculate the size of inputs and outputs
+            input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True).encode()) for inp in self.inputs)
+            output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True).encode()) for out in self.outputs)
+
+            # ✅ Calculate metadata size (fixed fields: tx_id, hash, timestamp)
+            meta_size = len(self.tx_id.encode()) + len(self.hash.encode()) + 8  # 8 bytes for timestamp
+
+            # ✅ Compute total transaction size
             total_size = input_size + output_size + meta_size
-            
-            # If size exceeds maximum block size, clamp it to the max allowed size
-            if total_size > Constants.MAX_BLOCK_SIZE_BYTES:
-                print(f"[TRANSACTION _calculate_size WARN] Transaction size {total_size} exceeds max block size {Constants.MAX_BLOCK_SIZE_BYTES}. Clamping.")
-                total_size = Constants.MAX_BLOCK_SIZE_BYTES
-            
-            # Print and return the computed size
+
+            # ✅ Ensure transaction size does not exceed maximum allowed block size
+            max_size_bytes = Constants.MAX_BLOCK_SIZE_MB * 1024 * 1024  # Convert MB to bytes
+            if total_size > max_size_bytes:
+                print(f"[TRANSACTION _calculate_size WARN] Transaction size {total_size} exceeds max block size {max_size_bytes}. Clamping.")
+                total_size = max_size_bytes
+
+            # ✅ Print and return computed transaction size
             print(f"[TRANSACTION _calculate_size INFO] Computed size: {total_size} bytes for {self.tx_id}")
             return total_size
         except Exception as e:
@@ -187,15 +187,17 @@ class Transaction:
             return 0
 
 
+
     def _calculate_fee(self) -> Decimal:
         """
         Calculate the transaction fee:
         - Sum input amounts from the UTXO manager (if available).
         - Sum output amounts.
-        - The difference is the raw fee.
-        - Adjust fee based on the fee model's dynamic requirement.
+        - Compute the difference as the raw fee.
+        - Ensure fee meets the minimum required by the fee model.
         """
         try:
+            # ✅ **Coinbase transactions have zero fees**
             if self.type == "COINBASE":
                 print(f"[TRANSACTION _calculate_fee INFO] Coinbase transaction detected (tx_id: {self.tx_id}); fee set to 0.")
                 return Decimal("0")
@@ -203,40 +205,40 @@ class Transaction:
             input_total = Decimal("0")
             output_total = Decimal("0")
 
-            # ✅ Calculate total input value from UTXOs
+            # ✅ **Retrieve and sum UTXO input values**
             if self.utxo_manager:
                 for inp in self.inputs:
                     try:
-                        utxo_info = self.utxo_manager.get_utxo(inp.tx_out_id)
-                        if not utxo_info or "amount" not in utxo_info:
+                        utxo = self.utxo_manager.get_utxo(inp.tx_out_id)
+                        if not utxo or "amount" not in utxo:
                             print(f"[TRANSACTION _calculate_fee WARN] Missing or invalid UTXO for {inp.tx_out_id}; defaulting to 0.")
                             continue
-                        input_total += Decimal(utxo_info["amount"])
+                        input_total += Decimal(str(utxo["amount"]))
                     except Exception as e:
                         print(f"[TRANSACTION _calculate_fee ERROR] Failed to retrieve UTXO amount for {inp.tx_out_id}: {e}")
 
             else:
                 print("[TRANSACTION _calculate_fee WARN] No UTXO manager provided; input_total = 0.")
 
-            # ✅ Calculate total output value
+            # ✅ **Retrieve and sum output values**
             for out in self.outputs:
                 try:
-                    output_total += Decimal(out.amount)
+                    output_total += Decimal(str(out.amount))
                 except Exception as e:
                     print(f"[TRANSACTION _calculate_fee ERROR] Invalid output amount for {out}: {e}")
 
-            # ✅ Compute raw transaction fee
+            # ✅ **Compute raw transaction fee**
             fee = input_total - output_total
             if fee < 0:
                 print(f"[TRANSACTION _calculate_fee WARN] Negative fee detected ({fee}); clamping to 0.")
                 fee = Decimal("0")
 
-            # ✅ Ensure fee meets the minimum required
+            # ✅ **Ensure fee meets the minimum required**
             required_fee = Decimal("0")
             if self.fee_model:
                 try:
                     required_fee = self.fee_model.calculate_fee(
-                        block_size=Constants.MAX_BLOCK_SIZE_BYTES,
+                        block_size=Constants.MAX_BLOCK_SIZE_MB,
                         payment_type=self.type,
                         amount=input_total,
                         tx_size=self.size
@@ -257,23 +259,22 @@ class Transaction:
             return Decimal("0")
 
 
+
     def to_dict(self) -> Dict:
         """
         Serialize the transaction to a dictionary.
-        Includes all fields necessary for storage and debugging.
-        Ensures all values are properly formatted.
+        Ensures all fields are properly formatted for storage and debugging.
         """
         try:
             return {
                 "tx_id": self.tx_id,
-                "inputs": [inp.to_dict() if hasattr(inp, "to_dict") else {} for inp in self.inputs],
-                "outputs": [out.to_dict() if hasattr(out, "to_dict") else {} for out in self.outputs],
-                "timestamp": int(self.timestamp),  # Convert timestamp to integer for consistency
-                "type": self.type,
-                "tx_type": self.type,  # For standardized serialization
-                "fee": str(self.fee),  # Convert Decimal fee to string to avoid float issues
-                "size": self.size,
-                "hash": self.hash.hex() if isinstance(self.hash, bytes) else self.hash,  # Ensure hash is hex string
+                "inputs": [inp.to_dict() for inp in self.inputs],
+                "outputs": [out.to_dict() for out in self.outputs],
+                "timestamp": int(self.timestamp),  # Ensure integer format for consistency
+                "type": self.type,  # Transaction type
+                "fee": str(self.fee),  # Convert Decimal fee to string to maintain precision
+                "size": self.size,  # Transaction size in bytes
+                "hash": self.hash if isinstance(self.hash, str) else self.hash.hex(),  # Ensure hex string format for hash
             }
         except Exception as e:
             print(f"[TRANSACTION to_dict ERROR] Failed to serialize transaction {self.tx_id}: {e}")
@@ -282,19 +283,19 @@ class Transaction:
     def store_transaction(self):
         """
         Store the transaction using TxStorage.
-        Uses a lazy import to break circular dependencies.
+        Uses a lazy import to avoid circular dependencies.
         Ensures transaction storage is handled safely.
         """
         try:
-            print(f"[TRANSACTION store_transaction INFO] Attempting to store transaction {self.tx_id}...")
+            print(f"[TRANSACTION store_transaction INFO] Storing transaction {self.tx_id}...")
 
-            # ✅ Lazy import of TxStorage to prevent circular imports
+            # ✅ Lazy import of TxStorage to prevent circular import issues
             import importlib
             try:
                 tx_storage_module = importlib.import_module("Zyiron_Chain.storage.tx_storage")
                 TxStorage = getattr(tx_storage_module, "TxStorage")
             except ImportError as e:
-                print(f"[TRANSACTION store_transaction ERROR] Failed to import TxStorage module: {e}")
+                print(f"[TRANSACTION store_transaction ERROR] TxStorage module import failed: {e}")
                 return
 
             # ✅ Ensure TxStorage has a store_transaction method
@@ -310,6 +311,7 @@ class Transaction:
             print(f"[TRANSACTION store_transaction ERROR] Could not store transaction {self.tx_id}: {e}")
 
 
+
     def store_utxo(self):
         """
         Store each output of this transaction as a UTXO using UTXOStorage.
@@ -317,9 +319,9 @@ class Transaction:
         Ensures all UTXOs are properly formatted and stored safely.
         """
         try:
-            print(f"[TRANSACTION store_utxo INFO] Attempting to store UTXOs for transaction {self.tx_id}...")
+            print(f"[TRANSACTION store_utxo INFO] Storing UTXOs for transaction {self.tx_id}...")
 
-            # ✅ Lazy import of UTXOStorage to prevent circular import issues
+            # ✅ Lazy import to prevent circular import issues
             import importlib
             try:
                 utxo_storage_module = importlib.import_module("Zyiron_Chain.storage.utxostorage")
@@ -336,33 +338,31 @@ class Transaction:
             # ✅ Initialize UTXOStorage instance
             utxo_storage = UTXOStorage()
 
-            # ✅ Process and store each output
+            # ✅ Store each transaction output as a UTXO
             for idx, output in enumerate(self.outputs):
                 try:
                     utxo_id = f"{self.tx_id}-{idx}"
 
                     # ✅ Ensure output has the necessary fields
-                    if not hasattr(output, "amount") or not hasattr(output, "script_pub_key"):
+                    if not isinstance(output.amount, Decimal) or not isinstance(output.script_pub_key, str):
                         print(f"[TRANSACTION store_utxo WARN] Skipping malformed output at index {idx} in transaction {self.tx_id}.")
                         continue
 
                     utxo_data = {
-                        "tx_out_id": self.tx_id,
-                        "amount": str(output.amount),
+                        "tx_out_id": utxo_id,  # Unique UTXO ID derived from tx_id + index
+                        "amount": str(output.amount),  # Convert Decimal to string for storage
                         "script_pub_key": output.script_pub_key,
-                        "locked": False,
-                        "block_index": 0  # This should be updated when the block is mined
+                        "locked": output.locked,  # Preserve locked status
                     }
 
+                    # ✅ Store UTXO safely
                     utxo_storage.store_utxo(utxo_id, utxo_data)
                     print(f"[TRANSACTION store_utxo INFO] Stored UTXO {utxo_id} successfully.")
 
                 except Exception as e:
-                    print(f"[TRANSACTION store_utxo ERROR] Failed to store UTXO {self.tx_id}-{idx}: {e}")
+                    print(f"[TRANSACTION store_utxo ERROR] Failed to store UTXO {utxo_id}: {e}")
 
             print(f"[TRANSACTION store_utxo SUCCESS] All valid UTXOs for transaction {self.tx_id} stored successfully.")
 
         except Exception as e:
             print(f"[TRANSACTION store_utxo ERROR] Unexpected failure while storing UTXOs for transaction {self.tx_id}: {e}")
-
-

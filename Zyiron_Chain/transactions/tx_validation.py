@@ -47,7 +47,7 @@ class TXValidation:
         self.block_manager = block_manager
         self.block_metadata = block_metadata
         self.fee_model = fee_model
-        print("[TXVALIDATION] Initialized TXValidation instance with block_manager, block_metadata, and fee_model.")
+        print("[TXValidation] ✅ Initialized with block_manager, block_metadata, and fee_model.")
 
     def _validate_coinbase(self, tx: Any) -> bool:
         """
@@ -57,118 +57,80 @@ class TXValidation:
         :param tx: Transaction object (CoinbaseTx).
         :return: True if valid coinbase transaction, False otherwise.
         """
-        print(f"[TXVALIDATION] Validating potential Coinbase transaction with tx_id: {getattr(tx, 'tx_id', 'UNKNOWN')}")
+        print(f"[TXValidation] 🔍 Validating Coinbase transaction {getattr(tx, 'tx_id', 'UNKNOWN')}...")
 
         if not hasattr(tx, "tx_id") or not isinstance(tx.tx_id, str):
-            print("[TXVALIDATION ERROR] Coinbase transaction missing or invalid 'tx_id'.")
+            print("[TXValidation ERROR] ❌ Coinbase transaction missing or invalid 'tx_id'.")
             return False
 
-        # ✅ Ensure tx_id is properly formatted
+        # ✅ Verify transaction ID with single SHA3-384 hashing
         try:
             single_hashed_tx_id = hashlib.sha3_384(tx.tx_id.encode()).hexdigest()
-            print(f"[TXVALIDATION] Single hashed coinbase tx_id: {single_hashed_tx_id[:24]}...")
+            print(f"[TXValidation] 🔑 Coinbase tx_id hash: {single_hashed_tx_id[:24]}...")
         except Exception as e:
-            print(f"[TXVALIDATION ERROR] Failed to hash coinbase tx_id: {e}")
+            print(f"[TXValidation ERROR] ❌ Failed to hash tx_id: {e}")
             return False
 
-        # ✅ Ensure transaction follows Coinbase structure
-        if not isinstance(tx, CoinbaseTx) or not hasattr(tx, "inputs") or not hasattr(tx, "outputs"):
-            print("[TXVALIDATION ERROR] Coinbase transaction structure is invalid.")
+        # ✅ Ensure valid Coinbase transaction structure
+        if not isinstance(tx, CoinbaseTx) or len(tx.inputs) > 0 or len(tx.outputs) != 1:
+            print("[TXValidation ERROR] ❌ Invalid Coinbase transaction structure.")
             return False
 
-        if len(tx.inputs) > 0 or len(tx.outputs) != 1 or tx.type.upper() != "COINBASE" or Decimal(tx.fee) != Decimal("0"):
-            print("[TXVALIDATION ERROR] Coinbase transaction does not meet required structure.")
+        if tx.type.upper() != "COINBASE" or Decimal(tx.fee) != Decimal("0"):
+            print("[TXValidation ERROR] ❌ Coinbase transaction type must be 'COINBASE' and fee must be 0.")
             return False
 
-        print(f"[TXVALIDATION] Coinbase transaction {tx.tx_id} validated successfully.")
+        print(f"[TXValidation] ✅ Coinbase transaction {tx.tx_id} is valid.")
         return True
 
     def validate_transaction_fee(self, transaction: Any) -> bool:
         """
         Validate a transaction's fee using FeeModel:
-         - Calculates transaction size (via a local or external method).
-         - Asks fee_model for required fee.
+         - Computes required fee based on transaction type and amount.
          - Compares required fee with actual (inputs - outputs).
         :param transaction: The transaction object to check.
         :return: True if fee is sufficient, False otherwise.
         """
         try:
             tx_id = getattr(transaction, "tx_id", "UNKNOWN")
-            print(f"[TXVALIDATION] Validating fee for transaction {tx_id}.")
+            print(f"[TXValidation] 🔍 Validating fee for transaction {tx_id}...")
 
-            # ✅ Ensure transaction object has required attributes
+            # ✅ Ensure transaction structure is valid
             if not hasattr(transaction, "inputs") or not hasattr(transaction, "outputs") or not hasattr(transaction, "type"):
-                print("[TXVALIDATION ERROR] Transaction structure is invalid.")
+                print("[TXValidation ERROR] ❌ Invalid transaction structure.")
                 return False
 
-            # ✅ Compute transaction size safely
-            tx_size = self._calculate_transaction_size(transaction)
-            if tx_size < 0:
-                print("[TXVALIDATION ERROR] Failed to compute transaction size. Fee validation aborted.")
-                return False
-            print(f"[TXVALIDATION] Computed transaction size: {tx_size} bytes.")
-
-            # ✅ Ensure inputs and outputs contain valid amounts
+            # ✅ Compute total input and output amounts
             try:
                 input_sum = sum(Decimal(inp.amount) for inp in transaction.inputs if hasattr(inp, "amount"))
                 output_sum = sum(Decimal(out.amount) for out in transaction.outputs if hasattr(out, "amount"))
                 actual_fee = input_sum - output_sum
-                print(f"[TXVALIDATION] Actual fee from I/O: {actual_fee}")
+                print(f"[TXValidation] 💰 Actual fee calculated from I/O: {actual_fee}")
             except Exception as e:
-                print(f"[TXVALIDATION ERROR] Failed to compute transaction amounts: {e}")
+                print(f"[TXValidation ERROR] ❌ Failed to compute transaction amounts: {e}")
                 return False
 
             # ✅ Compute required fee from FeeModel
             try:
-                required_fee = self.fee_model.calculate_fee(
-                    block_size=Constants.MAX_BLOCK_SIZE_BYTES,
+                required_fee = self.fee_model.calculate_fee_and_tax(
+                    block_size=Constants.MAX_BLOCK_SIZE_MB,
                     payment_type=transaction.type,
                     amount=input_sum,
-                    tx_size=tx_size
-                )
-                print(f"[TXVALIDATION] Required fee from FeeModel: {required_fee}")
+                    tx_size=0  # ✅ Transaction size no longer used
+                )["base_fee"]
+                print(f"[TXValidation] 🔑 Required fee: {required_fee}")
             except Exception as e:
-                print(f"[TXVALIDATION ERROR] Failed to compute required fee: {e}")
+                print(f"[TXValidation ERROR] ❌ Failed to compute required fee: {e}")
                 return False
 
             # ✅ Compare actual vs. required fee
             if actual_fee < required_fee:
-                print(f"[TXVALIDATION WARNING] Insufficient fee for transaction {tx_id}. Required: {required_fee}, Provided: {actual_fee}")
+                print(f"[TXValidation WARNING] ⚠️ Insufficient fee for {tx_id}. Required: {required_fee}, Provided: {actual_fee}")
                 return False
 
-            print(f"[TXVALIDATION] Transaction {tx_id} meets or exceeds the required fee.")
+            print(f"[TXValidation] ✅ Transaction {tx_id} has a valid fee.")
             return True
 
         except Exception as e:
-            print(f"[TXVALIDATION ERROR] Fee validation failed for transaction: {e}")
+            print(f"[TXValidation ERROR] ❌ Fee validation failed for transaction {tx_id}: {e}")
             return False
-
-    def _calculate_transaction_size(self, tx: Any) -> int:
-        """
-        Compute transaction size using single SHA3-384 hashing approach
-        or naive JSON-based size. Adjust as needed for your environment.
-        :param tx: The transaction object.
-        :return: Size in bytes, or -1 on error.
-        """
-        try:
-            # ✅ Ensure tx_id is converted if stored as bytes
-            if hasattr(tx, "tx_id") and isinstance(tx.tx_id, bytes):
-                tx.tx_id = tx.tx_id.decode("utf-8")
-
-            # ✅ Ensure transaction is serializable
-            if hasattr(tx, "to_dict"):
-                to_serialize = tx.to_dict()
-            else:
-                print("[TXVALIDATION ERROR] Transaction object does not support serialization.")
-                return -1
-
-            # ✅ Serialize transaction data and calculate size
-            serialized = json.dumps(to_serialize, sort_keys=True).encode("utf-8")
-            size_in_bytes = len(serialized)
-
-            print(f"[TXVALIDATION] Computed transaction size: {size_in_bytes} bytes.")
-            return size_in_bytes
-
-        except Exception as e:
-            print(f"[TXVALIDATION ERROR] Failed to calculate transaction size: {e}")
-            return -1

@@ -30,49 +30,46 @@ class TransactionService:
 
     def _calculate_fees(self, tx_type: TransactionType, inputs: List[Dict], outputs: List[Dict]) -> Decimal:
         """
-        Calculate the transaction fee using single SHA3-384 hashing and current network constants.
+        Calculate the transaction fee using the FeeModel.
         
         Steps:
-        - Serialize input and output data to bytes.
-        - Compute the total byte size.
-        - Generate a verification hash with a single hash.
-        - Initialize the FeeModel using Constants.
-        - Return the fee computed by the FeeModel.
+        - Fetch fee parameters from FeeModel.
+        - Compute the fee based on the current congestion level.
+        - Allocate funds dynamically to the smart contract pool if needed.
         """
         if not inputs or not outputs:
             print("[TransactionService._calculate_fees] ERROR: Inputs or outputs cannot be empty.")
             raise ValueError("Inputs and outputs are required for fee calculation.")
 
-        # ✅ Convert input and output data to strings for hashing
-        input_data = "".join(f"{i['tx_id']}{i['amount']}" for i in inputs if "tx_id" in i and "amount" in i)
-        output_data = "".join(f"{o['address']}{o['amount']}" for o in outputs if "address" in o and "amount" in o)
+        # ✅ Get total input and output amounts
+        total_input_amount = sum(Decimal(i["amount"]) for i in inputs if "amount" in i)
+        total_output_amount = sum(Decimal(o["amount"]) for o in outputs if "amount" in o)
 
-        tx_size = len(input_data.encode("utf-8")) + len(output_data.encode("utf-8"))
-        print(f"[TransactionService._calculate_fees] INFO: Calculated transaction size is {tx_size} bytes.")
-
-        # ✅ Compute verification hash
-        combined_data = input_data + output_data
-        verification_hash = Hashing.hash(combined_data.encode("utf-8"))
-        print(f"[TransactionService._calculate_fees] INFO: Verification hash computed as {verification_hash.hex()}.")
+        if total_input_amount < total_output_amount:
+            print("[TransactionService._calculate_fees] ERROR: Input amount must be >= Output amount.")
+            raise ValueError("Input amount must be greater than or equal to output amount.")
 
         from Zyiron_Chain.transactions.fees import FeeModel  # Lazy import
         fee_model = FeeModel(max_supply=Constants.MAX_SUPPLY)
 
         print(f"[TransactionService._calculate_fees] INFO: FeeModel initialized with max_supply {Constants.MAX_SUPPLY}.")
 
-        # ✅ Compute transaction fee
+        # ✅ Compute transaction fee using FeeModel
         try:
-            fee = fee_model.calculate_fee(
-                block_size=Constants.MAX_BLOCK_SIZE_BYTES,
+            fee_details = fee_model.calculate_fee_and_tax(
+                block_size=Constants.MAX_BLOCK_SIZE_MB,
                 payment_type=tx_type.name,
-                amount=sum(Decimal(i["amount"]) for i in inputs if "amount" in i),
-                tx_size=tx_size
+                amount=total_input_amount,
+                tx_size=0  # ✅ No longer using transaction size for fee calculation
             )
+
+            fee = fee_details["base_fee"]
+            print(f"[TransactionService._calculate_fees] INFO: Computed transaction fee is {fee}.")
+
         except Exception as e:
             print(f"[TransactionService._calculate_fees] ERROR: Failed to calculate fee: {e}")
             raise ValueError("Fee calculation error.")
 
-        print(f"[TransactionService._calculate_fees] INFO: Calculated fee is {fee}.")
         return fee
 
     def prepare_transaction(self,

@@ -20,8 +20,7 @@ sys.path.append(project_root)
 # -------------------------------------------------------------------------
 # Imports for the new splitted storage modules
 # -------------------------------------------------------------------------
-from Zyiron_Chain.storage.block_storage import WholeBlockData
-from Zyiron_Chain.storage.blockmetadata import BlockMetadata
+from Zyiron_Chain.storage.block_storage import BlockStorage
 from Zyiron_Chain.storage.tx_storage import TxStorage
 from Zyiron_Chain.storage.utxostorage import UTXOStorage
 from Zyiron_Chain.storage.mempool_storage import MempoolStorage
@@ -212,7 +211,7 @@ class Start:
                 sender=sender_address,  # ✅ Added sender validation
                 recipient_address="sample_recipient_address",  # ✅ Updated parameter
                 amount=Decimal("0.9"),
-                block_size=Constants.MAX_BLOCK_SIZE_BYTES / (1024 * 1024),  # Convert bytes to MB
+                block_size=Constants.MAX_BLOCK_SIZE_MB / (1024 * 1024),  # Convert bytes to MB
                 payment_type="STANDARD"
             )
 

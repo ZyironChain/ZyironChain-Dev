@@ -15,12 +15,11 @@ from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.transactiontype import TransactionType
 
 import hashlib
-
 class TransactionFactory:
     """
     Factory for creating transactions dynamically based on type.
-    Uses single SHA3-384 hashing, handles all data as bytes where necessary,
-    and prints detailed status messages.
+    Uses single SHA3-384 hashing, ensures all data is stored in JSON format, 
+    and provides detailed transaction status messages.
     """
 
     @staticmethod
@@ -28,14 +27,12 @@ class TransactionFactory:
                            inputs: List[Dict], 
                            outputs: List[Dict]) -> Transaction:
         """
-        Create a transaction of the specified type, with the provided inputs and outputs.
-        Uses single SHA3-384 hashing for the transaction ID and ensures a minimum fee.
+        Create a transaction of the specified type with provided inputs and outputs.
+        Uses single SHA3-384 hashing for the transaction ID and enforces a minimum fee.
         
         :param tx_type: Enum specifying the transaction type (STANDARD, SMART, INSTANT, COINBASE, etc.).
         :param inputs: List of dictionaries describing the inputs. 
-                       Each dict typically has {"tx_id": "...", "amount": "..."} or similar.
         :param outputs: List of dictionaries describing the outputs.
-                        Each dict typically has {"address": "...", "amount": "..."} or similar.
         :return: A Transaction object.
         """
         print(f"[TransactionFactory.create_transaction] START: Creating transaction of type '{tx_type.name}'.")
@@ -51,26 +48,26 @@ class TransactionFactory:
             print(f"[TransactionFactory.create_transaction] INFO: Using prefix '{prefix}' for transaction type '{tx_type.name}'.")
 
         # ✅ Validate inputs and outputs
-        if not inputs or not all(isinstance(inp, dict) for inp in inputs):
-            raise ValueError("[TransactionFactory.create_transaction] ERROR: Invalid inputs; must be a list of dictionaries.")
-        if not outputs or not all(isinstance(out, dict) for out in outputs):
-            raise ValueError("[TransactionFactory.create_transaction] ERROR: Invalid outputs; must be a list of dictionaries.")
+        if not inputs or not all(isinstance(inp, dict) and "tx_id" in inp and "amount" in inp for inp in inputs):
+            raise ValueError("[TransactionFactory.create_transaction] ERROR: Invalid inputs; must be a list of dictionaries with 'tx_id' and 'amount'.")
+        if not outputs or not all(isinstance(out, dict) and "address" in out and "amount" in out for out in outputs):
+            raise ValueError("[TransactionFactory.create_transaction] ERROR: Invalid outputs; must be a list of dictionaries with 'address' and 'amount'.")
 
         # ✅ Convert amounts to smallest units using COIN
-        total_input = sum(Decimal(inp.get("amount", "0")) / Constants.COIN for inp in inputs)
-        total_output = sum(Decimal(out.get("amount", "0")) / Constants.COIN for out in outputs)
+        total_input = sum(Decimal(inp["amount"]) / Constants.COIN for inp in inputs)
+        total_output = sum(Decimal(out["amount"]) / Constants.COIN for out in outputs)
 
         # ✅ Calculate transaction fee
         fee = total_input - total_output
-        if fee < Decimal(Constants.MIN_TRANSACTION_FEE) / Constants.COIN:
+        min_fee = Decimal(Constants.MIN_TRANSACTION_FEE) / Constants.COIN
+        if fee < min_fee:
             print(f"[TransactionFactory.create_transaction] WARNING: Transaction fee too low ({fee}). "
-                  f"Adjusting to minimum: {Constants.MIN_TRANSACTION_FEE}")
-            fee = Decimal(Constants.MIN_TRANSACTION_FEE) / Constants.COIN
+                  f"Adjusting to minimum: {min_fee}")
+            fee = min_fee
 
         # ✅ Generate a unique transaction ID using single SHA3-384 hashing
-        base_data = f"{prefix}{','.join(str(Decimal(inp.get('amount', '0'))) for inp in inputs)}{time.time()}"
-        tx_id_raw = hashlib.sha3_384(base_data.encode()).hexdigest()
-        tx_id = tx_id_raw[:64]
+        base_data = f"{prefix}{','.join(inp['tx_id'] for inp in inputs)}{time.time()}"
+        tx_id = hashlib.sha3_384(base_data.encode()).hexdigest()
         print(f"[TransactionFactory.create_transaction] INFO: Generated transaction ID: {tx_id}")
 
         # ✅ Create the Transaction object with inputs and outputs

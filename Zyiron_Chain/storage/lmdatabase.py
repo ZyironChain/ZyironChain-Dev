@@ -39,24 +39,20 @@ import json
 
 # Optional: If you need the "ParentConstants" folder, etc.
 
+import lmdb
+import json
+import os
+import time
+from typing import Optional, List, Dict
+from Zyiron_Chain.blockchain.constants import Constants
+
+
 class LMDBManager:
     def __init__(self, db_path: Optional[str] = None):
-        """
-        Initialize LMDB with network-aware configuration.
-
-        :param db_path: Optional path to the LMDB environment. If not provided,
-                        defaults to the path derived from Constants.
-        """
-        # ---------------------------------------------------------------------
-        # 1. Construct the DB path from the network folder if no path is given.
-        # ---------------------------------------------------------------------
         db_path = db_path or os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, Constants.NETWORK_FOLDER)
         db_path = os.path.abspath(db_path)
         parent_dir = os.path.dirname(db_path)
 
-        # ---------------------------------------------------------------------
-        # 2. Ensure the parent directory exists (if any).
-        # ---------------------------------------------------------------------
         if parent_dir and parent_dir != db_path:
             try:
                 os.makedirs(parent_dir, exist_ok=True)
@@ -65,28 +61,20 @@ class LMDBManager:
                 print(f"Failed to create directory {parent_dir}: {str(e)}")
                 raise
 
-        # ---------------------------------------------------------------------
-        # 3. Configure and open the LMDB environment.
-        # ---------------------------------------------------------------------
         try:
             self.env = lmdb.open(
                 path=db_path,
-                map_size=Constants.LMDB_MAP_SIZE,  # Use the correct constant
+                map_size=Constants.LMDB_MAP_SIZE,
                 create=True,
                 readahead=False,
                 writemap=True,
                 meminit=False,
                 max_dbs=Constants.MAX_LMDB_DATABASES
             )
-
         except lmdb.Error as e:
             print(f"LMDB environment creation failed: {str(e)}")
             raise
 
-        # ---------------------------------------------------------------------
-        # 4. Initialize named databases in this environment.
-        #    We do this once in the constructor to avoid re-opening DBs.
-        # ---------------------------------------------------------------------
         try:
             with self.env.begin(write=True) as txn:
                 self.mempool_db = self.env.open_db(b"mempool", txn=txn)
@@ -100,20 +88,10 @@ class LMDBManager:
             self.env.close()
             raise
 
-        # ---------------------------------------------------------------------
-        # 5. Simulated transaction states. LMDB auto-commits, so these are only
-        #    placeholders. We keep them for compatibility if other code calls
-        #    them, but you must note they are not real rollback/commit.
-        # ---------------------------------------------------------------------
         self.transaction_active = False
-
-        # Run capacity check for warnings if nearing limit.
         self._verify_capacity()
 
-    # -------------------------------------------------------------------------
-    # Potentially remove or rename this if you don’t need to re-initialize DBs
-    # after the constructor. If no code calls it, you can safely remove it.
-    # -------------------------------------------------------------------------
+
 
 
     def get_all_transactions(self) -> List[Dict]:
@@ -124,26 +102,25 @@ class LMDBManager:
         transactions = []
         try:
             with self.env.begin() as txn:
-                cursor = txn.cursor()
+                cursor = txn.cursor(db=self.transactions_db)
                 for key, value in cursor:
                     try:
-                        # ✅ Ensure key is a string before processing
                         key_str = key.decode("utf-8", errors="ignore")
-                        if key_str.startswith("tx:"):  # Filter for transaction keys
+                        if key_str.startswith("tx:"):
                             try:
                                 tx_data = value.decode("utf-8", errors="ignore")
                                 tx_dict = json.loads(tx_data)
                                 transactions.append(tx_dict)
                             except json.JSONDecodeError as json_error:
-                                print(f"[LMDBManager.get_all_transactions] ❌ WARNING: Skipping corrupt transaction entry for key {key_str}: {json_error}")
+                                print(f"[LMDBManager.get_all_transactions] WARNING: Skipping corrupt transaction entry {key_str}: {json_error}")
                     except UnicodeDecodeError as decode_error:
-                        print(f"[LMDBManager.get_all_transactions] ❌ ERROR: Failed to decode key {key}: {decode_error}")
+                        print(f"[LMDBManager.get_all_transactions] ERROR: Failed to decode key {key}: {decode_error}")
 
-            print(f"[LMDBManager.get_all_transactions] ✅ INFO: Successfully retrieved {len(transactions)} valid transactions.")
+            print(f"[LMDBManager.get_all_transactions] INFO: Retrieved {len(transactions)} valid transactions.")
             return transactions
 
         except Exception as e:
-            print(f"[LMDBManager.get_all_transactions] ❌ ERROR: Failed to retrieve transactions: {e}")
+            print(f"[LMDBManager.get_all_transactions] ERROR: Failed to retrieve transactions: {e}")
             return []
 
 
@@ -151,8 +128,7 @@ class LMDBManager:
 
     def _initialize_databases(self):
         """
-        (Optional) Re-initializes the LMDB databases.
-        NOTE: If called more than once, you might be re-opening DB handles.
+        Re-initializes the LMDB databases. 
         Only use if absolutely necessary after the constructor.
         """
         try:
@@ -161,12 +137,10 @@ class LMDBManager:
                 self.blocks_db = self.env.open_db(b"blocks", txn=txn)
                 self.transactions_db = self.env.open_db(b"transactions", txn=txn)
                 self.metadata_db = self.env.open_db(b"metadata", txn=txn)
-                # If you need a separate smart mempool DB, you can open it here as well:
-                # self.smart_mempool_db = self.env.open_db(b"smart_mempool", txn=txn)
 
-            print("[INFO] LMDB databases re-initialized successfully.")
+            print("[LMDBManager] INFO: Databases re-initialized successfully.")
         except lmdb.Error as e:
-            print(f"Database re-initialization failed: {str(e)}")
+            print(f"[LMDBManager] ERROR: Database re-initialization failed: {str(e)}")
             self.env.close()
             raise
 
@@ -174,81 +148,75 @@ class LMDBManager:
         """
         Check database limits and warn if usage exceeds 80% of capacity.
         Ensures accurate tracking of map_size vs. actual file size.
-        Gracefully handles missing `psize` key in LMDB info.
         """
         try:
             with self.env.begin() as txn:
                 stats = txn.stat()
                 info = self.env.info()
 
-                # ✅ Ensure entries exist before division
                 total_entries = stats.get("entries", 0)
                 if total_entries == 0:
-                    print("[LMDB INFO] 🔹 No database entries yet. Capacity check skipped.")
+                    print("[LMDBManager] INFO: No database entries yet. Capacity check skipped.")
                     return
 
-                # ✅ Compute database capacity based on entries
                 max_capacity = Constants.MAX_LMDB_DATABASES
                 entry_capacity = total_entries / max_capacity if max_capacity > 0 else 0
 
-                # ✅ Compute file size usage against allocated map size
                 map_size = info.get("map_size", 0)
                 last_page = info.get("last_pgno", 0)
-                page_size = info.get("psize", 4096)  # Default to 4096 if `psize` is missing
+                page_size = info.get("psize", 4096)
 
                 if map_size <= 0:
-                    print("[LMDB WARNING] ⚠️ Invalid map_size in LMDB info. Capacity check skipped.")
+                    print("[LMDBManager] WARNING: Invalid map_size in LMDB info. Capacity check skipped.")
                     return
 
                 file_usage = (last_page * page_size) / map_size if map_size > 0 else 0
 
-                # ✅ Log usage warnings
                 if entry_capacity > 0.8:
-                    print(f"[LMDB WARNING] ⚠️ Database entry capacity at {entry_capacity:.0%} ({total_entries}/{max_capacity}).")
+                    print(f"[LMDBManager] WARNING: Database entry capacity at {entry_capacity:.0%} ({total_entries}/{max_capacity}).")
 
                 if file_usage > 0.8:
-                    print(f"[LMDB WARNING] ⚠️ File size usage at {file_usage:.0%} of allocated LMDB space.")
+                    print(f"[LMDBManager] WARNING: File size usage at {file_usage:.0%} of allocated LMDB space.")
 
-                print("[LMDB INFO] ✅ Capacity check completed.")
+                print("[LMDBManager] INFO: Capacity check completed.")
 
         except lmdb.Error as e:
-            print(f"[LMDB ERROR] ❌ Failed to verify LMDB capacity: {e}")
+            print(f"[LMDBManager] ERROR: Failed to verify LMDB capacity: {e}")
         except KeyError as e:
-            print(f"[LMDB ERROR] ❌ Missing key in LMDB info: {e}")
+            print(f"[LMDBManager] ERROR: Missing key in LMDB info: {e}")
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Unexpected error in capacity verification: {e}")
+            print(f"[LMDBManager] ERROR: Unexpected error in capacity verification: {e}")
 
     def get_database_status(self):
         """
-        Return current database usage statistics such as used_databases,
-        map_size, free_space, etc.
+        Return current database usage statistics such as used databases,
+        map size, and free space.
         """
-        with self.env.begin() as txn:
-            return {
-                "max_databases": self.env.info()["max_dbs"],
-                "used_databases": txn.stat()["entries"],
-                "map_size": self.env.info()["map_size"],
-                "free_space": self.env.info()["map_size"]
-                             - self.env.info()["last_pgno"] * self.env.info()["psize"]
-            }
-
-    # -------------------------------------------------------------------------
-    # Basic Key-Value retrieval. For more advanced usage, your StorageManager
-    # might wrap these calls with domain logic.
-    # -------------------------------------------------------------------------
+        try:
+            with self.env.begin() as txn:
+                return {
+                    "max_databases": self.env.info().get("max_dbs", 0),
+                    "used_databases": txn.stat().get("entries", 0),
+                    "map_size": self.env.info().get("map_size", 0),
+                    "free_space": self.env.info().get("map_size", 0)
+                                 - self.env.info().get("last_pgno", 0) * self.env.info().get("psize", 4096)
+                }
+        except Exception as e:
+            print(f"[LMDBManager] ERROR: Failed to retrieve database status: {e}")
+            return {}
 
     def get(self, key: str, db=None):
         """
         Retrieve a JSON-serialized value from LMDB by key.
 
         :param key: The key (string) to retrieve.
-        :param db: Which database handle to use. Defaults to self.blocks_db.
+        :param db: Database handle to use. Defaults to self.blocks_db.
         :return: Deserialized JSON (dict) or None if not found.
         """
         db_handle = db or self.blocks_db
-        
+
         if not isinstance(key, str):
-            print(f"[STORAGE ERROR] ❌ Invalid key format: {key}. Expected a string.")
+            print(f"[LMDBManager] ERROR: Invalid key format: {key}. Expected a string.")
             return None
 
         key_encoded = key.encode("utf-8")
@@ -258,38 +226,32 @@ class LMDBManager:
                 value = txn.get(key_encoded)
 
             if not value:
-                print(f"[STORAGE] ⚠️ Key not found in LMDB: {key}")
+                print(f"[LMDBManager] WARNING: Key not found in LMDB: {key}")
                 return None
 
             try:
                 return json.loads(value.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
-                print(f"[STORAGE ERROR] ❌ Corrupt JSON data for key {key}: {decode_error}")
+                print(f"[LMDBManager] ERROR: Corrupt JSON data for key {key}: {decode_error}")
                 return None
 
         except Exception as e:
-            print(f"[STORAGE ERROR] ❌ Failed to retrieve key {key}: {str(e)}")
+            print(f"[LMDBManager] ERROR: Failed to retrieve key {key}: {e}")
             return None
+
 
 
     def get_db_path(self, db_name: str) -> str:
         """
         Returns the path for the specified database name.
-        This can be used if you want to open a separate environment or
-        just track where the base DB folder is, etc.
         """
-        base_path = os.getcwd()
-        db_path = os.path.join(base_path, "BlockData", db_name)
-        print(f"[DEBUG] Database path for '{db_name}': {db_path}")
+        db_path = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, db_name)
+        print(f"[LMDBManager] INFO: Database path for '{db_name}': {db_path}")
         return db_path
 
-    # -------------------------------------------------------------------------
-    # Mempool / Pending Transactions
-    # -------------------------------------------------------------------------
     def fetch_all_pending_transactions(self) -> list:
         """
         Retrieve all pending transactions stored in the mempool DB.
-        Each transaction is expected to be JSON-serialized.
         """
         pending_transactions = []
         try:
@@ -302,75 +264,72 @@ class LMDBManager:
                             tx_data = json.loads(value.decode("utf-8"))
                             pending_transactions.append(tx_data)
                         except json.JSONDecodeError as e:
-                            print(f"[LMDB ERROR] ❌ Failed to decode transaction {key_str}: {e}")
+                            print(f"[LMDBManager] ERROR: Failed to decode transaction {key_str}: {e}")
 
-            print(f"[LMDB] ✅ Retrieved {len(pending_transactions)} pending transactions.")
+            print(f"[LMDBManager] INFO: Retrieved {len(pending_transactions)} pending transactions.")
             return pending_transactions
 
         except lmdb.Error as e:
-            print(f"[LMDB ERROR] ❌ LMDB retrieval failed: {e}")
+            print(f"[LMDBManager] ERROR: LMDB retrieval failed: {e}")
             return []
+
 
     def add_pending_transaction(self, transaction: dict):
         """
         Add a pending transaction to the mempool DB.
-        Transaction must be a dictionary containing at least 'tx_id'.
         """
         try:
-            tx_id = transaction["tx_id"]
+            tx_id = transaction.get("tx_id")
+            if not tx_id:
+                print("[LMDBManager] ERROR: Transaction missing 'tx_id'.")
+                return
+
             key = f"mempool:pending_tx:{tx_id}".encode()
             value = json.dumps(transaction).encode("utf-8")
 
             with self.env.begin(write=True, db=self.mempool_db) as txn:
                 txn.put(key, value)
 
-            print(f"[LMDB] ✅ Pending transaction {tx_id} stored successfully.")
+            print(f"[LMDBManager] INFO: Pending transaction {tx_id} stored successfully.")
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Failed to store pending transaction: {e}")
+            print(f"[LMDBManager] ERROR: Failed to store pending transaction: {e}")
 
     def delete_pending_transaction(self, tx_id: str):
         """
-        Remove a pending transaction from the mempool DB by tx_id.
+        Remove a pending transaction from the mempool DB.
         """
         try:
             key = f"mempool:pending_tx:{tx_id}".encode()
             with self.env.begin(write=True, db=self.mempool_db) as txn:
                 txn.delete(key)
 
-            print(f"[LMDB] ✅ Pending transaction {tx_id} removed from mempool.")
+            print(f"[LMDBManager] INFO: Pending transaction {tx_id} removed from mempool.")
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Failed to remove pending transaction {tx_id}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to remove pending transaction {tx_id}: {e}")
 
-    # -------------------------------------------------------------------------
-    # Helper JSON (De)Serialization
-    # -------------------------------------------------------------------------
 
-    # -------------------------------------------------------------------------
-    # Simulated Transaction Methods
-    # LMDB auto-commit is used, so these are mostly no-ops, but we keep them
-    # for code compatibility if your system calls them.
-    # -------------------------------------------------------------------------
+
     def begin_transaction(self):
         """Begin a simulated transaction."""
         if not self.transaction_active:
-            print("[INFO] Starting LMDB transaction (simulated).")
+            print("[LMDBManager] INFO: Starting LMDB transaction (simulated).")
             self.transaction_active = True
 
     def commit(self):
         """Commit a simulated transaction."""
         if self.transaction_active:
-            print("[INFO] Committing LMDB transaction (simulated).")
+            print("[LMDBManager] INFO: Committing LMDB transaction (simulated).")
             self.transaction_active = False
 
     def rollback(self):
         """
         Roll back a simulated transaction.
-        LMDB does not support real rollback from Python once writes are done.
-        We log a warning only.
+        LMDB does not support real rollback from Python once writes are committed.
         """
         if self.transaction_active:
-            print("[WARNING] LMDB does not support rollback. This is a no-op.")
+            print("[LMDBManager] WARNING: LMDB rollback is not supported. No changes reverted.")
             self.transaction_active = False
+
 
     # -------------------------------------------------------------------------
     # Blockchain Storage: blocks, transactions
@@ -383,44 +342,38 @@ class LMDBManager:
         try:
             self.begin_transaction()
 
-            # ✅ Ensure block_hash is properly formatted
             if not isinstance(block_hash, str):
-                print(f"[LMDB ERROR] ❌ Invalid block_hash type: {type(block_hash)}. Expected str.")
+                print(f"[LMDBManager] ERROR: Invalid block_hash type: {type(block_hash)}. Expected str.")
                 self.rollback()
                 return
 
-            # ✅ Properly include the magic number in the block data
             block_data = {
-                "magic_number": hex(Constants.MAGIC_NUMBER),  # Ensure correct magic number
                 "block_header": block_header,
                 "transactions": [
-                    tx.to_dict() if hasattr(tx, "to_dict") else tx
-                    for tx in transactions
+                    tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in transactions
                 ],
                 "size": size,
                 "difficulty": difficulty
             }
 
-            # ✅ Convert key to bytes and handle encoding errors safely
             key = f"block:{block_hash}".encode("utf-8")
 
             try:
                 value = json.dumps(block_data).encode("utf-8")
             except (TypeError, ValueError) as json_error:
-                print(f"[LMDB ERROR] ❌ JSON Encoding Failed for block {block_hash}: {json_error}")
+                print(f"[LMDBManager] ERROR: JSON Encoding Failed for block {block_hash}: {json_error}")
                 self.rollback()
                 return
 
-            # ✅ Store block in LMDB safely
             with self.env.begin(write=True, db=self.blocks_db) as txn:
                 txn.put(key, value)
 
             self.commit()
-            print(f"[LMDB] ✅ Block {block_hash} stored successfully with correct magic number: {hex(Constants.MAGIC_NUMBER)}")
+            print(f"[LMDBManager] SUCCESS: Block {block_hash} stored successfully.")
 
         except Exception as e:
             self.rollback()
-            print(f"[LMDB ERROR] ❌ Failed to store block {block_hash}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to store block {block_hash}: {e}")
             raise
 
 
@@ -439,37 +392,35 @@ class LMDBManager:
         """
         db_handle = db or self.blocks_db
 
-        # ✅ Ensure key is always stored as bytes, but safely logged as str
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
         elif isinstance(key, bytes):
             key_bytes = key
         else:
-            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
+            print(f"[LMDBManager] ERROR: Invalid key type: {type(key)}. Expected str or bytes.")
             return False
 
-        key_str = key_bytes.decode("utf-8", errors="ignore")  # ✅ For logging only
+        key_str = key_bytes.decode("utf-8", errors="ignore")
 
-        # ✅ Validate that value is a dictionary
         if not isinstance(value, dict):
-            print(f"[LMDB ERROR] ❌ Invalid value type: {type(value)}. Expected dict.")
+            print(f"[LMDBManager] ERROR: Invalid value type: {type(value)}. Expected dict.")
             return False
 
         try:
-            # ✅ Ensure all values are JSON-serializable (convert bytes if needed)
             value_json = json.dumps(value, default=lambda x: x.hex() if isinstance(x, bytes) else str(x)).encode("utf-8")
         except (TypeError, ValueError) as e:
-            print(f"[LMDB ERROR] ❌ Failed to serialize value for key {key_str}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to serialize value for key {key_str}: {e}")
             return False
 
         try:
             with self.env.begin(write=True, db=db_handle) as txn:
                 txn.put(key_bytes, value_json)
-            print(f"[LMDB INFO] ✅ Successfully stored key: {key_str}")
+            print(f"[LMDBManager] SUCCESS: Stored key: {key_str}")
             return True
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Failed to store key {key_str}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to store key {key_str}: {e}")
             return False
+
 
 
     def get(self, key: Union[str, bytes], db=None):
