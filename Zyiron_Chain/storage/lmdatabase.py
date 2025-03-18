@@ -146,8 +146,7 @@ class LMDBManager:
 
     def _verify_capacity(self):
         """
-        Check database limits and warn if usage exceeds 80% of capacity.
-        Ensures accurate tracking of map_size vs. actual file size.
+        Check database limits and dynamically increase LMDB map_size if usage exceeds 80%.
         """
         try:
             with self.env.begin() as txn:
@@ -155,37 +154,26 @@ class LMDBManager:
                 info = self.env.info()
 
                 total_entries = stats.get("entries", 0)
-                if total_entries == 0:
-                    print("[LMDBManager] INFO: No database entries yet. Capacity check skipped.")
-                    return
-
-                max_capacity = Constants.MAX_LMDB_DATABASES
-                entry_capacity = total_entries / max_capacity if max_capacity > 0 else 0
-
                 map_size = info.get("map_size", 0)
                 last_page = info.get("last_pgno", 0)
                 page_size = info.get("psize", 4096)
 
-                if map_size <= 0:
-                    print("[LMDBManager] WARNING: Invalid map_size in LMDB info. Capacity check skipped.")
+                if total_entries == 0:
+                    print("[LMDBManager] INFO: No database entries yet. Capacity check skipped.")
                     return
 
                 file_usage = (last_page * page_size) / map_size if map_size > 0 else 0
 
-                if entry_capacity > 0.8:
-                    print(f"[LMDBManager] WARNING: Database entry capacity at {entry_capacity:.0%} ({total_entries}/{max_capacity}).")
-
                 if file_usage > 0.8:
-                    print(f"[LMDBManager] WARNING: File size usage at {file_usage:.0%} of allocated LMDB space.")
+                    new_size = int(map_size * 1.5)  # ✅ Increase map_size by 50%
+                    self.env.set_mapsize(new_size)
+                    print(f"[LMDBManager] INFO: Increased LMDB map_size to {new_size} bytes.")
 
-                print("[LMDBManager] INFO: Capacity check completed.")
+            print("[LMDBManager] INFO: Capacity check completed.")
 
         except lmdb.Error as e:
             print(f"[LMDBManager] ERROR: Failed to verify LMDB capacity: {e}")
-        except KeyError as e:
-            print(f"[LMDBManager] ERROR: Missing key in LMDB info: {e}")
-        except Exception as e:
-            print(f"[LMDBManager] ERROR: Unexpected error in capacity verification: {e}")
+
 
     def get_database_status(self):
         """
@@ -205,39 +193,44 @@ class LMDBManager:
             print(f"[LMDBManager] ERROR: Failed to retrieve database status: {e}")
             return {}
 
-    def get(self, key: str, db=None):
+    def get(self, key: Union[str, bytes], db=None) -> Optional[Union[dict, bytes]]:
         """
-        Retrieve a JSON-serialized value from LMDB by key.
-
-        :param key: The key (string) to retrieve.
-        :param db: Database handle to use. Defaults to self.blocks_db.
-        :return: Deserialized JSON (dict) or None if not found.
+        Retrieve a value from LMDB by key.
+        If the value is JSON, deserialize it. Otherwise, return raw bytes.
         """
         db_handle = db or self.blocks_db
 
-        if not isinstance(key, str):
-            print(f"[LMDBManager] ERROR: Invalid key format: {key}. Expected a string.")
+        # Ensure key is always handled as bytes
+        if isinstance(key, str):
+            key_bytes = key.encode("utf-8")
+        elif isinstance(key, bytes):
+            key_bytes = key
+        else:
+            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
             return None
 
-        key_encoded = key.encode("utf-8")
+        key_str = key_bytes.decode("utf-8", errors="ignore")  # Safe decoding for logs
 
         try:
             with self.env.begin(db=db_handle) as txn:
-                value = txn.get(key_encoded)
+                value = txn.get(key_bytes)
 
-            if not value:
-                print(f"[LMDBManager] WARNING: Key not found in LMDB: {key}")
-                return None
+                if value is None:
+                    print(f"[LMDB WARNING] ⚠️ Key not found: {key_str}")
+                    return None
 
-            try:
-                return json.loads(value.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
-                print(f"[LMDBManager] ERROR: Corrupt JSON data for key {key}: {decode_error}")
-                return None
+                # Try to decode as JSON
+                try:
+                    return json.loads(value.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    # If decoding fails, return raw bytes
+                    print(f"[LMDB WARNING] ⚠️ Value for key {key_str} is not valid JSON. Returning raw bytes.")
+                    return value
 
         except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to retrieve key {key}: {e}")
+            print(f"[LMDB ERROR] ❌ Failed to retrieve key {key_str}: {e}")
             return None
+            
 
 
 
@@ -347,11 +340,20 @@ class LMDBManager:
                 self.rollback()
                 return
 
+            # Serialize transactions safely
+            serialized_transactions = []
+            for tx in transactions:
+                try:
+                    tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    serialized_transactions.append(tx_dict)
+                except Exception as e:
+                    print(f"[LMDBManager] ERROR: Failed to serialize transaction: {e}")
+                    self.rollback()
+                    return
+
             block_data = {
                 "block_header": block_header,
-                "transactions": [
-                    tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in transactions
-                ],
+                "transactions": serialized_transactions,
                 "size": size,
                 "difficulty": difficulty
             }

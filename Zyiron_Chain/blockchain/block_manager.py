@@ -34,6 +34,7 @@ from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.utils.deserializer import Deserializer
 
+
 class BlockManager:
     def __init__(
         self,
@@ -91,6 +92,27 @@ class BlockManager:
         except Exception as e:
             print(f"[BlockManager.__init__] ❌ ERROR: BlockManager initialization failed: {e}")
             raise
+
+    def adjust_difficulty(self):
+        """
+        Adjust difficulty by deferring to the PowManager in the blockchain.
+        """
+        if not hasattr(self.blockchain, 'pow_manager'):
+            print("[BlockManager.adjust_difficulty] ERROR: 'pow_manager' not found in blockchain. Using fallback difficulty.")
+            return self.difficulty_target  # or however you want to handle it
+
+        return self.blockchain.pow_manager.adjust_difficulty()
+
+    def validate_proof_of_work(self, block):
+        """
+        Validate block's proof-of-work by deferring to the PowManager in the blockchain.
+        """
+        if not hasattr(self.blockchain, 'pow_manager'):
+            print("[BlockManager.validate_proof_of_work] ERROR: 'pow_manager' not found in blockchain.")
+            return False
+
+        return self.blockchain.pow_manager.validate_proof_of_work(block)
+
 
     def validate_block(self, block) -> bool:
         """
@@ -193,66 +215,76 @@ class BlockManager:
             return False
 
 
-    def validate_chain(self) -> bool:
+    def validate_block(self, block) -> bool:
         """
-        Validate the entire blockchain for data integrity:
-        - Each block's transactions meet required confirmations.
-        - Correct previous_hash linkage (except for the Genesis block).
-        - Block difficulty and Proof-of-Work are correct.
-        - Transaction IDs validated using single SHA3-384 hashing.
+        Validate a block before adding it to the blockchain.
+        Checks:
+        - Consistency with previous block.
+        - Block size remains within defined min/max limits.
+        - Proof-of-Work requirements are met.
+        - Timestamp is within the allowed drift.
+        - Transactions meet confirmation requirements using SHA3-384 hashing.
         """
-        print("[BlockManager.validate_chain] INFO: Starting full blockchain validation.")
+        print(f"[BlockManager.validate_block] INFO: Validating Block {block.index}...")
 
-        if not self.chain:
-            print("[BlockManager.validate_chain] ❌ ERROR: Blockchain is empty. Cannot validate.")
-            return False
-
-        for i, current_block in enumerate(self.chain):
-            print(f"[BlockManager.validate_chain] INFO: Validating Block {current_block.index}...")
-
-            # ✅ **Validate Previous Hash (Except for Genesis Block)**
-            if i > 0:
-                previous_block = self.chain[i - 1]
-                if current_block.previous_hash != previous_block.hash:
-                    print(
-                        f"[BlockManager.validate_chain] ❌ ERROR: Block {current_block.index} previous hash mismatch. "
-                        f"Expected {previous_block.hash}, Got {current_block.previous_hash}"
-                    )
-                    return False
-
-            # ✅ **Validate Block Size**
-            block_serialized = json.dumps(current_block.to_dict()).encode("utf-8")
-            block_size = len(block_serialized)
-
-            if block_size < Constants.MIN_BLOCK_SIZE_MB:
-                print(f"[BlockManager.validate_chain] ❌ ERROR: Block {current_block.index} below min size: {block_size} bytes.")
-                return False
-
-            if block_size > Constants.MAX_BLOCK_SIZE_MB:
-                print(f"[BlockManager.validate_chain] ❌ ERROR: Block {current_block.index} exceeds max size: {block_size} bytes.")
-                return False
-
-            print(f"[BlockManager.validate_chain] ✅ INFO: Block {current_block.index} size validated: {block_size} bytes.")
-
-            # ✅ **Validate Proof-of-Work**
-            if not self.blockchain.validate_proof_of_work(current_block):
+        try:
+            # ✅ **Ensure Previous Hash Matches the Last Stored Block**
+            last_block = self.block_storage.get_latest_block()
+            if last_block and block.previous_hash != last_block.hash:
                 print(
-                    f"[BlockManager.validate_chain] ❌ ERROR: Block {current_block.index} does not meet Proof-of-Work requirements."
+                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} previous hash mismatch. "
+                    f"Expected {last_block.hash}, Got {block.previous_hash}"
                 )
                 return False
 
-            print(f"[BlockManager.validate_chain] ✅ INFO: Proof-of-Work validation passed for Block {current_block.index}.")
+            # ✅ **Validate Block Size Within Defined Limits**
+            block_serialized = json.dumps(block.to_dict()).encode("utf-8")
+            block_size_mb = len(block_serialized) / (1024 * 1024)  # Convert bytes to MB
+
+            if block_size_mb < Constants.MIN_BLOCK_SIZE_MB:
+                print(
+                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} below min block size: {block_size_mb} MB."
+                )
+                return False
+
+            if block_size_mb > Constants.MAX_BLOCK_SIZE_MB:
+                print(
+                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} exceeds max block size: {block_size_mb} MB."
+                )
+                return False
+
+            print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} size validated: {block_size_mb} MB.")
+
+            # ✅ **Validate Proof-of-Work**
+            if not self.validate_proof_of_work(block):
+                print(
+                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} does not meet Proof-of-Work requirements."
+                )
+                return False
+
+            print(f"[BlockManager.validate_block] ✅ INFO: Proof-of-Work validation passed for Block {block.index}.")
+
+            # ✅ **Validate Block Timestamp**
+            current_time = time.time()
+            if not (
+                current_time - Constants.MAX_TIME_DRIFT
+                <= block.timestamp
+                <= current_time + Constants.MAX_TIME_DRIFT
+            ):
+                print(
+                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} timestamp invalid (Future-dated block detected)."
+                )
+                return False
+
+            print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} timestamp validated.")
 
             # ✅ **Validate All Transactions in the Block**
-            for tx in current_block.transactions:
+            for tx in block.transactions:
                 if not hasattr(tx, "tx_id"):
-                    print(
-                        f"[BlockManager.validate_chain] ❌ ERROR: "
-                        f"Transaction in Block {current_block.index} missing 'tx_id'."
-                    )
+                    print(f"[BlockManager.validate_block] ❌ ERROR: Transaction in Block {block.index} missing 'tx_id'.")
                     return False
 
-                # Ensure tx_id is properly formatted
+                # Ensure tx_id is correctly formatted
                 tx_id = tx.tx_id if isinstance(tx.tx_id, str) else tx.tx_id.decode("utf-8")
 
                 # Compute SHA3-384 hash for transaction validation
@@ -267,16 +299,23 @@ class BlockManager:
 
                 # Retrieve actual confirmations from tx_storage
                 confirmations = self.tx_storage.get_transaction_confirmations(hashed_tx_id)
+
                 if confirmations is None or confirmations < required_confirmations:
                     print(
-                        f"[BlockManager.validate_chain] ❌ ERROR: Transaction {hashed_tx_id} "
-                        f"in Block {current_block.index} does not meet required confirmations "
+                        f"[BlockManager.validate_block] ❌ ERROR: Transaction {hashed_tx_id} "
+                        f"in Block {block.index} does not meet required confirmations "
                         f"({required_confirmations}). Found: {confirmations}."
                     )
                     return False
 
-        print("[BlockManager.validate_chain] ✅ SUCCESS: Blockchain validated successfully.")
-        return True
+            print(f"[BlockManager.validate_block] ✅ SUCCESS: Block {block.index} successfully validated.")
+            return True
+
+        except Exception as e:
+            print(f"[BlockManager.validate_block] ❌ ERROR: Block validation failed: {e}")
+            return False
+
+
 
 
     def calculate_merkle_root(self, transactions) -> str:
@@ -310,7 +349,7 @@ class BlockManager:
                         to_serialize = tx
                     else:
                         print(f"[BlockManager.calculate_merkle_root] ❌ ERROR: Invalid transaction format: {type(tx)}")
-                        return Constants.ZERO_HASH
+                        continue  # Skip invalid transactions
 
                     # Convert to JSON and hash using SHA3-384
                     tx_serialized = json.dumps(to_serialize, sort_keys=True).encode("utf-8")
@@ -319,7 +358,7 @@ class BlockManager:
 
                 except Exception as e:
                     print(f"[BlockManager.calculate_merkle_root] ❌ ERROR: Failed to serialize transaction: {e}")
-                    return Constants.ZERO_HASH
+                    continue  # Skip invalid transactions
 
             # ✅ **Ensure transactions have been properly hashed**
             if not tx_hashes:
@@ -333,14 +372,14 @@ class BlockManager:
 
                 new_level = []
                 for i in range(0, len(tx_hashes), 2):
-                    combined = tx_hashes[i] + tx_hashes[i + 1]  # Concatenate as hex strings
-                    new_hash = Hashing.hash(combined.encode("utf-8")).hex()  # Compute SHA3-384 hash
+                    combined = (tx_hashes[i] + tx_hashes[i + 1]).encode("utf-8")  # Concatenate as bytes
+                    new_hash = Hashing.hash(combined).hex()  # Compute SHA3-384 hash
                     new_level.append(new_hash)
 
                 tx_hashes = new_level  # Move to next level
 
             # ✅ **Final Merkle Root**
-            merkle_root = tx_hashes[0]
+            merkle_root = tx_hashes[0] if tx_hashes else Constants.ZERO_HASH
             print(f"[BlockManager.calculate_merkle_root] ✅ SUCCESS: Merkle Root computed: {merkle_root}")
             return merkle_root
 
@@ -362,15 +401,12 @@ class BlockManager:
                 print("[BlockManager.send_block_information] ❌ ERROR: Block object is missing required attributes.")
                 return False
 
-            # ✅ Ensure difficulty is properly assigned
-            difficulty = block.difficulty if isinstance(block.difficulty, str) else Constants.MIN_DIFFICULTY
-
-            # ✅ Store block in block storage
-            self.block_storage.store_block(block, difficulty)
+            # ✅ Store block in block storage without difficulty argument
+            self.block_storage.store_block(block)
 
             print(
                 f"[BlockManager.send_block_information] ✅ SUCCESS: "
-                f"Block {block.index} stored with difficulty {difficulty}."
+                f"Block {block.index} stored successfully."
             )
             return True
 
@@ -380,6 +416,7 @@ class BlockManager:
                 f"Failed to store Block {block.index}. Exception: {e}."
             )
             return False
+
 
 
     def add_block(self, block):

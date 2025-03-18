@@ -6,34 +6,27 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 # helper.py
 import importlib
-
-def get_poc():
-    """Lazy import PoC using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.database.poc")
-    return getattr(module, "PoC")
-
-def get_block():
-    """Lazy import Block using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.blockchain.block")
-    return getattr(module, "Block")
-
-def get_transaction():
-    """Lazy import Transaction using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.transactions.tx")
-    return getattr(module, "Transaction")
-
-def get_coinbase_tx():
-    """Lazy import CoinbaseTx using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.transactions.coinbase")
-    return getattr(module, "CoinbaseTx")
-
-def get_block_header():
-    """Lazy import BlockHeader using importlib to avoid circular imports."""
-    module = importlib.import_module("Zyiron_Chain.blockchain.blockheader")
-    return getattr(module, "BlockHeader")
+import lmdb
+import json
 
 
-def get_fee_model():
-    """Lazy import FeeModel to break circular dependencies."""
-    module = importlib.import_module("Zyiron_Chain.transactions.fees")
-    return getattr(module, "FeeModel")
+
+def inspect_lmdb(db_path: str):
+    """
+    Inspect the raw data in an LMDB database.
+    """
+    env = lmdb.open(db_path, readonly=True)
+    with env.begin() as txn:
+        cursor = txn.cursor()
+        for key, value in cursor:
+            try:
+                key_str = key.decode("utf-8", errors="replace")
+                value_str = value.decode("utf-8", errors="replace")
+                print(f"Key: {key_str}")
+                print(f"Data: {value_str}")
+            except UnicodeDecodeError:
+                print(f"Key: {key} (binary)")
+                print(f"Data: {value} (binary)")
+
+# Example usage
+inspect_lmdb("./blockchain_storage/BlockData/full_block_chain/0001.lmdb")

@@ -4,13 +4,20 @@ import math
 from decimal import Decimal
 import json
 
+import sys
+import os
+from typing import List, Optional
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
+
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
 
 class PowManager:
     """
     Manages Proof-of-Work (PoW) operations for a block.
-    
+
     - Uses only single SHA3-384 hashing via Hashing.hash().
     - Retrieves necessary constants from Constants.
     - Provides detailed print statements for progress and errors.
@@ -24,59 +31,107 @@ class PowManager:
         """
         self.block_storage = block_storage  # ✅ Ensure `block_storage` is properly assigned
 
+    def adjust_difficulty(self):
+        """
+        Adjust the difficulty based on actual vs. expected block times.
+        Implement your logic using data from self.block_storage if needed.
+        """
+        print("[PowManager.adjust_difficulty] INFO: Adjusting difficulty...")
+        # TODO: Retrieve blocks from block_storage, compute average times, adjust difficulty
+        # Return new difficulty (as int or hex)
+        return int(Constants.GENESIS_TARGET, 16)  # example fallback
+
+    def validate_proof_of_work(self, block):
+        """
+        Validate a block's Proof-of-Work by checking if block.hash < block.difficulty.
+        
+        :param block: The block to validate.
+        :return: True if PoW is correct, False otherwise.
+        """
+        print(f"[PowManager.validate_proof_of_work] INFO: Validating PoW for block {block.index}...")
+        try:
+            # ✅ **Ensure difficulty is stored as an integer**
+            if isinstance(block.difficulty, str):
+                try:
+                    difficulty_int = int(block.difficulty, 16)  # Convert from hex if needed
+                except ValueError:
+                    print(f"[PowManager.validate_proof_of_work] ❌ ERROR: Invalid difficulty format: {block.difficulty}")
+                    return False
+            elif isinstance(block.difficulty, int):
+                difficulty_int = block.difficulty  # Already an integer
+            else:
+                print(f"[PowManager.validate_proof_of_work] ❌ ERROR: Unexpected difficulty type: {type(block.difficulty)}")
+                return False
+
+            # ✅ **Ensure block.hash is properly formatted**
+            if not isinstance(block.hash, str) or len(block.hash) != 96:
+                print(f"[PowManager.validate_proof_of_work] ❌ ERROR: Invalid block hash format: {block.hash}")
+                return False
+
+            block_hash_int = int(block.hash, 16)  # Convert hash from hex to integer
+
+            # ✅ **Validate Proof-of-Work condition**
+            if block_hash_int < difficulty_int:
+                print(f"[PowManager.validate_proof_of_work] ✅ SUCCESS: Block {block.index} PoW is valid.")
+                return True
+            else:
+                print(f"[PowManager.validate_proof_of_work] ❌ ERROR: Block {block.index} PoW is invalid (hash > difficulty).")
+                return False
+
+        except Exception as e:
+            print(f"[PowManager.validate_proof_of_work] ❌ ERROR: {e}")
+            return False
+
+
     def perform_pow(self, block):
         """
-        Performs Proof-of-Work (PoW) by incrementing the nonce until a valid hash is found.
-        - Uses single SHA3-384 hashing.
-        - Ensures nonce increments correctly to prevent infinite loops.
-        - Prevents double mining of the Genesis block.
-        - Enforces difficulty as an integer before comparison.
+        Performs Proof-of-Work by incrementing the nonce until a valid hash is found.
+        
+        - Directly calculates the block hash using `block.calculate_hash()`
+        - Stores and returns the correct hash without double hashing.
+        - Ensures stored hash matches the computed hash for validation.
         """
         try:
             print(f"[PowManager.perform_pow] INFO: Starting Proof-of-Work for block {block.index}...")
 
-            # ✅ **Ensure Genesis Block is Not Mined Twice**
-            if block.index == 0:
-                existing_genesis = self.block_storage.get_latest_block()  # ✅ Uses block_storage instead of block_metadata
-                if existing_genesis and existing_genesis.index == 0:
-                    print(f"[PowManager.perform_pow] WARNING: Genesis block already exists with hash: {existing_genesis.hash}. Skipping mining.")
-                    return existing_genesis.hash, block.nonce, 0  # ✅ Return existing hash & prevent duplicate mining
+            # ✅ Ensure difficulty is an integer
+            difficulty_int = int(block.difficulty, 16) if isinstance(block.difficulty, str) else block.difficulty
 
-            # ✅ **Ensure Difficulty is an Integer**
-            if not isinstance(block.difficulty, int):
-                print(f"[PowManager.perform_pow] WARNING: Difficulty not stored as an integer! Converting now.")
-                block.difficulty = int(block.difficulty)
-
-            # ✅ **Initialize Variables**
+            # ✅ Initialize mining variables
             nonce = 0
             start_time = time.time()
-
-            print(f"[PowManager.perform_pow] INFO: Block {block.index} mining started. Difficulty: {block.difficulty}")
+            print(f"[PowManager.perform_pow] INFO: Block {block.index} mining started. Difficulty: {difficulty_int}")
 
             while True:
-                # ✅ **Update Block Nonce**
-                block.nonce = nonce
+                block.nonce = nonce  # ✅ Update nonce for each iteration
 
-                # ✅ **Compute Hash**
-                block_hash = Hashing.hash(block.calculate_hash())  # ✅ No bytes conversion
+                # ✅ Directly compute the block's hash using calculate_hash()
+                block_hash_hex = block.calculate_hash()  # No double hashing
 
-                # ✅ **Check if Hash Meets Difficulty Target**
-                if int(block_hash, 16) < block.difficulty:
+                # ✅ Compare the computed hash as an integer
+                if int(block_hash_hex, 16) < difficulty_int:
                     elapsed_time = time.time() - start_time
-                    print(f"[PowManager.perform_pow] SUCCESS: Block {block.index} mined after {nonce} attempts in {elapsed_time:.2f} seconds.")
-                    return block_hash, nonce, nonce  # ✅ Return valid hash, nonce, and attempts
+                    print(f"[PowManager.perform_pow] ✅ SUCCESS: Block {block.index} mined after {nonce} attempts in {elapsed_time:.2f} seconds.")
 
-                # ✅ **Increment Nonce**
-                nonce += 1
+                    # ✅ Set the correct hash (Ensuring validation consistency)
+                    block.hash = block_hash_hex
+                    
+                    # ✅ Store mined hash for validation
+                    block.mined_hash = block_hash_hex  # Ensures consistency across storage and validation
 
-                # ✅ **Log Progress Every 100,000 Nonce Increments**
+                    return block_hash_hex, nonce, nonce  # ✅ Return correct hash and nonce
+
+                nonce += 1  # ✅ Increment nonce
+
+                # ✅ Logging mining progress every 100,000 attempts
                 if nonce % 100000 == 0:
-                    elapsed_time = time.time() - start_time
-                    print(f"[PowManager.perform_pow] INFO: Nonce {nonce}, Elapsed Time: {elapsed_time:.2f}s")
+                    print(f"[PowManager.perform_pow] INFO: Nonce {nonce}, Elapsed Time: {time.time() - start_time:.2f}s")
 
         except Exception as e:
-            print(f"[PowManager.perform_pow] ERROR: Proof-of-Work failed: {e}")
+            print(f"[PowManager.perform_pow] ❌ ERROR: Proof-of-Work failed: {e}")
             return None, None, None
+
+
 
 
     def adjust_difficulty(self):

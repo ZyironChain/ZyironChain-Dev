@@ -163,51 +163,48 @@ class Miner:
     def _create_coinbase(self, miner_address, fees):
         """
         Creates a coinbase transaction for miners using single SHA3-384 hashing.
-        - Uses a **fixed block reward** instead of halving.
-        - If `MAX_SUPPLY` is reached, only transaction fees are rewarded.
-        - Ensures a minimum payout using `Constants.MIN_TRANSACTION_FEE`.
-        - Stores transaction ID as a standard string (no offsets or byte transformations).
+        - Uses a fixed block reward (no halving).
+        - If MAX_SUPPLY is reached, only transaction fees are rewarded.
+        - Generates a transaction ID as a standard string (no offsets or byte transformations).
         """
         try:
             print("[Miner._create_coinbase] INFO: Initiating Coinbase transaction creation...")
 
-            # ✅ **Use Fixed Block Reward (No Halving)**
+            # Use Fixed Block Reward (No Halving)
             block_reward = Decimal(Constants.INITIAL_COINBASE_REWARD)
 
-            # ✅ **Retrieve Total Mined Supply from New Storage Model**
+            # Retrieve Total Mined Supply from Storage
             try:
-                total_mined = self.block_storage.get_total_mined_supply()  # ✅ Uses `block_storage` method
-                total_mined = Decimal(total_mined) if isinstance(total_mined, (int, float, str)) else total_mined
+                total_mined = self.block_storage.get_total_mined_supply() or Decimal("0")
+                total_mined = Decimal(total_mined)
             except Exception as e:
                 print(f"[Miner._create_coinbase] ERROR: Failed to retrieve total mined supply: {e}")
                 return None
 
             print(f"[Miner._create_coinbase] INFO: Total mined supply: {total_mined} ZYC")
 
-            # ✅ **Check if Max Supply is Reached**
+            # Check if Max Supply is Reached
             if Constants.MAX_SUPPLY is not None and total_mined >= Decimal(Constants.MAX_SUPPLY):
                 print("[Miner._create_coinbase] INFO: Max supply reached; only transaction fees will be rewarded.")
                 block_reward = Decimal("0")
 
-            # ✅ **Calculate Final Reward (Including Fees)**
-            total_reward = max(block_reward + fees, Decimal(Constants.MIN_TRANSACTION_FEE))
-
+            # Calculate Final Reward (Block Reward + Fees)
+            total_reward = block_reward + fees
             print(f"[Miner._create_coinbase] INFO: Final Coinbase Reward: {total_reward} ZYC (Fees: {fees}, Reward: {block_reward})")
 
-            # ✅ **Ensure Miner Address is Formatted Correctly**
-            miner_address = miner_address[:128]  # Trim to max 128 characters if too long
-
+            # Ensure Miner Address is Formatted Correctly
+            miner_address = miner_address[:128]  # Trim to max 128 chars if too long
             print(f"[Miner._create_coinbase] INFO: Miner address formatted.")
 
-            # ✅ **Retrieve Latest Block Height from `block_storage`**
+            # Retrieve Latest Block Height
             try:
                 latest_block = self.block_storage.get_latest_block()
                 block_height = latest_block["index"] + 1 if latest_block else 0
             except Exception as e:
                 print(f"[Miner._create_coinbase] ERROR: Failed to retrieve latest block. Defaulting to height 0. Error: {e}")
-                block_height = 0  # Default to Genesis block if retrieval fails
+                block_height = 0
 
-            # ✅ **Create Coinbase Transaction**
+            # Create Coinbase Transaction
             coinbase_tx = CoinbaseTx(
                 block_height=block_height,
                 miner_address=miner_address,
@@ -215,16 +212,13 @@ class Miner:
             )
             coinbase_tx.fee = Decimal("0")
 
-            # ✅ **Generate Transaction ID Using SHA3-384 & Store as String**
-            tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True)).hex()
-
-            # ✅ **Ensure TX ID is Valid**
+            # Generate Transaction ID Using SHA3-384 & Store as String
+            tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True).encode("utf-8")).hex()
             if not isinstance(tx_id, str) or len(tx_id) != Constants.SHA3_384_HASH_SIZE:
-                print(f"[Miner._create_coinbase] ERROR: TX ID length mismatch! Expected {Constants.SHA3_384_HASH_SIZE} characters, got {len(tx_id)}")
+                print(f"[Miner._create_coinbase] ERROR: TX ID length mismatch! Expected {Constants.SHA3_384_HASH_SIZE}, got {len(tx_id)}")
                 return None
 
-            coinbase_tx.tx_id = tx_id  # ✅ Store as string
-
+            coinbase_tx.tx_id = tx_id
             print(f"[Miner._create_coinbase] SUCCESS: Coinbase transaction created with TX ID: {tx_id[:12]}...")
             print(f"[Miner._create_coinbase] INFO: Miner Address: {miner_address}")
 
@@ -233,6 +227,8 @@ class Miner:
         except Exception as e:
             print(f"[Miner._create_coinbase] ERROR: Coinbase creation failed: {e}")
             raise
+
+
 
 
 
@@ -465,7 +461,10 @@ class Miner:
                 print(f"[Miner.validate_new_block] ERROR: Block {new_block.index} has an invalid hash format.")
                 return False
 
-            difficulty_int = int(new_block.difficulty, 16) if isinstance(new_block.difficulty, str) else new_block.difficulty
+            if isinstance(new_block.difficulty, str):
+                difficulty_int = int(new_block.difficulty, 16)
+            else:
+                difficulty_int = new_block.difficulty
 
             if block_hash_int >= difficulty_int:
                 print(f"[Miner.validate_new_block] ERROR: Invalid Proof-of-Work for block {new_block.index}.")
@@ -487,7 +486,7 @@ class Miner:
 
             # ✅ **Check Total Mined Supply Before Accepting the Block**
             try:
-                total_mined = self.block_storage.get_total_mined_supply()  # ✅ Uses `block_storage`
+                total_mined = self.block_storage.get_total_mined_supply()  # Uses `block_storage`
             except Exception as e:
                 print(f"[Miner.validate_new_block] ERROR: Failed to retrieve total mined supply: {e}")
                 return False
@@ -498,19 +497,19 @@ class Miner:
                 print("[Miner.validate_new_block] ERROR: Max supply reached. Rejecting new block.")
                 return False
 
-            # ✅ **Validate Fees Collected**
-            if not hasattr(new_block, "fees_collected"):
-                print("[Miner.validate_new_block] ERROR: Missing fees_collected attribute.")
+            # ✅ **Validate Fees** (replaces the old 'fees_collected' checks)
+            if not hasattr(new_block, "fees"):
+                print("[Miner.validate_new_block] ERROR: Missing 'fees' attribute.")
                 return False
 
-            if new_block.fees_collected < Decimal("0"):
-                print(f"[Miner.validate_new_block] ERROR: Fees collected cannot be negative. Found: {new_block.fees_collected}")
+            if new_block.fees < Decimal("0"):
+                print(f"[Miner.validate_new_block] ERROR: Fees cannot be negative. Found: {new_block.fees}")
                 return False
 
-            print(f"[Miner.validate_new_block] INFO: Fees collected validated as {new_block.fees_collected} ZYC.")
+            print(f"[Miner.validate_new_block] INFO: Fees validated as {new_block.fees} ZYC.")
 
             # ✅ **Validate Block Timestamp**
-            prev_block = self.block_storage.get_latest_block()  # ✅ Uses `block_storage`
+            prev_block = self.block_storage.get_latest_block()  # Uses `block_storage`
             if prev_block:
                 try:
                     if int(new_block.timestamp) <= int(prev_block.timestamp):
@@ -527,14 +526,14 @@ class Miner:
 
             print(f"[Miner.validate_new_block] INFO: Timestamp validation passed for block {new_block.index}.")
 
-            # ✅ **Validate Block Size**
+            # ✅ **Validate Block Size** 
             try:
                 total_block_size = sum(len(json.dumps(tx.to_dict())) for tx in new_block.transactions)
             except (TypeError, AttributeError) as e:
                 print(f"[Miner.validate_new_block] ERROR: Failed to calculate block size: {e}")
                 return False
 
-            if total_block_size > Constants.MAX_BLOCK_SIZE_MB:  # ✅ Corrected comparison (was incorrectly checking against MB)
+            if total_block_size > Constants.MAX_BLOCK_SIZE_MB:  # If you want bytes, multiply MB => bytes
                 print(f"[Miner.validate_new_block] ERROR: Block {new_block.index} exceeds max block size limit: {total_block_size} bytes.")
                 return False
 
@@ -546,6 +545,7 @@ class Miner:
         except Exception as e:
             print(f"[Miner.validate_new_block] ERROR: Unexpected error during block validation: {e}")
             return False
+
 
 
 
@@ -576,18 +576,19 @@ class Miner:
                 print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
 
-                # ✅ **Ensure BlockManager is Properly Initialized**
+                # Ensure BlockManager is properly initialized
                 if not hasattr(self, "block_manager") or not self.block_manager:
                     print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot retrieve latest block.")
                     return None
 
-                # ✅ **Get the Latest Block**
+                # Get the latest block
                 print("[Miner.mine_block] INFO: Checking for latest block.")
                 last_block = self.block_manager.get_latest_block()
 
                 if not last_block:
                     print("[Miner.mine_block] WARNING: No previous block found. Ensuring Genesis block exists.")
 
+                    # If we have no genesis block, create it
                     if not hasattr(self, "genesis_block_manager") or not self.genesis_block_manager:
                         print("[Miner.mine_block] ERROR: `genesis_block_manager` not initialized. Stopping mining.")
                         return None
@@ -603,12 +604,12 @@ class Miner:
                 block_height = last_block.index + 1
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
 
-                # ✅ **Adjust Difficulty Using PowManager**
+                # Adjust difficulty via PowManager
                 print("[Miner.mine_block] INFO: Calculating difficulty target.")
                 current_target = self.pow_manager.adjust_difficulty()
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
-                # ✅ **Retrieve Miner Address**
+                # Retrieve miner address
                 print("[Miner.mine_block] INFO: Retrieving miner address.")
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
                 if not miner_address:
@@ -616,7 +617,7 @@ class Miner:
                     return None
                 print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}.")
 
-                # ✅ **Retrieve Pending Transactions from Mempool**
+                # Retrieve pending transactions from mempool
                 print("[Miner.mine_block] INFO: Retrieving pending transactions from mempool.")
                 pending_txs = self.transaction_manager.mempool.get_pending_transactions(self.current_block_size) or []
                 print(f"[Miner.mine_block] INFO: Retrieved {len(pending_txs)} pending transactions.")
@@ -624,47 +625,48 @@ class Miner:
                 total_fees = sum(tx["fee"] for tx in pending_txs if "fee" in tx)
                 print(f"[Miner.mine_block] INFO: Total fees for this block: {total_fees} ZYC.")
 
-                # ✅ **Create Coinbase Transaction**
+                # Create coinbase transaction
                 print("[Miner.mine_block] INFO: Creating coinbase transaction.")
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
                 print(f"[Miner.mine_block] INFO: Coinbase transaction created with TX ID: {coinbase_tx.tx_id}.")
 
-                # ✅ **Create New Block**
+                # Create new block referencing the last block's hash
                 print("[Miner.mine_block] INFO: Creating new block.")
                 new_block = Block(
                     index=block_height,
-                    previous_hash=last_block.tx_id,
+                    previous_hash=last_block.hash,  # Use the previous block’s hash
                     transactions=valid_txs,
                     timestamp=int(time.time()),
                     nonce=0,
                     difficulty=current_target,
                     miner_address=miner_address,
-                    fees_collected=total_fees
+                    fees=total_fees  # Pass fees (was fees_collected before)
                 )
 
-                # ✅ **Perform Proof-of-Work Using PowManager**
+                # Perform Proof-of-Work
                 print("[Miner.mine_block] INFO: Starting Proof-of-Work.")
                 final_hash, final_nonce, attempts = self.pow_manager.perform_pow(new_block)
-                print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final hash: {final_hash[:12]}...")
+                print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final mined hash: {final_hash[:12]}...")
 
-                # ✅ **Validate Proof-of-Work Before Storing**
+                # Validate PoW meets target
                 if int(final_hash, 16) >= current_target:
                     print("[Miner.mine_block] ERROR: Invalid Proof-of-Work. Hash does not meet difficulty target. Stopping mining.")
                     return None
 
-                # ✅ **Update Block with Final Hash and Nonce**
-                new_block.tx_id = final_hash
+                # Update block with mined hash + nonce
+                new_block.hash = final_hash  # Correctly assign the hash to the block
                 new_block.nonce = final_nonce
-                print(f"[Miner.mine_block] INFO: Block updated with final hash and nonce {final_nonce}.")
+                print(f"[Miner.mine_block] INFO: Block updated with final mined hash '{final_hash[:12]}...' and nonce {final_nonce}.")
 
-                # ✅ **Store Block Using BlockManager**
+                # Store block
                 print("[Miner.mine_block] INFO: Storing block in BlockManager.")
                 self.block_manager.add_block(new_block)
                 print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
                 elapsed_time = int(time.time() - start_time)
-                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final TX ID: {new_block.tx_id[:12]}... | Time Taken: {elapsed_time}s.")
+                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Mined Hash: {new_block.hash[:12]}... | "
+                    f"Time Taken: {elapsed_time}s.")
                 return new_block
 
             except Exception as e:

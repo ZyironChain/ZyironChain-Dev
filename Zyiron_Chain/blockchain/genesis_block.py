@@ -137,7 +137,6 @@ class GenesisBlockManager:
 
             # ✅ **Check for Existing Genesis Block in Storage**
             existing_genesis = self.block_storage.get_block_by_height(0)
-
             if existing_genesis:
                 print(f"[GenesisBlockManager] INFO: Genesis block already exists with hash: {existing_genesis.hash}")
                 return existing_genesis
@@ -188,23 +187,16 @@ class GenesisBlockManager:
                 coinbase_tx.tx_id = Hashing.hash(json.dumps(coinbase_tx.to_dict(), sort_keys=True).encode()).hex()
                 print(f"[GenesisBlockManager] INFO: Generated Coinbase TX ID: {coinbase_tx.tx_id}")
 
-            # ✅ **Convert Difficulty to 96-character Hex String**
-            difficulty = Constants.GENESIS_TARGET
-            if isinstance(difficulty, int):
-                difficulty_hex = f"{difficulty:0>96x}"  # Convert integer to 96-character hex string
-            elif isinstance(difficulty, str) and len(difficulty) == 96:
-                difficulty_hex = difficulty  # Use as-is if already a 96-character hex string
-            else:
-                raise ValueError(
-                    f"[GenesisBlockManager] ❌ ERROR: Invalid difficulty value. Expected 96-character hex or integer, got: {difficulty}"
-                )
+            # ✅ **Convert GENESIS_TARGET to 96-character Hex String**
+            difficulty_hex = f"{Constants.GENESIS_TARGET:0>96x}"  # Convert integer to 96-character hex string
+            print(f"[GenesisBlockManager] INFO: Genesis difficulty target: {difficulty_hex}")
 
             # ✅ **Initialize Genesis Block**
             genesis_block = Block(
                 index=0,
                 previous_hash=Constants.ZERO_HASH,
                 transactions=[coinbase_tx],
-                difficulty=difficulty_hex,  # ✅ Now verified as a correct hex string
+                difficulty=difficulty_hex,  # Use the genesis difficulty target
                 miner_address=miner_address,
                 fees=Decimal(0)
             )
@@ -244,7 +236,6 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
-
 
 
 
