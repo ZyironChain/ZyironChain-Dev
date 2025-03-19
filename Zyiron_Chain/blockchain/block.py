@@ -44,11 +44,12 @@ from decimal import Decimal
 from typing import List, Union, Optional
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
+
 class Block:
     def __init__(
         self,
         index: int,
-        previous_hash: str,
+        previous_hash: Optional[str],
         transactions: List,
         timestamp: Optional[int] = None,
         nonce: int = 0,
@@ -59,34 +60,34 @@ class Block:
     ):
         """
         Initializes a Block object with:
-        - Optimized metadata storage (prevents oversized LMDB maps).
-        - No redundant offsets or magic numbers.
-        - JSON-compatible storage for seamless integration.
+        - Ensures Genesis block has `previous_hash = Constants.ZERO_HASH`
+        - Uses Proof-of-Work mined hash for block linkage.
+        - Ensures only valid 96-character SHA3-384 hex hashes are accepted.
         """
         try:
             print(f"[Block.__init__] INFO: Initializing Block #{index}")
 
-            # ✅ Validate `previous_hash`
-            if not isinstance(previous_hash, str) or len(previous_hash) != 96:
-                print(f"[DEBUG] previous_hash received: {previous_hash}")
-                raise ValueError("[Block.__init__] ❌ ERROR: `previous_hash` must be a valid SHA3-384 hex string")
+            # ✅ Handle Genesis block special case
+            if index == 0:
+                self.previous_hash = Constants.ZERO_HASH  # ✅ Ensure previous_hash is all zeros for block 0
+            else:
+                # ✅ Ensure `previous_hash` is a valid 96-character SHA3-384 hex string
+                if not isinstance(previous_hash, str) or len(previous_hash) != 96:
+                    print(f"[Block.__init__] ❌ ERROR: Invalid `previous_hash` for Block {index}. Expected a 96-character SHA3-384 hex string.")
+                    raise ValueError(f"[Block.__init__] ❌ ERROR: Invalid `previous_hash` for Block {index}. Got: {previous_hash}")
 
-            self.previous_hash = previous_hash
+                self.previous_hash = previous_hash  # ✅ Assign validated previous_hash
 
             # ✅ Validate and Convert `difficulty`
             if difficulty is None:
                 raise ValueError("[Block.__init__] ❌ ERROR: `difficulty` cannot be None")
 
             if isinstance(difficulty, int):
-                # Convert integer difficulty to 96-character hex string
-                self.difficulty = f"{difficulty:0>96x}"
+                self.difficulty = f"{difficulty:0>96x}"  # Convert integer to hex
             elif isinstance(difficulty, str) and len(difficulty) == 96:
-                # Use as-is if already a 96-character hex string
-                self.difficulty = difficulty
+                self.difficulty = difficulty  # Use existing valid hex
             else:
-                raise ValueError(
-                    f"[Block.__init__] ❌ ERROR: `difficulty` must be a 96-character hex string or integer. Got: {difficulty}"
-                )
+                raise ValueError(f"[Block.__init__] ❌ ERROR: Invalid `difficulty` format for Block {index}.")
 
             # ✅ Assign block properties
             self.index = index
@@ -99,15 +100,14 @@ class Block:
                 raise ValueError("[Block.__init__] ❌ ERROR: `miner_address` must be a valid string (max 128 chars).")
 
             self.miner_address = miner_address
-
-            # ✅ Store fees as Decimal
             self.fees = Decimal(fees)
 
             # ✅ Compute Merkle root
             self.merkle_root = self._compute_merkle_root()
 
-            # ✅ Initialize block hash (set when mined)
+            # ✅ Ensure the PoW-mined hash is stored correctly
             self.hash = None
+            self.mined_hash = None  # ✅ This ensures that PoW-mined hash is set
 
             # ✅ Assign Coinbase TX ID
             self.tx_id = self._get_coinbase_tx_id()
@@ -120,6 +120,7 @@ class Block:
         except Exception as e:
             print(f"[Block.__init__] ❌ ERROR: Block initialization failed: {e}")
             raise
+
 
 
     def _compute_merkle_root(self) -> str:
@@ -179,31 +180,28 @@ class Block:
     def calculate_hash(self) -> str:
         """
         Calculate the block's hash using single SHA3-384.
-        - Ensures correct conversion of all fields.
-        - Handles edge cases with proper type checking.
-        - Returns the hash as a hex string for LMDB storage.
+        Ensures it does not overwrite the PoW-mined hash.
         """
         try:
-            # Ensure previous_hash and merkle_root are valid hex strings
             previous_hash_hex = self.previous_hash if isinstance(self.previous_hash, str) else Constants.ZERO_HASH
             merkle_root_hex = self.merkle_root if isinstance(self.merkle_root, str) else Constants.ZERO_HASH
+            difficulty_hex = self.difficulty if isinstance(self.difficulty, str) else "00" * 48
+            miner_address_hex = self.miner_address if isinstance(self.miner_address, str) else "00" * 128
 
-            # Ensure difficulty is properly formatted
-            difficulty_hex = self.difficulty if isinstance(self.difficulty, str) else "00" * 48  # Default 48-byte hex
-
-            # Ensure miner_address is valid
-            miner_address_hex = self.miner_address if isinstance(self.miner_address, str) else "00" * 128  # Default 128-byte hex
-
-            # Concatenate all fields as a string before hashing
             header_str = f"{self.index}|{previous_hash_hex}|{merkle_root_hex}|{self.timestamp}|{self.nonce}|{difficulty_hex}|{miner_address_hex}"
+            pow_hash = Hashing.hash(header_str.encode("utf-8")).hex()
 
-            # Compute SHA3-384 hash and return as hex
-            return Hashing.hash(header_str.encode("utf-8")).hex()
+            # ✅ Ensure mined_hash is not overwritten after PoW completion
+            if hasattr(self, "mined_hash") and self.mined_hash:
+                return self.mined_hash  # ✅ Prevent recalculating PoW-mined hash
+
+            return pow_hash
 
         except Exception as e:
             print(f"[Block.calculate_hash] ❌ ERROR: Failed to compute block hash: {e}")
-            return Constants.ZERO_HASH  # Return zero hash on failure
-        
+            return Constants.ZERO_HASH
+
+
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, formatted for LMDB storage.
@@ -352,7 +350,8 @@ class Block:
             )
 
             # ✅ Assign the Correct Mined Hash
-            block.hash = stored_hash
+            block.mined_hash = stored_hash  # Set the mined_hash to the stored hash
+            block.hash = stored_hash       # Ensure hash is also set for compatibility
 
             print(f"[Block.from_dict] ✅ SUCCESS: Block #{block.index} reconstructed with stored hash: {block.hash}")
             return block
@@ -360,6 +359,8 @@ class Block:
         except Exception as e:
             print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}. Skipping block.")
             return None
+        
+
     def __repr__(self) -> str:
         """
         String representation for debugging.

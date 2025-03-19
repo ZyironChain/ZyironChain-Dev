@@ -117,14 +117,20 @@ class GenesisBlockManager:
                 # ✅ **Ensure Genesis Block is Stored in LMDB**
                 self.block_storage.store_block(genesis_block)
 
+                # ✅ **Store the Genesis Coinbase TX ID for Future Lookups**
+                if genesis_block.transactions:
+                    coinbase_tx = genesis_block.transactions[0]
+                    if hasattr(coinbase_tx, "tx_id"):
+                        with self.block_storage.env.begin(write=True) as txn:
+                            txn.put(b"GENESIS_COINBASE", coinbase_tx.tx_id.encode("utf-8"))
+                        print(f"[GenesisBlockManager.ensure_genesis_block] INFO: Stored Genesis Coinbase TX ID: {coinbase_tx.tx_id}")
+
                 print(f"[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: New Genesis block created with hash: {genesis_block.hash}")
                 return genesis_block
 
             except Exception as e:
                 print(f"[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis initialization failed: {e}")
                 raise
-
-
 
 
     def create_and_mine_genesis_block(self) -> Block:
@@ -164,8 +170,21 @@ class GenesisBlockManager:
                     "Zur": "Hebrew word for strength and foundation (Psalm 18:2)",
                     "Iron": "Symbolizes power and endurance (Daniel 2:40)"
                 },
+                "biblical_references": {
+                    "Proverbs 13:22": "A good person leaves an inheritance for their children's children, but a sinner's wealth is stored up for the righteous.",
+                    "1 Peter 4:10": "Each of you should use whatever gift you have received to serve others, as faithful stewards of God's grace in its various forms.",
+                    "John 14:27": "Peace I leave with you; my peace I give you. I do not give to you as the world gives. Do not let your hearts be troubled and do not be afraid.",
+                    "Proverbs 27:17": "As iron sharpens iron, so one person sharpens another."
+                },
                 "created_by": "Anthony Henriquez",
                 "creation_date": "Thursday, March 6, 2025 | 2:26 PM",
+                "market_data": {
+                    "Bitcoin (BTC)": "$89,864.99",
+                    "Litecoin (LTC)": "$104.73",
+                    "US Inflation Rate": "3%",
+                    "Crypto Market Capitalization": "$2.94 Trillion",
+                    "Special Event": "President Trump signs executive order officially creating a Bitcoin Strategic Reserve."
+                },
                 "signature_hashes": {
                     "Signature Hash 1": "a44972faa4624f6334bbe9ec3091283811b2d908f4639d35b1862d7bdf127c1191f5bf6b5948a979e358fd1dc4caf5fe",
                     "Signature Hash 2": "c76c3ac18080527165d8a2cad1b0bf2764508b2f16ef9640e02ddfbaad721e1e15717a83ec85839453bbe553ea30273b"
@@ -198,7 +217,10 @@ class GenesisBlockManager:
                 transactions=[coinbase_tx],
                 difficulty=difficulty_hex,  # Use the genesis difficulty target
                 miner_address=miner_address,
-                fees=Decimal(0)
+                fees=Decimal(0),
+                version=Constants.VERSION,  # Ensure version is set
+                timestamp=int(time.time()),  # Set current timestamp
+                nonce=0  # Start with nonce 0
             )
 
             print(f"[GenesisBlockManager] INFO: Genesis Block initialized with nonce {genesis_block.nonce}")
@@ -236,7 +258,6 @@ class GenesisBlockManager:
         except Exception as e:
             print(f"[GenesisBlockManager] ❌ ERROR: Genesis block mining failed: {e}")
             raise
-
 
 
     def print_genesis_metadata(self):
@@ -416,7 +437,6 @@ class GenesisBlockManager:
             return False
 
 
-
     def prevent_duplicate_genesis(self):
         """
         Ensures only one Genesis block is stored by checking:
@@ -485,7 +505,7 @@ class GenesisBlockManager:
                 raise ValueError("[GenesisBlockManager.store_genesis_block] ❌ ERROR: Genesis block failed validation.")
 
             # ✅ **Prevent Duplicate Genesis Blocks**
-            existing_block = self.prevent_duplicate_genesis()
+            existing_block = self.block_storage.get_block_by_height(0)
             if existing_block:
                 print(f"[GenesisBlockManager.store_genesis_block] ✅ INFO: Genesis block already exists with hash {existing_block.hash}")
                 return existing_block
@@ -528,7 +548,7 @@ class GenesisBlockManager:
                     print(f"[GenesisBlockManager.store_genesis_block] ⚠️ WARNING: Skipping invalid transaction format.")
 
             # ✅ **Verify Stored Genesis Block for Integrity**
-            stored_genesis_block = self.block_storage.get_block_by_index(0)
+            stored_genesis_block = self.block_storage.get_block_by_height(0)
             if not stored_genesis_block or stored_genesis_block.hash != genesis_block.hash:
                 raise ValueError("[GenesisBlockManager.store_genesis_block] ❌ ERROR: Genesis block verification failed after storage.")
 

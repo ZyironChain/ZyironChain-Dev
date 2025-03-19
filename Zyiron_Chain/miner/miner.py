@@ -562,33 +562,31 @@ class Miner:
 
 
 
-
     def mine_block(self, network=Constants.NETWORK):
         """
         Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
-        - Calls `GenesisBlockManager.ensure_genesis_block()` if no previous block is found.
-        - Uses single SHA3-384 hashing for mining.
+        - Ensures Genesis block has a valid `mined_hash`.
+        - Uses `mined_hash` of the last block as `previous_hash`.
         - Retrieves transactions from mempool and includes coinbase transaction.
-        - Enforces max supply constraints.
         """
         with self._mining_lock:
             try:
                 print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
 
-                # Ensure BlockManager is properly initialized
+                # ✅ **Ensure BlockManager is properly initialized**
                 if not hasattr(self, "block_manager") or not self.block_manager:
                     print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot retrieve latest block.")
                     return None
 
-                # Get the latest block
+                # ✅ **Retrieve the latest block**
                 print("[Miner.mine_block] INFO: Checking for latest block.")
                 last_block = self.block_manager.get_latest_block()
 
                 if not last_block:
                     print("[Miner.mine_block] WARNING: No previous block found. Ensuring Genesis block exists.")
 
-                    # If we have no genesis block, create it
+                    # ✅ **Ensure Genesis block is created**
                     if not hasattr(self, "genesis_block_manager") or not self.genesis_block_manager:
                         print("[Miner.mine_block] ERROR: `genesis_block_manager` not initialized. Stopping mining.")
                         return None
@@ -601,15 +599,27 @@ class Miner:
                         print("[Miner.mine_block] ERROR: Failed to retrieve or create Genesis block. Stopping mining.")
                         return None
 
-                block_height = last_block.index + 1
+                # ✅ **Ensure Genesis Block has a valid `mined_hash`**
+                if last_block.index == 0:
+                    if not hasattr(last_block, "mined_hash") or not last_block.mined_hash:
+                        print("[Miner.mine_block] WARNING: Genesis block is missing `mined_hash`. Performing PoW fix.")
+                        pow_result = self.pow_manager.perform_pow(last_block)
+
+                        if pow_result:
+                            last_block.mined_hash, last_block.nonce = pow_result[:2]
+                            self.block_manager.store_block(last_block)
+                            print(f"[Miner.mine_block] ✅ FIXED: Assigned PoW-mined hash to Genesis block: {last_block.mined_hash[:12]}...")
+
+                # ✅ **Determine block height**
+                block_height = last_block.index + 1 if hasattr(last_block, "index") else 1
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
 
-                # Adjust difficulty via PowManager
+                # ✅ **Adjust difficulty via PowManager**
                 print("[Miner.mine_block] INFO: Calculating difficulty target.")
                 current_target = self.pow_manager.adjust_difficulty()
                 print(f"[Miner.mine_block] INFO: Adjusted difficulty target set to {hex(current_target)}.")
 
-                # Retrieve miner address
+                # ✅ **Retrieve miner address**
                 print("[Miner.mine_block] INFO: Retrieving miner address.")
                 miner_address = self.key_manager.get_default_public_key(network, "miner")
                 if not miner_address:
@@ -617,7 +627,7 @@ class Miner:
                     return None
                 print(f"[Miner.mine_block] INFO: Miner address retrieved: {miner_address}.")
 
-                # Retrieve pending transactions from mempool
+                # ✅ **Retrieve pending transactions from mempool**
                 print("[Miner.mine_block] INFO: Retrieving pending transactions from mempool.")
                 pending_txs = self.transaction_manager.mempool.get_pending_transactions(self.current_block_size) or []
                 print(f"[Miner.mine_block] INFO: Retrieved {len(pending_txs)} pending transactions.")
@@ -625,48 +635,58 @@ class Miner:
                 total_fees = sum(tx["fee"] for tx in pending_txs if "fee" in tx)
                 print(f"[Miner.mine_block] INFO: Total fees for this block: {total_fees} ZYC.")
 
-                # Create coinbase transaction
+                # ✅ **Create coinbase transaction**
                 print("[Miner.mine_block] INFO: Creating coinbase transaction.")
                 coinbase_tx = self._create_coinbase(miner_address, total_fees)
                 valid_txs = [coinbase_tx] + pending_txs
                 print(f"[Miner.mine_block] INFO: Coinbase transaction created with TX ID: {coinbase_tx.tx_id}.")
 
-                # Create new block referencing the last block's hash
+                # ✅ **Use the correct `previous_hash` from the last block's PoW-mined hash**
+                previous_mined_hash = last_block.mined_hash if hasattr(last_block, "mined_hash") else last_block.hash
+
+                # ✅ **Handle Genesis Block (index 0) separately**
+                if block_height == 0:
+                    previous_mined_hash = Constants.ZERO_HASH  # ✅ Always use `Constants.ZERO_HASH` for Genesis block
+
+                # ✅ **Create new block using the correct `previous_hash`**
                 print("[Miner.mine_block] INFO: Creating new block.")
                 new_block = Block(
                     index=block_height,
-                    previous_hash=last_block.hash,  # Use the previous block’s hash
+                    previous_hash=previous_mined_hash,  # ✅ Use only the PoW-mined hash
                     transactions=valid_txs,
                     timestamp=int(time.time()),
                     nonce=0,
                     difficulty=current_target,
                     miner_address=miner_address,
-                    fees=total_fees  # Pass fees (was fees_collected before)
+                    fees=total_fees  # ✅ Pass fees
                 )
 
-                # Perform Proof-of-Work
+                # ✅ **Perform Proof-of-Work**
                 print("[Miner.mine_block] INFO: Starting Proof-of-Work.")
-                final_hash, final_nonce, attempts = self.pow_manager.perform_pow(new_block)
-                print(f"[Miner.mine_block] INFO: Proof-of-Work completed after {attempts} attempts. Final mined hash: {final_hash[:12]}...")
+                pow_result = self.pow_manager.perform_pow(new_block)
 
-                # Validate PoW meets target
+                if pow_result is None:
+                    print("[Miner.mine_block] ERROR: Proof-of-Work failed. Stopping mining.")
+                    return None
+
+                final_hash, final_nonce = pow_result[:2]  # ✅ Correctly unpacking return values
+                print(f"[Miner.mine_block] INFO: Proof-of-Work completed. Final mined hash: {final_hash[:12]}...")
+
+                # ✅ **Validate PoW meets target**
                 if int(final_hash, 16) >= current_target:
                     print("[Miner.mine_block] ERROR: Invalid Proof-of-Work. Hash does not meet difficulty target. Stopping mining.")
                     return None
 
-                # Update block with mined hash + nonce
-                new_block.hash = final_hash  # Correctly assign the hash to the block
+                # ✅ **Update block with mined hash + nonce**
+                new_block.mined_hash = final_hash  # ✅ Assign correct PoW-mined hash
                 new_block.nonce = final_nonce
                 print(f"[Miner.mine_block] INFO: Block updated with final mined hash '{final_hash[:12]}...' and nonce {final_nonce}.")
 
-                # Store block
+                # ✅ **Store block**
                 print("[Miner.mine_block] INFO: Storing block in BlockManager.")
                 self.block_manager.add_block(new_block)
                 print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
-                elapsed_time = int(time.time() - start_time)
-                print(f"[Miner.mine_block] SUCCESS: Block {block_height} mined! Final Mined Hash: {new_block.hash[:12]}... | "
-                    f"Time Taken: {elapsed_time}s.")
                 return new_block
 
             except Exception as e:

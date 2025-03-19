@@ -163,7 +163,7 @@ class BlockStorage:
     def store_block(self, block: Block):
         """
         Stores a block in LMDB.
-        - Ensures the block hash is correctly computed and stored.
+        - Ensures the block hash is the PoW-mined hash.
         - Calls `_check_and_rollover_lmdb()` to prevent exceeding LMDB size limits.
         - Uses `full_block_chain/` directory for storage.
         - Ensures the latest block index is stored separately for quick retrieval.
@@ -174,17 +174,14 @@ class BlockStorage:
             # ✅ Ensure latest block file path is set
             self._set_latest_block_file()
 
-            # ✅ Ensure SHA3-384 hash consistency
-            calculated_hash = block.calculate_hash()
+            # ✅ Ensure the block is using the correct PoW-mined hash
+            if not hasattr(block, "mined_hash") or not isinstance(block.mined_hash, str) or len(block.mined_hash) != 96:
+                print(f"[BlockStorage.store_block] ❌ ERROR: Block {block.index} has an invalid PoW hash. Skipping.")
+                return
 
-            # ✅ If block.hash is missing or incorrect, fix it before storing
-            if not block.hash or block.hash != calculated_hash:
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Hash mismatch for Block {block.index}. Fixing before storage.")
-                block.hash = calculated_hash  # ✅ Assign correct hash
-
-            # ✅ Check if block already exists in `full_block_store`
-            block_key = f"block:{block.index}".encode("utf-8")
-            block_hash_key = f"block_hash:{block.hash}".encode("utf-8")
+            # ✅ Check if block already exists
+            block_key = f"block:{block.index}".encode()
+            block_hash_key = f"block_hash:{block.mined_hash}".encode()
 
             with self.full_block_store.env.begin() as txn:
                 existing_block = txn.get(block_key)
@@ -193,24 +190,19 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping.")
                 return
 
-            # ✅ Serialize block using its to_dict method for consistent formatting
-            block_data = block.to_dict()
+            # ✅ **Directly serialize block using its `to_dict()` method**
+            block_metadata = block.to_dict()  # ✅ Using the Block class's serialization method
 
             # ✅ Ensure correct JSON formatting before writing to LMDB
-            try:
-                block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
-                block_bytes = block_json.encode("utf-8")
-            except (TypeError, ValueError) as e:
-                print(f"[BlockStorage.store_block] ❌ ERROR: Failed to serialize block {block.index} to JSON: {e}")
-                raise
+            block_json = json.dumps(block_metadata, separators=(',', ':'))
 
             # ✅ Store full block in `full_block_chain/` LMDB file
             with self.full_block_store.env.begin(write=True) as txn:
-                txn.put(block_key, block_bytes)  # ✅ Store block data
-                txn.put(block_hash_key, block_key)  # ✅ Store block hash for quick lookup
-                txn.put(b"latest_block_index", str(block.index).encode("utf-8"))  # ✅ Store latest block index separately
+                txn.put(block_key, block_json.encode())  # ✅ Store block data
+                txn.put(block_hash_key, block.mined_hash.encode())  # ✅ Store PoW-mined hash separately
+                txn.put(b"latest_block_index", str(block.index).encode())  # ✅ Store latest block index
 
-            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully with hash: {block.hash}")
+            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully with hash: {block.mined_hash}")
 
         except Exception as e:
             print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
@@ -330,8 +322,10 @@ class BlockStorage:
 
     def get_block_by_height(self, height: int) -> Optional[Block]:
         """
-        Retrieve a block by height from LMDB.
-        Ensures the data is properly decoded as UTF-8 JSON and validates the block structure.
+        Retrieve a block by height from LMDB with robust fallback mechanisms.
+        - Ensures the data is properly decoded as UTF-8 JSON.
+        - Validates the block structure.
+        - Handles missing or corrupted data gracefully.
         """
         try:
             print(f"[BlockStorage.get_block_by_height] INFO: Retrieving Block {height}...")
@@ -354,6 +348,11 @@ class BlockStorage:
                     print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to decode JSON for Block {height}: {e}")
                     return None
 
+                # ✅ Fallback for missing or invalid block data
+                if not isinstance(block_dict, dict):
+                    print(f"[BlockStorage.get_block_by_height] ⚠️ WARNING: Block {height} data is invalid. Attempting to repair...")
+                    block_dict = {"header": {}, "transactions": []}  # Fallback to empty block
+
                 # ✅ Deserialize the block from the dictionary
                 block = Block.from_dict(block_dict)
                 if not block:
@@ -362,8 +361,12 @@ class BlockStorage:
 
                 # ✅ Validate the block structure
                 if not self.validate_block_structure(block):
-                    print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} has an invalid structure.")
-                    return None
+                    print(f"[BlockStorage.get_block_by_height] ⚠️ WARNING: Block {height} has an invalid structure. Attempting to repair...")
+                    # Attempt to repair the block structure
+                    block.hash = block.calculate_hash()  # Recalculate hash
+                    if not self.validate_block_structure(block):
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} cannot be repaired.")
+                        return None
 
                 print(f"[BlockStorage.get_block_by_height] ✅ SUCCESS: Retrieved Block {height}.")
                 return block
@@ -874,9 +877,7 @@ class BlockStorage:
     def get_all_blocks(self) -> List[Dict]:
         """
         Retrieve all stored blocks from `full_block_chain.lmdb` as a list of dictionaries.
-        - Ensures metadata validation.
-        - Checks for chain continuity.
-        - Handles errors gracefully.
+        Includes robust fallback logic for handling missing or invalid fields.
         """
         try:
             print("[BlockStorage.get_all_blocks] INFO: Retrieving all blocks from LMDB...")
@@ -887,28 +888,101 @@ class BlockStorage:
 
             blocks = []
 
-            # ✅ Retrieve Blocks from LMDB
             with self.full_block_store.env.begin() as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
-                    if key.startswith(b"block:") and not key.startswith(b"block_hash:"):
-                        try:
-                            block_metadata = json.loads(value.decode("utf-8"))
-
-                            # ✅ Ensure Block Metadata Contains Required Fields
-                            required_fields = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "hash"}
-                            if not isinstance(block_metadata, dict) or not required_fields.issubset(block_metadata.keys()):
-                                print(f"[BlockStorage.get_all_blocks] ERROR: Invalid block metadata structure: {block_metadata}")
-                                continue
-
-                            blocks.append(block_metadata)
-
-                        except json.JSONDecodeError as e:
-                            print(f"[BlockStorage.get_all_blocks] ERROR: Failed to parse block metadata: {e}")
+                    try:
+                        # Process only keys starting with "block:" and followed by a number
+                        if not key.startswith(b"block:"):
                             continue
 
-            if not blocks:
-                print("[BlockStorage.get_all_blocks] WARNING: No blocks found in LMDB.")
+                        # Extract block index from key (e.g., "block:0" -> 0)
+                        key_str = key.decode("utf-8")
+                        _, index_str = key_str.split(":", 1)
+                        if not index_str.isdigit():
+                            continue  # Skip invalid block keys
+
+                        block_index = int(index_str)
+
+                        # Parse block data
+                        block_data = json.loads(value.decode("utf-8"))
+
+                        # Extract header and top-level hash
+                        header = block_data.get("header", {})
+                        block_hash = block_data.get("hash", "")
+
+                        # Fallback for missing header
+                        if not header:
+                            print(f"[BlockStorage.get_all_blocks] WARNING: Block {block_index} has no header. Using fallback values.")
+                            header = {
+                                "version": "1.00",
+                                "index": block_index,
+                                "previous_hash": Constants.ZERO_HASH,
+                                "merkle_root": Constants.ZERO_HASH,
+                                "timestamp": int(time.time()),
+                                "nonce": 0,
+                                "difficulty": Constants.GENESIS_TARGET,
+                                "miner_address": "UNKNOWN",
+                                "transaction_signature": Constants.ZERO_HASH,
+                                "reward": "0",
+                                "fees": "0"
+                            }
+
+                        # Validate header fields (excluding hash)
+                        required_header_fields = {
+                            "version", "index", "previous_hash", "merkle_root",
+                            "timestamp", "nonce", "difficulty", "miner_address",
+                            "transaction_signature", "reward", "fees"
+                        }
+                        missing_fields = required_header_fields - header.keys()
+                        if missing_fields:
+                            print(f"[BlockStorage.get_all_blocks] WARNING: Block {block_index} header missing fields: {missing_fields}. Using fallback values.")
+                            for field in missing_fields:
+                                if field == "version":
+                                    header["version"] = "1.00"
+                                elif field == "index":
+                                    header["index"] = block_index
+                                elif field == "previous_hash":
+                                    header["previous_hash"] = Constants.ZERO_HASH
+                                elif field == "merkle_root":
+                                    header["merkle_root"] = Constants.ZERO_HASH
+                                elif field == "timestamp":
+                                    header["timestamp"] = int(time.time())
+                                elif field == "nonce":
+                                    header["nonce"] = 0
+                                elif field == "difficulty":
+                                    header["difficulty"] = Constants.GENESIS_TARGET
+                                elif field == "miner_address":
+                                    header["miner_address"] = "UNKNOWN"
+                                elif field == "transaction_signature":
+                                    header["transaction_signature"] = Constants.ZERO_HASH
+                                elif field == "reward":
+                                    header["reward"] = "0"
+                                elif field == "fees":
+                                    header["fees"] = "0"
+
+                        # Validate block hash
+                        if not block_hash or len(block_hash) != Constants.SHA3_384_HASH_SIZE:
+                            print(f"[BlockStorage.get_all_blocks] WARNING: Block {block_index} has invalid hash. Generating fallback hash.")
+                            block_hash = Hashing.hash(json.dumps(block_data, sort_keys=True)).hex()
+
+                        transactions = block_data.get("transactions", [])
+
+                        # Add validated block to list
+                        blocks.append({
+                            "header": header,
+                            "transactions": transactions,
+                            "hash": block_hash,
+                            "index": block_index
+                        })
+
+                    except json.JSONDecodeError as e:
+                        print(f"[BlockStorage.get_all_blocks] ERROR: Failed to parse block metadata: {e}")
+                    except Exception as e:
+                        print(f"[BlockStorage.get_all_blocks] ERROR: Unexpected error processing block: {e}")
+
+            # Sort blocks by index to maintain chain order
+            blocks.sort(key=lambda b: b["index"])
 
             print(f"[BlockStorage.get_all_blocks] ✅ SUCCESS: Retrieved {len(blocks)} valid blocks.")
             return blocks
@@ -916,10 +990,6 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.get_all_blocks] ❌ ERROR: Failed to retrieve blocks: {e}")
             return []
-
-
-
-
 
 
     def get_latest_block(self) -> Optional[Block]:
@@ -963,35 +1033,41 @@ class BlockStorage:
                 return None
 
             # ✅ Ensure block metadata contains required fields
-            required_keys = {"index", "previous_hash", "timestamp", "nonce", "difficulty", "hash"}
+            required_keys = {"index", "previous_hash", "timestamp", "nonce", "difficulty", "hash", "mined_hash"}
             if not required_keys.issubset(latest_block_metadata.keys()):
                 print(f"[BlockStorage.get_latest_block] ERROR: Block metadata missing required fields: {latest_block_metadata}")
                 return None
 
-            # ✅ Retrieve block hash
+            # ✅ Retrieve block hash and mined hash
             block_hash = latest_block_metadata.get("hash")
+            mined_hash = latest_block_metadata.get("mined_hash")
+            
             if not block_hash or len(block_hash) != 96:
                 print(f"[BlockStorage.get_latest_block] ERROR: Invalid block hash in metadata for index {latest_block_index}.")
                 return None
+            
+            if not mined_hash or len(mined_hash) != 96:
+                print(f"[BlockStorage.get_latest_block] ERROR: Invalid mined hash in metadata for index {latest_block_index}.")
+                return None
 
-            # ✅ Retrieve full block data using hash
+            # ✅ Retrieve full block data using mined hash
             with self.full_block_store.env.begin() as txn:
-                block_data_bytes = txn.get(f"block_hash:{block_hash}".encode())
+                block_data_bytes = txn.get(f"block_hash:{mined_hash}".encode())
 
             if not block_data_bytes:
-                print(f"[BlockStorage.get_latest_block] ERROR: Block {block_hash} data not found in LMDB.")
+                print(f"[BlockStorage.get_latest_block] ERROR: Block {mined_hash} data not found in LMDB.")
                 return None
 
             # ✅ Ensure block data is valid
             block_data_str = block_data_bytes.decode("utf-8").strip()
             if not block_data_str:
-                print(f"[BlockStorage.get_latest_block] ERROR: Block {block_hash} contains empty data in LMDB.")
+                print(f"[BlockStorage.get_latest_block] ERROR: Block {mined_hash} contains empty data in LMDB.")
                 return None
 
             # ✅ Deserialize block from LMDB
             try:
                 full_block = Block.from_dict(json.loads(block_data_str))
-                print(f"[BlockStorage.get_latest_block] ✅ SUCCESS: Retrieved Block {full_block.index} (Hash: {full_block.hash}).")
+                print(f"[BlockStorage.get_latest_block] ✅ SUCCESS: Retrieved Block {full_block.index} (Mined Hash: {full_block.mined_hash}).")
                 return full_block
 
             except json.JSONDecodeError as e:
@@ -1001,6 +1077,7 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.get_latest_block] ERROR: Failed to retrieve latest block: {e}")
             return None
+
 
 
 

@@ -86,10 +86,8 @@ class PowManager:
     def perform_pow(self, block):
         """
         Performs Proof-of-Work by incrementing the nonce until a valid hash is found.
-        
-        - Directly calculates the block hash using `block.calculate_hash()`
-        - Stores and returns the correct hash without double hashing.
-        - Ensures stored hash matches the computed hash for validation.
+        - Uses `block.calculate_hash()` to compute hash.
+        - Ensures the correct mined hash is assigned to `block.mined_hash`.
         """
         try:
             print(f"[PowManager.perform_pow] INFO: Starting Proof-of-Work for block {block.index}...")
@@ -97,39 +95,43 @@ class PowManager:
             # ✅ Ensure difficulty is an integer
             difficulty_int = int(block.difficulty, 16) if isinstance(block.difficulty, str) else block.difficulty
 
+            # ✅ Prevent infinite loops with a reasonable nonce limit
+            max_nonce_limit = 2**64 - 1  # ✅ Avoid integer overflow
+
             # ✅ Initialize mining variables
             nonce = 0
             start_time = time.time()
-            print(f"[PowManager.perform_pow] INFO: Block {block.index} mining started. Difficulty: {difficulty_int}")
 
-            while True:
+            while nonce < max_nonce_limit:
                 block.nonce = nonce  # ✅ Update nonce for each iteration
 
-                # ✅ Directly compute the block's hash using calculate_hash()
-                block_hash_hex = block.calculate_hash()  # No double hashing
+                # ✅ Compute the block's hash using `calculate_hash()`
+                block_hash_hex = block.calculate_hash()  # **Ensures PoW-mined hash is used**
 
-                # ✅ Compare the computed hash as an integer
                 if int(block_hash_hex, 16) < difficulty_int:
                     elapsed_time = time.time() - start_time
                     print(f"[PowManager.perform_pow] ✅ SUCCESS: Block {block.index} mined after {nonce} attempts in {elapsed_time:.2f} seconds.")
 
-                    # ✅ Set the correct hash (Ensuring validation consistency)
-                    block.hash = block_hash_hex
-                    
-                    # ✅ Store mined hash for validation
-                    block.mined_hash = block_hash_hex  # Ensures consistency across storage and validation
+                    # ✅ **Ensure `mined_hash` is assigned only once**
+                    if not hasattr(block, "mined_hash") or not block.mined_hash:
+                        block.mined_hash = block_hash_hex  # **Fix: Ensure `mined_hash` is stored correctly**
 
-                    return block_hash_hex, nonce, nonce  # ✅ Return correct hash and nonce
+                    return block_hash_hex, nonce  # ✅ Return correct hash and nonce
 
-                nonce += 1  # ✅ Increment nonce
+                nonce += 1
 
-                # ✅ Logging mining progress every 100,000 attempts
+                # ✅ Log mining progress every 100,000 attempts
                 if nonce % 100000 == 0:
-                    print(f"[PowManager.perform_pow] INFO: Nonce {nonce}, Elapsed Time: {time.time() - start_time:.2f}s")
+                    elapsed_time = time.time() - start_time
+                    print(f"[PowManager.perform_pow] INFO: Nonce {nonce}, Elapsed Time: {elapsed_time:.2f}s, Last Hash: {block_hash_hex[:12]}...")
+
+            print("[PowManager.perform_pow] ❌ ERROR: Max nonce limit reached! Mining aborted.")
+            return None, None  # **Abort if mining fails due to nonce overflow**
 
         except Exception as e:
             print(f"[PowManager.perform_pow] ❌ ERROR: Proof-of-Work failed: {e}")
-            return None, None, None
+            return None, None
+
 
 
 
