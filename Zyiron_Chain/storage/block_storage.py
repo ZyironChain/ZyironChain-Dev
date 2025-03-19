@@ -160,53 +160,6 @@ class BlockStorage:
             print(f"[BlockStorage] ❌ ERROR: Failed to check LMDB rollover: {e}")
 
 
-    def store_block(self, block: Block):
-        """
-        Stores a block in LMDB.
-        - Ensures the block hash is the PoW-mined hash.
-        - Calls `_check_and_rollover_lmdb()` to prevent exceeding LMDB size limits.
-        - Uses `full_block_chain/` directory for storage.
-        - Ensures the latest block index is stored separately for quick retrieval.
-        """
-        try:
-            print(f"[BlockStorage.store_block] INFO: Storing Block {block.index}...")
-
-            # ✅ Ensure latest block file path is set
-            self._set_latest_block_file()
-
-            # ✅ Ensure the block is using the correct PoW-mined hash
-            if not hasattr(block, "mined_hash") or not isinstance(block.mined_hash, str) or len(block.mined_hash) != 96:
-                print(f"[BlockStorage.store_block] ❌ ERROR: Block {block.index} has an invalid PoW hash. Skipping.")
-                return
-
-            # ✅ Check if block already exists
-            block_key = f"block:{block.index}".encode()
-            block_hash_key = f"block_hash:{block.mined_hash}".encode()
-
-            with self.full_block_store.env.begin() as txn:
-                existing_block = txn.get(block_key)
-
-            if existing_block:
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping.")
-                return
-
-            # ✅ **Directly serialize block using its `to_dict()` method**
-            block_metadata = block.to_dict()  # ✅ Using the Block class's serialization method
-
-            # ✅ Ensure correct JSON formatting before writing to LMDB
-            block_json = json.dumps(block_metadata, separators=(',', ':'))
-
-            # ✅ Store full block in `full_block_chain/` LMDB file
-            with self.full_block_store.env.begin(write=True) as txn:
-                txn.put(block_key, block_json.encode())  # ✅ Store block data
-                txn.put(block_hash_key, block.mined_hash.encode())  # ✅ Store PoW-mined hash separately
-                txn.put(b"latest_block_index", str(block.index).encode())  # ✅ Store latest block index
-
-            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully with hash: {block.mined_hash}")
-
-        except Exception as e:
-            print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
-            raise
 
 
 
@@ -326,6 +279,7 @@ class BlockStorage:
         - Ensures the data is properly decoded as UTF-8 JSON.
         - Validates the block structure.
         - Handles missing or corrupted data gracefully.
+        - Enforces Genesis block integrity if height == 0.
         """
         try:
             print(f"[BlockStorage.get_block_by_height] INFO: Retrieving Block {height}...")
@@ -359,13 +313,53 @@ class BlockStorage:
                     print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to deserialize Block {height}.")
                     return None
 
-                # ✅ Validate the block structure
+                # ✅ **GENESIS BLOCK SPECIFIC CHECKS**
+                if height == 0:
+                    print("[BlockStorage.get_block_by_height] INFO: Validating Genesis Block integrity...")
+
+                    # **Ensure Genesis block has correct previous_hash**
+                    if block.previous_hash != Constants.ZERO_HASH:
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Genesis Block previous_hash mismatch! Expected: {Constants.ZERO_HASH}, Found: {block.previous_hash}")
+                        return None
+
+                    # **Ensure Genesis block index is 0**
+                    if block.index != 0:
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Genesis Block index mismatch! Expected: 0, Found: {block.index}")
+                        return None
+
+                    # **Ensure stored mined hash matches the expected hash**
+                    if block.mined_hash != block_dict.get("hash"):
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Genesis Block hash mismatch! Expected: {block_dict.get('hash')}, Found: {block.mined_hash}")
+                        return None
+
+                    print("[BlockStorage.get_block_by_height] ✅ SUCCESS: Genesis Block integrity verified.")
+
+                # ✅ **Validate the block structure**
                 if not self.validate_block_structure(block):
                     print(f"[BlockStorage.get_block_by_height] ⚠️ WARNING: Block {height} has an invalid structure. Attempting to repair...")
-                    # Attempt to repair the block structure
-                    block.hash = block.calculate_hash()  # Recalculate hash
+
+                    # **Check if mined_hash exists before using fallback**
+                    stored_hash = block_dict.get("hash", None)
+                    if stored_hash and isinstance(stored_hash, str):
+                        block.hash = stored_hash  # ✅ Use stored mined hash
+                    else:
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} missing valid stored hash! Cannot repair.")
+                        return None
+
                     if not self.validate_block_structure(block):
                         print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} cannot be repaired.")
+                        return None
+
+                # ✅ **Ensure the previous block hash is valid**
+                if height > 0:
+                    prev_block = self.get_block_by_height(height - 1)
+                    if not prev_block:
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Previous Block {height - 1} not found! Cannot validate chain consistency.")
+                        return None
+
+                    if prev_block.mined_hash != block.previous_hash:
+                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} previous_hash does not match previous block's mined hash!")
+                        print(f"Expected: {prev_block.mined_hash}, Found: {block.previous_hash}")
                         return None
 
                 print(f"[BlockStorage.get_block_by_height] ✅ SUCCESS: Retrieved Block {height}.")
@@ -374,44 +368,68 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to retrieve Block {height}: {e}")
             return None
+
                 
     def store_block(self, block: Block):
         """
-        Stores a block in LMDB.
-        - Ensures the block hash is correctly computed and stored.
+        Stores a block in LMDB with comprehensive fallback logic.
+        - Ensures correct block hash computation before storing.
         - Calls `_check_and_rollover_lmdb()` to prevent exceeding LMDB size limits.
         - Uses `full_block_chain/` directory for storage.
-        - Ensures the latest block index is stored separately for quick retrieval.
+        - Stores the latest block index separately for quick retrieval.
+        - Provides detailed warnings for any inconsistencies.
         """
         try:
             print(f"[BlockStorage.store_block] INFO: Storing Block {block.index}...")
 
-            # ✅ Ensure latest block file path is set
+            # ✅ **Ensure latest block file path is set**
             self._set_latest_block_file()
 
-            # ✅ Ensure SHA3-384 hash consistency
-            calculated_hash = block.calculate_hash()
-
-            # ✅ If block.hash is missing or incorrect, fix it before storing
-            if not block.hash or block.hash != calculated_hash:
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Hash mismatch for Block {block.index}. Fixing before storage.")
-                block.hash = calculated_hash  # ✅ Assign correct hash
-
-            # ✅ Check if block already exists in `full_block_store`
-            block_key = f"block:{block.index}".encode("utf-8")
-            block_hash_key = f"block_hash:{block.hash}".encode("utf-8")
-
-            with self.full_block_store.env.begin() as txn:
-                existing_block = txn.get(block_key)
-
-            if existing_block:
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Block {block.index} already exists. Skipping.")
+            # ✅ **Ensure SHA3-384 hash consistency**
+            if not block.mined_hash:
+                print(f"[BlockStorage.store_block] ❌ ERROR: Mined hash missing for Block {block.index}. Cannot store an unverified block!")
                 return
 
-            # ✅ Serialize block using its to_dict method for consistent formatting
-            block_data = block.to_dict()
+            # ✅ **Fix hash mismatch before storing**
+            if not block.hash or block.hash != block.mined_hash:
+                print(f"[BlockStorage.store_block] ⚠️ WARNING: Hash mismatch for Block {block.index}. Using mined hash instead.")
+                block.hash = block.mined_hash  # ✅ Assign PoW-mined hash
 
-            # ✅ Ensure correct JSON formatting before writing to LMDB
+            # ✅ **Ensure `previous_hash` is correct**
+            if block.index == 0:
+                block.previous_hash = Constants.ZERO_HASH  # ✅ Genesis block should have ZERO_HASH
+            else:
+                prev_block = self.get_block_by_height(block.index - 1)
+                if prev_block and prev_block.mined_hash != block.previous_hash:
+                    print(f"[BlockStorage.store_block] ❌ ERROR: Block {block.index} previous_hash does not match previous block's mined hash!")
+                    print(f"Expected: {prev_block.mined_hash}, Found: {block.previous_hash}")
+                    return  # ✅ Prevent storing an invalid chain
+
+            # ✅ **Ensure `metadata` exists**
+            if not hasattr(block, "metadata") or not isinstance(block.metadata, dict):
+                block.metadata = {}  # ✅ Assign empty metadata if missing
+                print(f"[BlockStorage.store_block] INFO: Added fallback metadata for Block {block.index}")
+
+            # ✅ **Ensure `size` is correctly calculated**
+            try:
+                block_data = block.to_dict()  # Convert block to dictionary
+                block_data["size"] = len(json.dumps(block_data, separators=(',', ':')).encode("utf-8"))  # ✅ Store block size
+                print(f"[BlockStorage.store_block] INFO: Calculated block size: {block_data['size']} bytes.")
+            except Exception as e:
+                print(f"[BlockStorage.store_block] ❌ ERROR: Failed to compute block size for Block {block.index}: {e}")
+                block_data["size"] = 0  # ✅ Assign fallback size
+
+            # ✅ **Ensure correct `block_height` for transactions**
+            for tx in block_data.get("transactions", []):
+                if not isinstance(tx, dict) or "tx_id" not in tx:
+                    print(f"[BlockStorage.store_block] ⚠️ WARNING: Invalid transaction format detected in Block {block.index}. Skipping TX.")
+                    continue  # ✅ Skip invalid transactions
+
+                if "block_height" not in tx or tx["block_height"] != block.index:
+                    tx["block_height"] = block.index  # ✅ Correct block height in transactions
+                    print(f"[BlockStorage.store_block] INFO: Fixed `block_height` for TX: {tx['tx_id']} -> {block.index}")
+
+            # ✅ **Ensure correct JSON formatting before writing to LMDB**
             try:
                 block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
                 block_bytes = block_json.encode("utf-8")
@@ -419,17 +437,39 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed to serialize block {block.index} to JSON: {e}")
                 raise
 
-            # ✅ Store full block in `full_block_chain/` LMDB file
+            # ✅ **Prepare keys for LMDB storage**
+            block_key = f"block:{block.index}".encode("utf-8")
+            block_hash_key = f"block_hash:{block.hash}".encode("utf-8")
+
+            # ✅ **Check if block already exists in LMDB**
+            with self.full_block_store.env.begin() as txn:
+                existing_block = txn.get(block_key)
+                if existing_block:
+                    print(f"[BlockStorage.store_block] ⚠️ WARNING: Block {block.index} already exists in LMDB. Skipping.")
+                    return
+
+            # ✅ **Store block data in LMDB**
             with self.full_block_store.env.begin(write=True) as txn:
                 txn.put(block_key, block_bytes)  # ✅ Store block data
                 txn.put(block_hash_key, block_key)  # ✅ Store block hash for quick lookup
                 txn.put(b"latest_block_index", str(block.index).encode("utf-8"))  # ✅ Store latest block index separately
 
-            print(f"[BlockStorage.store_block] ✅ Block {block.index} stored successfully with hash: {block.hash}")
+                # ✅ **Index Coinbase Transaction (if exists)**
+                if block.transactions:
+                    coinbase_tx = block.transactions[0]
+                    if hasattr(coinbase_tx, "tx_id"):
+                        txn.put(f"tx:{coinbase_tx.tx_id}".encode("utf-8"), json.dumps({
+                            "block_hash": block.mined_hash,
+                            "timestamp": block.timestamp
+                        }).encode("utf-8"))
+                        print(f"[BlockStorage.store_block] ✅ INFO: Indexed Coinbase TX {coinbase_tx.tx_id} in txindex.")
+
+            print(f"[BlockStorage.store_block] ✅ SUCCESS: Block {block.index} stored successfully with hash: {block.hash}")
 
         except Exception as e:
-            print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block {block.index}: {e}")
+            print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store Block {block.index}: {e}")
             raise
+
 
 
 

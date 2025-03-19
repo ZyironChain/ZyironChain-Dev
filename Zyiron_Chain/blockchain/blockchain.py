@@ -141,7 +141,7 @@ class Blockchain:
                         block_data = {"header": header, "transactions": block_data.get("transactions", [])}
 
                     # ✅ **Ensure block header contains required fields**
-                    required_fields = {"index", "previous_hash", "hash", "timestamp", "nonce", "difficulty"}
+                    required_fields = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"}
                     missing_fields = required_fields - header.keys()
                     if missing_fields:
                         print(f"[Blockchain.load_chain_from_storage] INFO: Missing fields in block header: {missing_fields}. Using fallback values.")
@@ -151,10 +151,10 @@ class Blockchain:
                                 header["index"] = len(loaded_blocks)  # Use current chain length as index
                             elif field == "previous_hash":
                                 header["previous_hash"] = previous_hash
-                            elif field == "hash":
-                                # Generate a fallback hash using the block data
+                            elif field == "merkle_root":
+                                # Generate a fallback Merkle root using the block data
                                 block_data_bytes = json.dumps(block_data, sort_keys=True).encode("utf-8")
-                                header["hash"] = Hashing.hash(block_data_bytes).hex()
+                                header["merkle_root"] = Hashing.hash(block_data_bytes).hex()
                             elif field == "timestamp":
                                 header["timestamp"] = int(time.time())
                             elif field == "nonce":

@@ -139,6 +139,10 @@ class PowManager:
     def adjust_difficulty(self):
         """
         Adjusts mining difficulty based on actual versus expected block times.
+        - Ensures difficulty is correctly retrieved from the block's header.
+        - Implements fallbacks for block height, index, previous block hash, and difficulty.
+        - Parses difficulty as a hex string and converts it to an integer.
+        - Uses a dynamic scaling ratio for difficulty adjustment.
         """
         try:
             print("[PowManager.adjust_difficulty] INFO: Initiating difficulty adjustment...")
@@ -151,15 +155,26 @@ class PowManager:
                 print("[PowManager.adjust_difficulty] INFO: No blocks found; using Genesis Target.")
                 return Constants.GENESIS_TARGET
 
-            # ✅ **Use Last Block's Difficulty**
+            # ✅ **Use Last Block's Information**
             last_block = stored_blocks[-1]
-            if "difficulty" not in last_block:
-                print("[PowManager.adjust_difficulty] ERROR: Last block is missing difficulty field.")
+
+            # ✅ **Ensure Block Height & Index Exist (Fallback)**
+            block_height = last_block.get("header", {}).get("index", num_blocks - 1)
+            print(f"[PowManager.adjust_difficulty] INFO: Using block height {block_height} for difficulty adjustment.")
+
+            # ✅ **Ensure Previous Block Hash Exists (Fallback)**
+            previous_block_hash = last_block.get("header", {}).get("previous_hash", Constants.ZERO_HASH)
+            if previous_block_hash == Constants.ZERO_HASH:
+                print("[PowManager.adjust_difficulty] WARNING: Missing previous block hash. Using ZERO_HASH fallback.")
+
+            # ✅ **Ensure Last Block's Difficulty Exists (Fallback)**
+            if "header" not in last_block or "difficulty" not in last_block["header"]:
+                print("[PowManager.adjust_difficulty] ERROR: Last block missing difficulty in header. Using Genesis Target.")
                 return Constants.GENESIS_TARGET
 
             try:
-                last_diff_str = str(last_block.get("difficulty", Constants.GENESIS_TARGET)).lower().strip()
-                
+                last_diff_str = str(last_block["header"]["difficulty"]).lower().strip()
+
                 # Ensure it starts with `0x`, otherwise convert manually
                 if last_diff_str.startswith("0x"):
                     last_difficulty = int(last_diff_str, 16)  # ✅ Proper conversion from hex
@@ -177,17 +192,19 @@ class PowManager:
 
             first_block = stored_blocks[-Constants.DIFFICULTY_ADJUSTMENT_INTERVAL]
 
-            # ✅ **Ensure Timestamps Exist**
+            # ✅ **Ensure Timestamps Exist (Fallback)**
             try:
-                last_timestamp = int(last_block.get("timestamp", 0))
-                first_timestamp = int(first_block.get("timestamp", 0))
+                last_timestamp = int(last_block.get("header", {}).get("timestamp", time.time()))
+                first_timestamp = int(first_block.get("header", {}).get("timestamp", last_timestamp - Constants.TARGET_BLOCK_TIME * Constants.DIFFICULTY_ADJUSTMENT_INTERVAL))
             except (ValueError, TypeError) as e:
-                print(f"[PowManager.adjust_difficulty] ERROR: Invalid timestamp format: {e}")
-                return last_difficulty
+                print(f"[PowManager.adjust_difficulty] ERROR: Invalid timestamp format: {e}. Using estimated fallback values.")
+                last_timestamp = time.time()
+                first_timestamp = last_timestamp - Constants.TARGET_BLOCK_TIME * Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
 
             if last_timestamp == 0 or first_timestamp == 0:
-                print("[PowManager.adjust_difficulty] ERROR: Missing timestamps in blocks. Cannot adjust difficulty.")
-                return last_difficulty
+                print("[PowManager.adjust_difficulty] ERROR: Missing timestamps in blocks. Using estimated values.")
+                last_timestamp = time.time()
+                first_timestamp = last_timestamp - Constants.TARGET_BLOCK_TIME * Constants.DIFFICULTY_ADJUSTMENT_INTERVAL
 
             # ✅ **Calculate Actual vs. Expected Block Time**
             actual_time = max(1, last_timestamp - first_timestamp)  # Prevent division errors
@@ -202,13 +219,14 @@ class PowManager:
             new_target = max(min(new_target, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
             print(f"[PowManager.adjust_difficulty] SUCCESS: Adjusted difficulty to {hex(new_target)} "
-                f"at block count {num_blocks} (Ratio: {ratio:.4f}).")
+                f"at block height {block_height} (Ratio: {ratio:.4f}).")
 
             return new_target  # ✅ Now returns difficulty as an **integer**
 
         except Exception as e:
             print(f"[PowManager.adjust_difficulty] ERROR: Unexpected error during difficulty adjustment: {e}")
             return Constants.GENESIS_TARGET
+
 
     def get_average_block_time(self):
         """

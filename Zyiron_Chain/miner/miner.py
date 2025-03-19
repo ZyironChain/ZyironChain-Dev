@@ -344,27 +344,33 @@ class Miner:
         """
         Continuous mining loop:
         - Mines new blocks until interrupted.
-        - Ensures Genesis block exists.
-        - Dynamically adjusts difficulty.
+        - Ensures Genesis block exists before mining.
+        - Dynamically adjusts difficulty after each block.
         - Uses detailed print statements for progress and debugging.
-        - Stops mining on errors.
+        - Stops mining on critical validation failures.
         """
         network = network or Constants.NETWORK
         print(f"\n[Miner.mining_loop] INFO: Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
 
-        # ✅ **Ensure the Genesis Block Exists**
+        # ✅ **Ensure the Genesis Block Exists Before Mining**
         if not self.block_manager.chain:
             print(f"[Miner.mining_loop] WARNING: Blockchain is empty! Ensuring Genesis block exists on {network.upper()}...")
 
             self.genesis_block_manager.ensure_genesis_block()
-            genesis_block = self.block_storage.get_latest_block()  # ✅ Uses `block_storage`
+            genesis_block = self.block_storage.get_latest_block()  # ✅ Fetch from storage
 
             if not genesis_block:
-                print(f"[Miner.mining_loop] ERROR: Genesis Block not found after creation attempt on {network.upper()}! Stopping mining.")
+                print(f"[Miner.mining_loop] ❌ ERROR: Genesis Block not found after creation attempt on {network.upper()}! Stopping mining.")
+                return
+
+            # ✅ **Verify Genesis Block Integrity**
+            computed_genesis_hash = genesis_block.calculate_hash()
+            if genesis_block.hash != computed_genesis_hash:
+                print(f"[Miner.mining_loop] ❌ ERROR: Genesis block hash mismatch! Expected: {computed_genesis_hash}, Found: {genesis_block.hash}")
                 return
 
             self.block_manager.chain.append(genesis_block)
-            print(f"[Miner.mining_loop] INFO: Genesis Block added successfully: {genesis_block.tx_id}")
+            print(f"[Miner.mining_loop] ✅ INFO: Genesis Block added successfully: {genesis_block.tx_id}")
 
         block_height = self.block_manager.chain[-1].index + 1
 
@@ -376,25 +382,34 @@ class Miner:
                 block = self.mine_block(network)
 
                 if not block:
-                    print(f"[Miner.mining_loop] ERROR: Failed to mine a new block at height {block_height} on {network.upper()}. Stopping mining.")
+                    print(f"[Miner.mining_loop] ❌ ERROR: Failed to mine a new block at height {block_height} on {network.upper()}. Stopping mining.")
                     break
 
                 # ✅ **Validate Mined Block Before Storing**
                 if not self.blockchain.validate_block(block):
-                    print(f"[Miner.mining_loop] ERROR: Mined block at height {block.index} is invalid on {network.upper()}. Stopping mining.")
+                    print(f"[Miner.mining_loop] ❌ ERROR: Mined block at height {block.index} is invalid on {network.upper()}. Stopping mining.")
                     break
 
-                # ✅ **Ensure the Previous Block is Valid Before Adding**
+                # ✅ **Verify Last Block Integrity Before Adding a New Block**
                 last_block = self.block_manager.chain[-1] if self.block_manager.chain else None
                 if last_block:
                     try:
                         last_tx_id_int = int(last_block.tx_id, 16)
                         last_difficulty_int = int(last_block.difficulty, 16)
+
+                        # ✅ **Ensure Last Block's Difficulty is Correct**
                         if last_tx_id_int >= last_difficulty_int:
-                            print(f"[Miner.mining_loop] ERROR: Last block in chain is invalid. Stopping mining.")
+                            print(f"[Miner.mining_loop] ❌ ERROR: Last block in chain is invalid. Stopping mining.")
                             break
+
+                        # ✅ **Ensure Last Block Hash Consistency**
+                        expected_last_hash = last_block.calculate_hash()
+                        if last_block.hash != expected_last_hash:
+                            print(f"[Miner.mining_loop] ❌ ERROR: Last block hash mismatch! Expected: {expected_last_hash}, Found: {last_block.hash}")
+                            break
+
                     except ValueError:
-                        print("[Miner.mining_loop] ERROR: Failed to parse last block values for validation.")
+                        print("[Miner.mining_loop] ❌ ERROR: Failed to parse last block values for validation.")
                         break
 
                 # ✅ **Store the Valid Block**
@@ -403,11 +418,15 @@ class Miner:
 
                 # ✅ **Check Total Mined Supply**
                 total_supply = self.block_storage.get_total_mined_supply()  # ✅ Uses `block_storage`
-                print(f"[Miner.mining_loop] INFO: Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY}).")
+                print(f"[Miner.mining_loop] ✅ INFO: Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY}).")
 
                 # ✅ **Dynamically Adjust Difficulty Using PowManager**
-                new_difficulty = self.pow_manager.adjust_difficulty()  # ✅ FIXED
-                print(f"[Miner.mining_loop] INFO: Difficulty adjusted on {network.upper()} to: {new_difficulty}")
+                try:
+                    new_difficulty = self.pow_manager.adjust_difficulty()  # ✅ FIXED
+                    print(f"[Miner.mining_loop] ✅ INFO: Difficulty adjusted on {network.upper()} to: {new_difficulty}")
+                except Exception as e:
+                    print(f"[Miner.mining_loop] ❌ ERROR: Difficulty adjustment failed: {e}")
+                    break
 
                 block_height += 1
 
@@ -416,16 +435,17 @@ class Miner:
                 break
 
             except Exception as e:
-                print(f"[Miner.mining_loop] ERROR: Mining encountered an unexpected error on {network.upper()}: {e}")
-                if block:
-                    print(f"[Miner.mining_loop] ERROR: Block {block.index} | TX ID: {block.tx_id}")
+                print(f"[Miner.mining_loop] ❌ ERROR: Mining encountered an unexpected error on {network.upper()}: {e}")
 
-                last_block = self.block_storage.get_latest_block()  # ✅ Uses `block_storage`
+                if block:
+                    print(f"[Miner.mining_loop] ❌ ERROR: Block {block.index} | TX ID: {block.tx_id}")
+
+                last_block = self.block_storage.get_latest_block()  # ✅ Retrieve last valid block from storage
                 if last_block:
-                    print(f"[Miner.mining_loop] INFO: Last valid block TX ID: {last_block.tx_id}")
+                    print(f"[Miner.mining_loop] ✅ INFO: Last valid block TX ID: {last_block.tx_id}")
                 else:
-                    print("[Miner.mining_loop] ERROR: No valid blocks found in the chain. Stopping mining.")
-                break 
+                    print("[Miner.mining_loop] ❌ ERROR: No valid blocks found in the chain. Stopping mining.")
+                break
 
 
 
@@ -565,8 +585,8 @@ class Miner:
     def mine_block(self, network=Constants.NETWORK):
         """
         Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
-        - Ensures Genesis block has a valid `mined_hash`.
-        - Uses `mined_hash` of the last block as `previous_hash`.
+        - Ensures `mined_hash` consistency in both `BlockStorage` and blockchain validation.
+        - Uses `mined_hash` of last block as `previous_hash`.
         - Retrieves transactions from mempool and includes coinbase transaction.
         """
         with self._mining_lock:
@@ -577,6 +597,11 @@ class Miner:
                 # ✅ **Ensure BlockManager is properly initialized**
                 if not hasattr(self, "block_manager") or not self.block_manager:
                     print("[Miner.mine_block] ERROR: `block_manager` not initialized. Cannot retrieve latest block.")
+                    return None
+
+                # ✅ **Ensure BlockStorage is initialized (Fix Missing Store Method)**
+                if not hasattr(self, "block_storage") or not self.block_storage:
+                    print("[Miner.mine_block] ERROR: `block_storage` not initialized. Cannot store blocks.")
                     return None
 
                 # ✅ **Retrieve the latest block**
@@ -607,7 +632,10 @@ class Miner:
 
                         if pow_result:
                             last_block.mined_hash, last_block.nonce = pow_result[:2]
-                            self.block_manager.store_block(last_block)
+
+                            # ✅ **FIX: Store Genesis Block Using `BlockStorage`, Not `BlockManager`**
+                            self.block_storage.store_block(last_block)
+
                             print(f"[Miner.mine_block] ✅ FIXED: Assigned PoW-mined hash to Genesis block: {last_block.mined_hash[:12]}...")
 
                 # ✅ **Determine block height**
@@ -683,8 +711,9 @@ class Miner:
                 print(f"[Miner.mine_block] INFO: Block updated with final mined hash '{final_hash[:12]}...' and nonce {final_nonce}.")
 
                 # ✅ **Store block**
-                print("[Miner.mine_block] INFO: Storing block in BlockManager.")
-                self.block_manager.add_block(new_block)
+                print("[Miner.mine_block] INFO: Storing block in BlockStorage.")
+                self.block_storage.store_block(new_block)  # ✅ **FIXED: Using `BlockStorage`**
+
                 print(f"[Miner.mine_block] INFO: Block {block_height} added to the chain.")
 
                 return new_block
