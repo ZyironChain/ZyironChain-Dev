@@ -34,6 +34,7 @@ from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.utils.deserializer import Deserializer
 
+from Zyiron_Chain.utils.diff_conversion import DifficultyConverter
 
 class BlockManager:
     def __init__(
@@ -82,7 +83,7 @@ class BlockManager:
             # ✅ Network & version settings
             self.network = Constants.NETWORK
             self.version = Constants.VERSION
-            self.difficulty_target = Constants.GENESIS_TARGET  # Default difficulty target
+            self.difficulty_target = DifficultyConverter.convert(Constants.GENESIS_TARGET)
 
             print(
                 f"[BlockManager.__init__] ✅ SUCCESS: Initialized BlockManager on {self.network.upper()} "
@@ -92,6 +93,7 @@ class BlockManager:
         except Exception as e:
             print(f"[BlockManager.__init__] ❌ ERROR: BlockManager initialization failed: {e}")
             raise
+
 
     def adjust_difficulty(self):
         """
@@ -114,7 +116,9 @@ class BlockManager:
         return self.blockchain.pow_manager.validate_proof_of_work(block)
 
 
-    def validate_block(self, block) -> bool:
+
+
+    def validate_block(self, block, check_confirmations=True) -> bool:
         """
         Validate a block before adding it to the blockchain.
         Checks:
@@ -122,12 +126,15 @@ class BlockManager:
         - Block size remains within defined min/max limits.
         - Proof-of-Work requirements are met.
         - Timestamp is within the allowed drift.
-        - Transactions meet confirmation requirements using SHA3-384 hashing.
+        - Transactions meet confirmation requirements using SHA3-384 hashing (if enabled).
         """
         print(f"[BlockManager.validate_block] INFO: Validating Block {block.index}...")
 
         try:
-            # ✅ **Ensure Previous Hash Matches the Last Stored Block**
+            # ✅ Convert and normalize difficulty value first
+            difficulty = DifficultyConverter.convert(block.difficulty)
+
+            # ✅ Ensure Previous Hash Matches the Last Stored Block
             last_block = self.block_storage.get_latest_block()
             if last_block and block.previous_hash != last_block.hash:
                 print(
@@ -136,7 +143,7 @@ class BlockManager:
                 )
                 return False
 
-            # ✅ **Validate Block Size Within Defined Limits**
+            # ✅ Validate Block Size Within Defined Limits
             block_serialized = json.dumps(block.to_dict()).encode("utf-8")
             block_size = len(block_serialized)
 
@@ -154,7 +161,7 @@ class BlockManager:
 
             print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} size validated: {block_size} bytes.")
 
-            # ✅ **Validate Proof-of-Work**
+            # ✅ Validate Proof-of-Work
             if not self.blockchain.validate_proof_of_work(block):
                 print(
                     f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} does not meet Proof-of-Work requirements."
@@ -163,7 +170,7 @@ class BlockManager:
 
             print(f"[BlockManager.validate_block] ✅ INFO: Proof-of-Work validation passed for Block {block.index}.")
 
-            # ✅ **Validate Block Timestamp**
+            # ✅ Validate Block Timestamp
             current_time = time.time()
             if not (
                 current_time - Constants.MAX_TIME_DRIFT
@@ -177,136 +184,36 @@ class BlockManager:
 
             print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} timestamp validated.")
 
-            # ✅ **Validate All Transactions in the Block**
-            for tx in block.transactions:
-                if not hasattr(tx, "tx_id"):
-                    print(f"[BlockManager.validate_block] ❌ ERROR: Transaction in Block {block.index} missing 'tx_id'.")
-                    return False
+            # ✅ Optionally Validate Transaction Confirmations
+            if check_confirmations:
+                for tx in block.transactions:
+                    if not hasattr(tx, "tx_id"):
+                        print(f"[BlockManager.validate_block] ❌ ERROR: Transaction in Block {block.index} missing 'tx_id'.")
+                        return False
 
-                # Ensure tx_id is correctly formatted
-                tx_id = tx.tx_id if isinstance(tx.tx_id, str) else tx.tx_id.decode("utf-8")
+                    # Ensure tx_id is correctly formatted
+                    tx_id = tx.tx_id if isinstance(tx.tx_id, str) else tx.tx_id.decode("utf-8")
 
-                # Compute SHA3-384 hash for transaction validation
-                hashed_tx_id = Hashing.hash(tx_id.encode()).hex()
-                tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
+                    # Compute SHA3-384 hash for transaction validation
+                    hashed_tx_id = Hashing.hash(tx_id.encode()).hex()
+                    tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
 
-                # Retrieve required confirmations dynamically
-                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
-                    tx_type.name.upper(), 
-                    Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
-                )
-
-                # Retrieve actual confirmations from tx_storage
-                confirmations = self.tx_storage.get_transaction_confirmations(hashed_tx_id)
-
-                if confirmations is None or confirmations < required_confirmations:
-                    print(
-                        f"[BlockManager.validate_block] ❌ ERROR: Transaction {hashed_tx_id} "
-                        f"in Block {block.index} does not meet required confirmations "
-                        f"({required_confirmations}). Found: {confirmations}."
+                    # Retrieve required confirmations dynamically
+                    required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
+                        tx_type.name.upper(), 
+                        Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
                     )
-                    return False
 
-            print(f"[BlockManager.validate_block] ✅ SUCCESS: Block {block.index} successfully validated.")
-            return True
+                    # Retrieve actual confirmations from tx_storage
+                    confirmations = self.tx_storage.get_transaction_confirmations(hashed_tx_id)
 
-        except Exception as e:
-            print(f"[BlockManager.validate_block] ❌ ERROR: Block validation failed: {e}")
-            return False
-
-
-    def validate_block(self, block) -> bool:
-        """
-        Validate a block before adding it to the blockchain.
-        Checks:
-        - Consistency with previous block.
-        - Block size remains within defined min/max limits.
-        - Proof-of-Work requirements are met.
-        - Timestamp is within the allowed drift.
-        - Transactions meet confirmation requirements using SHA3-384 hashing.
-        """
-        print(f"[BlockManager.validate_block] INFO: Validating Block {block.index}...")
-
-        try:
-            # ✅ **Ensure Previous Hash Matches the Last Stored Block**
-            last_block = self.block_storage.get_latest_block()
-            if last_block and block.previous_hash != last_block.hash:
-                print(
-                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} previous hash mismatch. "
-                    f"Expected {last_block.hash}, Got {block.previous_hash}"
-                )
-                return False
-
-            # ✅ **Validate Block Size Within Defined Limits**
-            block_serialized = json.dumps(block.to_dict()).encode("utf-8")
-            block_size_mb = len(block_serialized) / (1024 * 1024)  # Convert bytes to MB
-
-            if block_size_mb < Constants.MIN_BLOCK_SIZE_MB:
-                print(
-                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} below min block size: {block_size_mb} MB."
-                )
-                return False
-
-            if block_size_mb > Constants.MAX_BLOCK_SIZE_MB:
-                print(
-                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} exceeds max block size: {block_size_mb} MB."
-                )
-                return False
-
-            print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} size validated: {block_size_mb} MB.")
-
-            # ✅ **Validate Proof-of-Work**
-            if not self.validate_proof_of_work(block):
-                print(
-                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} does not meet Proof-of-Work requirements."
-                )
-                return False
-
-            print(f"[BlockManager.validate_block] ✅ INFO: Proof-of-Work validation passed for Block {block.index}.")
-
-            # ✅ **Validate Block Timestamp**
-            current_time = time.time()
-            if not (
-                current_time - Constants.MAX_TIME_DRIFT
-                <= block.timestamp
-                <= current_time + Constants.MAX_TIME_DRIFT
-            ):
-                print(
-                    f"[BlockManager.validate_block] ❌ ERROR: Block {block.index} timestamp invalid (Future-dated block detected)."
-                )
-                return False
-
-            print(f"[BlockManager.validate_block] ✅ INFO: Block {block.index} timestamp validated.")
-
-            # ✅ **Validate All Transactions in the Block**
-            for tx in block.transactions:
-                if not hasattr(tx, "tx_id"):
-                    print(f"[BlockManager.validate_block] ❌ ERROR: Transaction in Block {block.index} missing 'tx_id'.")
-                    return False
-
-                # Ensure tx_id is correctly formatted
-                tx_id = tx.tx_id if isinstance(tx.tx_id, str) else tx.tx_id.decode("utf-8")
-
-                # Compute SHA3-384 hash for transaction validation
-                hashed_tx_id = Hashing.hash(tx_id.encode()).hex()
-                tx_type = PaymentTypeManager().get_transaction_type(hashed_tx_id)
-
-                # Retrieve required confirmations dynamically
-                required_confirmations = Constants.TRANSACTION_CONFIRMATIONS.get(
-                    tx_type.name.upper(), 
-                    Constants.TRANSACTION_CONFIRMATIONS["STANDARD"]
-                )
-
-                # Retrieve actual confirmations from tx_storage
-                confirmations = self.tx_storage.get_transaction_confirmations(hashed_tx_id)
-
-                if confirmations is None or confirmations < required_confirmations:
-                    print(
-                        f"[BlockManager.validate_block] ❌ ERROR: Transaction {hashed_tx_id} "
-                        f"in Block {block.index} does not meet required confirmations "
-                        f"({required_confirmations}). Found: {confirmations}."
-                    )
-                    return False
+                    if confirmations is None or confirmations < required_confirmations:
+                        print(
+                            f"[BlockManager.validate_block] ❌ ERROR: Transaction {hashed_tx_id} "
+                            f"in Block {block.index} does not meet required confirmations "
+                            f"({required_confirmations}). Found: {confirmations}."
+                        )
+                        return False
 
             print(f"[BlockManager.validate_block] ✅ SUCCESS: Block {block.index} successfully validated.")
             return True
@@ -422,40 +329,57 @@ class BlockManager:
     def add_block(self, block):
         """
         Adds a validated block to the in-memory chain and triggers difficulty adjustment if needed.
+        Also updates the latest block index in persistent LMDB storage.
         """
         try:
             print(f"[BlockManager.add_block] INFO: Adding Block {block.index}...")
 
             # ✅ Ensure block object has required attributes
             if not hasattr(block, "index") or not hasattr(block, "difficulty"):
-                print(f"[BlockManager.add_block] ❌ ERROR: Block {block.index} is missing required attributes.")
+                print(f"[BlockManager.add_block] ❌ ERROR: Block object missing required attributes.")
+                return False
+
+            # ✅ Prevent duplicate or out-of-order blocks
+            if self.chain and block.index <= self.chain[-1].index:
+                print(f"[BlockManager.add_block] ⚠️ WARNING: Block {block.index} already added or out of order.")
                 return False
 
             # ✅ Append block to in-memory chain
             self.chain.append(block)
 
+            # ✅ Normalize difficulty for logging
+            difficulty = DifficultyConverter.convert(block.difficulty)
+
             print(
                 f"[BlockManager.add_block] ✅ SUCCESS: "
-                f"Block {block.index} added. Difficulty: {block.difficulty}."
+                f"Block {block.index} added. Difficulty: {difficulty}."
             )
 
             # ✅ Adjust difficulty at specified intervals
             if len(self.chain) % Constants.DIFFICULTY_ADJUSTMENT_INTERVAL == 0:
-                self.difficulty_target = max(
-                    min(self.adjust_difficulty(), Constants.MAX_DIFFICULTY), 
-                    Constants.MIN_DIFFICULTY
-                )
+                adjusted = self.adjust_difficulty()
+                adjusted = max(min(adjusted, Constants.MAX_DIFFICULTY), Constants.MIN_DIFFICULTY)
 
+                self.difficulty_target = DifficultyConverter.convert(adjusted)
                 print(
                     f"[BlockManager.add_block] ✅ INFO: Difficulty adjusted to "
                     f"{self.difficulty_target} after {len(self.chain)} blocks."
                 )
+
+            # ✅ Update latest block index in LMDB
+            try:
+                with self.block_storage.full_block_store.env.begin(write=True) as txn:
+                    txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
+                    print(f"[BlockManager.add_block] ✅ INFO: Updated latest_block_index to {block.index}")
+            except Exception as e:
+                print(f"[BlockManager.add_block] ⚠️ WARNING: Failed to update latest_block_index: {e}")
 
             return True
 
         except Exception as e:
             print(f"[BlockManager.add_block] ❌ ERROR: Failed to add Block {block.index}. Exception: {e}.")
             return False
+
 
 
     def get_latest_block(self):

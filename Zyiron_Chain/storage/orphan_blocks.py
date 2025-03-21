@@ -141,3 +141,9 @@ class OrphanBlocks:
             print("[OrphanBlocks.close] INFO: LMDB orphan blocks database connection closed successfully.")
         except Exception as e:
             print(f"[OrphanBlocks.close] ERROR: Failed to close LMDB orphan blocks database connection: {e}")
+
+
+    def create_dir_if_not_exists(path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+            print(f"Created database directory: {path}")

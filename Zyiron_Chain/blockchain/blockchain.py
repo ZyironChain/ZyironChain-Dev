@@ -34,7 +34,9 @@ from Zyiron_Chain.miner.pow import PowManager
 from Zyiron_Chain.transactions.txout import TransactionOut 
 from Zyiron_Chain.utils.hashing import Hashing
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
-
+from Zyiron_Chain.utils.diff_conversion import DifficultyConverter
+from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+from Zyiron_Chain.transactions.tx import Transaction
 class Blockchain:
     """
     Main Blockchain class that:
@@ -121,38 +123,32 @@ class Blockchain:
         try:
             print("[Blockchain.load_chain_from_storage] INFO: Loading blockchain from LMDB...")
 
-            # ✅ **Retrieve full blocks from LMDB**
             stored_blocks = self.full_block_store.get_all_blocks()
             if not stored_blocks:
                 print("[Blockchain.load_chain_from_storage] ❌ WARNING: No blocks found in LMDB.")
-                return []  # Explicitly return an empty list
+                return []
 
             loaded_blocks = []
-            previous_hash = Constants.ZERO_HASH  # Track previous hash for proper linkage
+            previous_hash = Constants.ZERO_HASH
 
             for block_data in stored_blocks:
                 try:
-                    # ✅ **Handle both legacy and new block formats**
                     if "header" in block_data:
                         header = block_data["header"]
                     else:
-                        # Legacy format where header fields are at root level
                         header = block_data
                         block_data = {"header": header, "transactions": block_data.get("transactions", [])}
 
-                    # ✅ **Ensure block header contains required fields**
                     required_fields = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"}
                     missing_fields = required_fields - header.keys()
                     if missing_fields:
                         print(f"[Blockchain.load_chain_from_storage] INFO: Missing fields in block header: {missing_fields}. Using fallback values.")
-                        # Fallback for missing fields
                         for field in missing_fields:
                             if field == "index":
-                                header["index"] = len(loaded_blocks)  # Use current chain length as index
+                                header["index"] = len(loaded_blocks)
                             elif field == "previous_hash":
                                 header["previous_hash"] = previous_hash
                             elif field == "merkle_root":
-                                # Generate a fallback Merkle root using the block data
                                 block_data_bytes = json.dumps(block_data, sort_keys=True).encode("utf-8")
                                 header["merkle_root"] = Hashing.hash(block_data_bytes).hex()
                             elif field == "timestamp":
@@ -160,70 +156,71 @@ class Blockchain:
                             elif field == "nonce":
                                 header["nonce"] = 0
                             elif field == "difficulty":
-                                header["difficulty"] = Constants.GENESIS_TARGET
+                                header["difficulty"] = self._parse_difficulty(Constants.GENESIS_TARGET)
+                            else:
+                                header[field] = None
 
-                    # ✅ **Deserialize the block safely**
+                    header["difficulty"] = self._parse_difficulty(header.get("difficulty", Constants.GENESIS_TARGET))
+
                     block = Block.from_dict(block_data)
                     if block is None:
                         print(f"[Blockchain.load_chain_from_storage] ⚠️ WARNING: Skipping invalid block at index {header.get('index', 'Unknown')}.")
-                        continue  # Skip blocks that fail deserialization
+                        continue
 
-                    # ✅ **Genesis block special handling**
+                    # ✅ Deserialize any TXs still in dict form
+                    for i, tx in enumerate(block.transactions):
+                        if isinstance(tx, dict):
+                            if tx.get("type") == "COINBASE":
+                                block.transactions[i] = CoinbaseTx.from_dict(tx)
+                            else:
+                                block.transactions[i] = Transaction.from_dict(tx)
+
                     if block.index == 0:
                         if block.previous_hash != Constants.ZERO_HASH:
                             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Genesis block has invalid previous hash. Expected: {Constants.ZERO_HASH}, Found: {block.previous_hash}")
-                            continue  # Skip invalid genesis block
+                            continue
                         loaded_blocks.append(block)
                         previous_hash = block.hash
                         continue
 
-                    # ✅ **Ensure block links to the previous block**
                     if block.previous_hash != previous_hash:
                         print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has incorrect previous hash. Expected: {previous_hash}, Found: {block.previous_hash}")
-                        continue  # Skip invalid blocks
+                        continue
 
-                    # ✅ **Validate block**
                     if not self.validate_block(block):
                         print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} failed validation.")
-                        continue  # Skip invalid blocks
+                        continue
 
-                    # ✅ **Ensure transactions are valid before adding to the block**
                     valid_transactions = []
                     for tx in block.transactions:
-                        tx_id = tx.get("tx_id") if isinstance(tx, dict) else getattr(tx, "tx_id", None)
+                        tx_id = getattr(tx, "tx_id", None)
                         if not tx_id:
                             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction missing tx_id in Block {block.index}. Skipping...")
-                            continue  # Skip transactions missing a tx_id
+                            continue
 
-                        # ✅ **Ensure transaction exists in LMDB**
                         stored_tx = self.tx_storage.get_transaction(tx_id)
                         if not stored_tx:
                             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction {tx_id} not found in storage. Skipping...")
-                            continue  # Skip transactions that aren't in storage
+                            continue
 
-                        # ✅ **Validate transaction structure**
                         if not self.transaction_manager.validate_transaction(tx):
                             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction {tx_id} in Block {block.index} is invalid. Skipping...")
-                            continue  # Skip invalid transactions
+                            continue
 
-                        # ✅ **Add valid transactions**
                         valid_transactions.append(tx)
 
-                    block.transactions = valid_transactions  # Assign only valid transactions
+                    block.transactions = valid_transactions
 
-                    # ✅ **Ensure UTXO integrity**
                     if not self.utxo_storage.validate_utxos(block):
                         print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has invalid UTXOs. Skipping...")
-                        continue  # Skip blocks with invalid UTXOs
+                        continue
 
-                    # ✅ **Add validated block to the in-memory chain**
                     loaded_blocks.append(block)
-                    previous_hash = block.hash  # Update previous hash for linkage check
+                    previous_hash = block.hash
 
                 except Exception as block_error:
                     print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to process block {block_data.get('index', 'Unknown')}: {block_error}")
 
-            # ✅ **Validate the entire blockchain**
             if not self.validate_chain(loaded_blocks):
                 print("[Blockchain.load_chain_from_storage] ❌ ERROR: Blockchain validation failed.")
                 return []
@@ -233,8 +230,9 @@ class Blockchain:
 
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from LMDB: {e}")
-            return []  # Return an empty list on any failure
-        
+            return []
+
+
     def _compute_block_hash(self, block) -> str:
         """
         Retrieves the PoW-mined hash of the block instead of recalculating.
@@ -290,12 +288,12 @@ class Blockchain:
     def add_block(self, block: Block, is_genesis: bool = False) -> bool:
         """
         Add a block to the blockchain with full validation.
-        
+
         - Validates the block before adding (except for genesis block).
         - Ensures correct structure of transactions and UTXOs.
         - Updates storage modules (full block store, transactions, and UTXOs).
         - Prevents adding corrupted or incompatible blocks.
-        
+
         :param block: The block to add.
         :param is_genesis: Whether the block is the genesis block.
         :return: True if the block was added successfully, False otherwise.
@@ -303,73 +301,79 @@ class Blockchain:
         try:
             print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
-            # ✅ **Skip validation for Genesis block**
+            # ✅ Skip validation for Genesis block
             if not is_genesis and not self.validate_block(block):
                 print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
                 return False
 
-            # ✅ **Check block version compatibility**
+            # ✅ Check block version compatibility
             if block.version != Constants.VERSION:
                 print(f"[Blockchain.add_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
-                return False  # Prevent adding incompatible blocks
+                return False
 
-            # ✅ **Validate transactions before indexing**
+            # ✅ Validate and serialize transactions
             valid_transactions = []
             for tx in block.transactions:
-                tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx  # Serialize transaction
+                if isinstance(tx, dict):
+                    tx_dict = tx
+                elif hasattr(tx, "to_dict"):
+                    tx_dict = tx.to_dict()
+                else:
+                    print(f"[Blockchain.add_block] ⚠️ WARNING: Transaction format unrecognized. Skipping.")
+                    continue
+
                 tx_id = tx_dict.get("tx_id")
                 if not tx_id:
                     print(f"[Blockchain.add_block] ⚠️ WARNING: Transaction missing 'tx_id'. Skipping.")
-                    continue  # Skip transactions without a valid ID
+                    continue
 
                 valid_transactions.append(tx_dict)
 
-            block.transactions = valid_transactions  # Assign only valid transactions
+            if not valid_transactions:
+                print(f"[Blockchain.add_block] ❌ ERROR: No valid transactions to add.")
+                return False
 
-            # ✅ **Validate UTXOs before storing block**
-            if not self.utxo_storage.validate_utxos(block.transactions):
+            block.transactions = valid_transactions
+
+            # ✅ Validate UTXOs before storing the block
+            if not self.utxo_storage.validate_utxos(valid_transactions):
                 print(f"[Blockchain.add_block] ❌ ERROR: Invalid UTXOs in Block {block.index}.")
                 return False
 
-            # ✅ **Store full block in LMDB**
+            # ✅ Store the full block
             try:
-                self.full_block_store.store_block(block)  # No 'difficulty' argument needed
+                self.full_block_store.store_block(block)
                 print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} stored successfully.")
             except Exception as e:
                 print(f"[Blockchain.add_block] ❌ ERROR: Failed to store block {block.index}: {e}")
                 return False
 
-            # ✅ **Index transactions from the block**
-            for tx_dict in block.transactions:
+            # ✅ Index all transactions from the block
+            for tx_dict in valid_transactions:
                 try:
                     tx_id = tx_dict.get("tx_id")
                     if not tx_id:
-                        print(f"[Blockchain.add_block] ⚠️ WARNING: Transaction missing 'tx_id'. Skipping.")
-                        continue  # Skip invalid transaction
+                        continue
 
-                    # ✅ **Retrieve block hash directly as a string**
                     block_hash = block.hash if isinstance(block.hash, str) else str(block.hash)
-
-                    # ✅ **Extract outputs and timestamp from the transaction**
                     outputs = tx_dict.get("outputs", [])
                     timestamp = tx_dict.get("timestamp", int(time.time()))
 
-                    # ✅ **Store transaction in LMDB with required parameters**
                     self.tx_storage.store_transaction(tx_id, block_hash, tx_dict, outputs, timestamp)
                     print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
 
                 except Exception as e:
                     print(f"[Blockchain.add_block] ❌ ERROR: Failed to index transaction in Block {block.index}: {e}")
 
-            # ✅ **Validate and update UTXO storage**
-            if not self.utxo_storage.validate_utxos(block.transactions):
+            # ✅ Re-validate UTXOs to ensure consistency before applying changes
+            if not self.utxo_storage.validate_utxos(valid_transactions):
                 print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} has invalid UTXOs. Aborting addition.")
-                return False  # Prevent corrupt UTXO storage
+                return False
 
             self.utxo_storage.update_utxos(block)
             print(f"[Blockchain.add_block] ✅ INFO: UTXO database updated successfully.")
 
-            # ✅ **Append block to in-memory chain**
+            # ✅ Add block to in-memory chain
             self.chain.append(block)
             print(f"[Blockchain.add_block] ✅ SUCCESS: Block {block.index} added to the chain.")
             return True
@@ -485,7 +489,7 @@ class Blockchain:
         try:
             print(f"[Blockchain.validate_block] INFO: Validating Block {block.index}...")
 
-            # ✅ **Check for required metadata fields**
+            # ✅ Required metadata fields
             required_fields = ["index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "hash"]
             missing_fields = [field for field in required_fields if not hasattr(block, field)]
 
@@ -495,13 +499,13 @@ class Blockchain:
 
             print(f"[Blockchain.validate_block] INFO: Block {block.index} contains all required metadata fields.")
 
-            # ✅ **Ensure Genesis Block has correct `previous_hash`**
+            # ✅ Genesis block special rule
             if block.index == 0:
                 if block.previous_hash != Constants.ZERO_HASH:
                     print(f"[Blockchain.validate_block] ❌ ERROR: Genesis block must have `previous_hash = Constants.ZERO_HASH`")
                     return False
 
-            # ✅ **Ensure non-genesis blocks inherit the PoW-mined hash from the last block**
+            # ✅ For all other blocks, validate previous linkage
             elif self.chain:
                 last_block = self.chain[-1]
                 if block.previous_hash != last_block.mined_hash:
@@ -511,15 +515,18 @@ class Blockchain:
 
             print(f"[Blockchain.validate_block] INFO: Block {block.index} correctly links to the previous block.")
 
-            # ✅ **Check block version compatibility**
+            # ✅ Block version check
             if block.version != Constants.VERSION:
                 print(f"[Blockchain.validate_block] ⚠️ WARNING: Block {block.index} has mismatched version. "
                     f"Expected {Constants.VERSION}, found {block.version}.")
-                return False  # Prevent adding incompatible blocks
+                return False
 
             print(f"[Blockchain.validate_block] INFO: Block {block.index} version validated.")
 
-            # ✅ **Validate Proof-of-Work using the mined hash**
+            # ✅ Standardize difficulty before PoW check
+            block.difficulty = self._parse_difficulty(block.difficulty)
+
+            # ✅ Validate PoW
             if not block.mined_hash:
                 print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} is missing a valid PoW-mined hash.")
                 return False
@@ -530,10 +537,17 @@ class Blockchain:
 
             print(f"[Blockchain.validate_block] INFO: Proof-of-Work validation passed for Block {block.index}.")
 
-            # ✅ **Validate all transactions in the block**
+            # ✅ Validate each transaction (convert if dict)
             for tx in block.transactions:
+                if isinstance(tx, dict):
+                    tx_type = tx.get("type")
+                    if tx_type == "COINBASE":
+                        tx = CoinbaseTx.from_dict(tx)
+                    else:
+                        tx = Transaction.from_dict(tx)
+
                 if not self.transaction_manager.validate_transaction(tx):
-                    print(f"[Blockchain.validate_block] ❌ ERROR: Invalid transaction {tx.tx_id} in Block {block.index}.")
+                    print(f"[Blockchain.validate_block] ❌ ERROR: Invalid transaction {getattr(tx, 'tx_id', 'UNKNOWN')} in Block {block.index}.")
                     return False
 
             print(f"[Blockchain.validate_block] ✅ SUCCESS: Block {block.index} validated.")
@@ -542,7 +556,6 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_block] ❌ ERROR: Block {block.index} validation failed: {e}")
             return False
-
 
 
 
@@ -561,18 +574,15 @@ class Blockchain:
         - Handles missing or invalid data gracefully.
         """
         try:
-            # Use the instance's chain if no chain is provided
             if chain is None:
                 chain = self.chain
 
             print("[Blockchain.validate_chain] INFO: Validating blockchain...")
 
-            # ✅ Check if the chain is empty
             if not chain:
                 print("[Blockchain.validate_chain] ❌ ERROR: Blockchain is empty.")
                 return False
 
-            # Debug: Check the genesis block's previous_hash
             if len(chain) > 0:
                 print(f"[DEBUG] Block 0 previous_hash: {chain[0].previous_hash}")
                 print(f"[DEBUG] Expected previous_hash: {Constants.ZERO_HASH}")
@@ -580,50 +590,59 @@ class Blockchain:
             for i, block in enumerate(chain):
                 print(f"[Blockchain.validate_chain] INFO: Validating Block {block.index}...")
 
-                # ✅ Fallback for missing block attributes
+                # ✅ Ensure index is present
                 if not hasattr(block, "index"):
-                    print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block at position {i} is missing 'index'. Assigning fallback index.")
-                    block.index = i  # Assign fallback index
+                    print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block at position {i} missing 'index'. Setting fallback index.")
+                    block.index = i
 
-                # ✅ Validate Block Structure
+                # ✅ Validate block structure & PoW
                 if not self.validate_block(block):
-                    print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} failed validation. Skipping block.")
-                    continue  # Skip invalid blocks instead of failing the entire chain
+                    print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} failed structural or PoW validation.")
+                    return False
 
-                # ✅ Special handling for the genesis block
+                # ✅ Genesis block check
                 if i == 0:
-                    # Ensure the genesis block's previous_hash is the zero hash
                     if block.previous_hash != Constants.ZERO_HASH:
-                        print(f"[Blockchain.validate_chain] ❌ ERROR: Genesis block has invalid previous hash. "
-                            f"Expected: {Constants.ZERO_HASH}, Found: {block.previous_hash}")
+                        print(f"[Blockchain.validate_chain] ❌ ERROR: Genesis block previous hash mismatch.\nExpected: {Constants.ZERO_HASH}\nFound:    {block.previous_hash}")
                         return False
                 else:
-                    # ✅ Validate Block Linkage for non-genesis blocks
+                    # Ensure previous_hash exists
                     if not hasattr(block, "previous_hash"):
-                        print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} is missing 'previous_hash'. Using fallback hash.")
-                        block.previous_hash = Constants.ZERO_HASH  # Fallback to zero hash
+                        print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} missing 'previous_hash'. Using fallback.")
+                        block.previous_hash = Constants.ZERO_HASH
 
-                    # Compare the previous_hash with the hash of the last block in the chain
+                    # ✅ Check block linkage
                     if block.previous_hash != chain[i - 1].hash:
-                        print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} has an invalid previous hash. "
-                            f"Expected: {chain[i - 1].hash}, Found: {block.previous_hash}")
+                        print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} not linked correctly.\nExpected: {chain[i - 1].hash}\nFound:    {block.previous_hash}")
                         return False
 
-                # ✅ Validate Transactions
-                if not hasattr(block, "transactions"):
-                    print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} is missing 'transactions'. Skipping transaction validation.")
-                    continue  # Skip transaction validation for this block
+                # ✅ Validate each transaction
+                if not hasattr(block, "transactions") or not isinstance(block.transactions, list):
+                    print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} has no valid transaction list. Skipping transaction checks.")
+                    continue
 
-                for tx in block.transactions:
-                    # Fallback for missing tx_id
-                    if not hasattr(tx, "tx_id"):
-                        print(f"[Blockchain.validate_chain] ⚠️ WARNING: Transaction in Block {block.index} is missing 'tx_id'. Generating fallback ID.")
-                        tx.tx_id = Hashing.hash(json.dumps(tx.to_dict()).hex())  # Generate fallback ID
+                for j, tx in enumerate(block.transactions):
+                    try:
+                        # Deserialize from dict if needed
+                        if isinstance(tx, dict):
+                            tx_type = tx.get("type", "STANDARD")
+                            tx_obj = CoinbaseTx.from_dict(tx) if tx_type == "COINBASE" else Transaction.from_dict(tx)
+                            block.transactions[j] = tx_obj
+                            tx = tx_obj
 
-                    # Validate transaction structure using TransactionManager
-                    if not self.transaction_manager.validate_transaction(tx):
-                        print(f"[Blockchain.validate_chain] ⚠️ WARNING: Transaction {tx.tx_id} in Block {block.index} is invalid. Skipping transaction.")
-                        continue  # Skip invalid transactions
+                        # Ensure transaction ID
+                        if not hasattr(tx, "tx_id"):
+                            print(f"[Blockchain.validate_chain] ⚠️ WARNING: Transaction in Block {block.index} missing 'tx_id'. Generating fallback.")
+                            tx.tx_id = Hashing.hash(json.dumps(tx.to_dict(), sort_keys=True).encode("utf-8")).hex()
+
+                        # Validate transaction
+                        if not self.transaction_manager.validate_transaction(tx):
+                            print(f"[Blockchain.validate_chain] ❌ ERROR: Invalid transaction {tx.tx_id} in Block {block.index}.")
+                            return False
+
+                    except Exception as tx_err:
+                        print(f"[Blockchain.validate_chain] ❌ ERROR: Exception while validating transaction in Block {block.index}: {tx_err}")
+                        return False
 
             print("[Blockchain.validate_chain] ✅ SUCCESS: Blockchain validated successfully.")
             return True
@@ -631,3 +650,25 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_chain] ❌ ERROR: Blockchain validation failed: {e}")
             return False
+
+
+    def _parse_difficulty(self, value) -> str:
+        """
+        Standardize difficulty to a 96-character hex string using DifficultyConverter.
+        Accepts int or hex str.
+        """
+        try:
+            return DifficultyConverter.to_standard_hex(value)
+        except Exception as e:
+            print(f"[Blockchain._parse_difficulty] ❌ ERROR: Failed to parse difficulty: {e}")
+            return Constants.GENESIS_TARGET  # fallback
+
+    def _parse_difficulty_int(self, value) -> int:
+        """
+        Convert difficulty from hex (with or without '0x') or int into a standardized int.
+        """
+        try:
+            return DifficultyConverter.to_integer(value)
+        except Exception as e:
+            print(f"[Blockchain._parse_difficulty_int] ❌ ERROR: Failed to convert difficulty to int: {e}")
+            return int(Constants.GENESIS_TARGET, 16)  # fallback        

@@ -553,3 +553,9 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage._get_database] ERROR: Failed to get database {db_key}: {e}")
             raise
+
+
+    def create_dir_if_not_exists(path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+            print(f"Created database directory: {path}")

@@ -4,7 +4,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 
 if TYPE_CHECKING:
     # These imports are only for type-checking purposes.
-    from Zyiron_Chain.transactions.Blockchain_transaction import CoinbaseTx
+    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
     from Zyiron_Chain.transactions.fees import FundsAllocator
 
 class TransactionType(Enum):

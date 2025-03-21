@@ -340,7 +340,7 @@ class LMDBManager:
                 self.rollback()
                 return
 
-            # Serialize transactions safely
+            # ✅ Serialize transactions safely
             serialized_transactions = []
             for tx in transactions:
                 try:
@@ -351,6 +351,7 @@ class LMDBManager:
                     self.rollback()
                     return
 
+            # ✅ Block structure (no offset field)
             block_data = {
                 "block_header": block_header,
                 "transactions": serialized_transactions,
@@ -367,8 +368,14 @@ class LMDBManager:
                 self.rollback()
                 return
 
+            # ✅ Store in LMDB
             with self.env.begin(write=True, db=self.blocks_db) as txn:
                 txn.put(key, value)
+
+                # ✅ Optional: Store latest block index (if 'index' is part of block_header)
+                index = block_header.get("index")
+                if index is not None:
+                    txn.put(b"latest_block_index", str(index).encode("utf-8"), db=self.metadata_db)
 
             self.commit()
             print(f"[LMDBManager] SUCCESS: Block {block_hash} stored successfully.")
@@ -377,6 +384,22 @@ class LMDBManager:
             self.rollback()
             print(f"[LMDBManager] ERROR: Failed to store block {block_hash}: {e}")
             raise
+
+
+    def get_block_by_index(self, index: int) -> Optional[dict]:
+        try:
+            key = f"blockmeta:{index}".encode("utf-8")
+            metadata = self.get(key, db=self.metadata_db)
+            if not metadata:
+                return None
+            block_hash = metadata.get("hash")
+            if not block_hash:
+                return None
+            return self.get(f"block:{block_hash}", db=self.blocks_db)
+        except Exception as e:
+            print(f"[LMDBManager] ERROR: Failed to get block by index {index}: {e}")
+            return None
+
 
 
 
@@ -589,3 +612,9 @@ class LMDBManager:
         if hasattr(self, 'env'):
             self.env.close()
         print("[LMDBManager] Database environment closed.")
+
+
+    def create_dir_if_not_exists(path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+            print(f"Created database directory: {path}")

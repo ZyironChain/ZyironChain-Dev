@@ -44,6 +44,7 @@ from decimal import Decimal
 from typing import List, Union, Optional
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.utils.diff_conversion import DifficultyConverter # Make sure this is imported
 
 class Block:
     def __init__(
@@ -56,7 +57,7 @@ class Block:
         difficulty: Union[int, str] = None,
         miner_address: str = None,
         fees: Union[int, float, Decimal] = 0,
-        version: str = Constants.VERSION  # ✅ Default to Constants.VERSION
+        version: str = Constants.VERSION
     ):
         """
         Initializes a Block object with:
@@ -68,74 +69,70 @@ class Block:
         try:
             print(f"[Block.__init__] INFO: Initializing Block #{index}")
 
-            # ✅ **Handle Genesis Block Special Case**
+            # ✅ Handle Genesis Block Special Case
             if index == 0:
-                self.previous_hash = Constants.ZERO_HASH  # ✅ Ensure previous_hash is all zeros for Genesis Block
+                self.previous_hash = Constants.ZERO_HASH
             else:
-                # ✅ **Ensure `previous_hash` is a valid 96-character SHA3-384 hex string**
                 if not isinstance(previous_hash, str) or len(previous_hash) != 96:
                     print(f"[Block.__init__] ⚠️ WARNING: Invalid `previous_hash` for Block {index}. Using fallback: {Constants.ZERO_HASH}")
-                    self.previous_hash = Constants.ZERO_HASH  # ✅ Fallback to ZERO_HASH
+                    self.previous_hash = Constants.ZERO_HASH
                 else:
-                    self.previous_hash = previous_hash  # ✅ Assign validated `previous_hash`
+                    self.previous_hash = previous_hash
 
-            # ✅ **Validate and Convert `difficulty`**
-            if difficulty is None:
-                print(f"[Block.__init__] ⚠️ WARNING: `difficulty` missing for Block {index}. Using default Genesis difficulty.")
-                difficulty = Constants.GENESIS_TARGET  # ✅ Fallback to Genesis Target
+            # ✅ Validate and Convert `difficulty`
+            try:
+                self.difficulty = DifficultyConverter.convert(
+                    difficulty if difficulty is not None else Constants.GENESIS_TARGET
+                )
+            except Exception as e:
+                print(f"[Block.__init__] ❌ ERROR: Failed to convert difficulty for Block {index}: {e}")
+                self.difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
 
-            if isinstance(difficulty, int):
-                self.difficulty = f"{difficulty:0>96x}"  # ✅ Convert integer to hex
-            elif isinstance(difficulty, str) and len(difficulty) == 96:
-                self.difficulty = difficulty  # ✅ Use existing valid hex
-            else:
-                print(f"[Block.__init__] ❌ ERROR: Invalid `difficulty` format for Block {index}. Using fallback.")
-                self.difficulty = Constants.GENESIS_TARGET  # ✅ Fallback to Genesis difficulty
+            # ✅ Assign Block Properties
+            self.index = int(index)
+            self.transactions = transactions or []
+            self.nonce = int(nonce)
+            self.timestamp = int(timestamp) if timestamp else int(time.time())
 
-            # ✅ **Assign Block Properties**
-            self.index = int(index)  # ✅ Ensure index is an integer
-            self.transactions = transactions or []  # ✅ Default to empty list if None
-            self.nonce = int(nonce)  # ✅ Ensure nonce is an integer
-            self.timestamp = int(timestamp) if timestamp else int(time.time())  # ✅ Ensure timestamp is an integer
-
-            # ✅ **Validate `miner_address`**
+            # ✅ Validate `miner_address`
             if not isinstance(miner_address, str) or not miner_address:
                 print(f"[Block.__init__] ⚠️ WARNING: `miner_address` missing for Block {index}. Using UNKNOWN_MINER.")
-                self.miner_address = "UNKNOWN_MINER"  # ✅ Fallback to placeholder
+                self.miner_address = "UNKNOWN_MINER"
             else:
-                self.miner_address = miner_address[:128]  # ✅ Ensure max length is 128
+                self.miner_address = miner_address[:128]
 
-            # ✅ **Ensure `fees` is stored as Decimal**
+            # ✅ Convert `fees` to Decimal
             try:
                 self.fees = Decimal(fees)
             except (ValueError, TypeError):
                 print(f"[Block.__init__] ⚠️ WARNING: Invalid `fees` for Block {index}. Defaulting to 0.")
-                self.fees = Decimal(0)  # ✅ Fallback to 0
+                self.fees = Decimal(0)
 
-            # ✅ **Compute Merkle Root (Ensures Data Integrity)**
+            # ✅ Compute Merkle Root
             self.merkle_root = self._compute_merkle_root()
 
-            # ✅ **Ensure PoW-mined hash is stored correctly**
-            self.hash = None  # ✅ To be assigned after mining
-            self.mined_hash = None  # ✅ This ensures PoW-mined hash is set
+            # ✅ Initialize mining fields
+            self.hash = None
+            self.mined_hash = None
 
-            # ✅ **Assign Coinbase TX ID**
+            # ✅ Assign Coinbase TX ID
             self.tx_id = self._get_coinbase_tx_id()
 
-            # ✅ **Assign Version**
+            # ✅ Assign Version
             if not isinstance(version, str) or len(version) > 8:
                 print(f"[Block.__init__] ⚠️ WARNING: Invalid `version` for Block {index}. Using default version.")
-                self.version = Constants.VERSION  # ✅ Fallback to `Constants.VERSION`
+                self.version = Constants.VERSION
             else:
-                self.version = version  # ✅ Assign validated version
+                self.version = version
+
+            # ✅ Add missing `transaction_signature` field
+            self.transaction_signature = Constants.ZERO_HASH  # Placeholder, update after signing if needed
 
             print(f"[Block.__init__] ✅ SUCCESS: Block #{self.index} initialized with version {self.version}.")
 
         except Exception as e:
             print(f"[Block.__init__] ❌ ERROR: Block initialization failed: {e}")
             raise
-
-
 
 
     def _compute_merkle_root(self) -> str:
@@ -217,6 +214,8 @@ class Block:
             return Constants.ZERO_HASH
 
 
+
+
     def get_header(self) -> dict:
         """
         Returns a dictionary of the block header fields, formatted for LMDB storage.
@@ -225,46 +224,39 @@ class Block:
         """
         print(f"[Block.get_header] INFO: Retrieving block header for Block #{self.index}.")
 
-        # ✅ **Handle Missing or Invalid Fields with Fallbacks**
+        # ✅ Handle Missing or Invalid Fields with Fallbacks
         version = str(getattr(self, "version", "1.00"))
-        index = int(getattr(self, "index", 0))  # Default block index to 0 if missing
+        index = int(getattr(self, "index", 0))
         previous_hash = str(getattr(self, "previous_hash", Constants.ZERO_HASH))
         merkle_root = str(getattr(self, "merkle_root", Constants.ZERO_HASH))
-        timestamp = int(getattr(self, "timestamp", int(time.time())))  # Default to current time
-        nonce = int(getattr(self, "nonce", 0))  # Default nonce is 0
-        miner_address = str(getattr(self, "miner_address", "00" * 128))  # Ensure correct 128-byte format
-        transaction_signature = str(getattr(self, "transaction_signature", "00" * 48))  # Ensure correct 48-byte format
-        reward = str(getattr(self, "reward", 0))  # Convert to string for JSON consistency
-        fees = str(getattr(self, "fees", 0))  # Convert to string for consistency
+        timestamp = int(getattr(self, "timestamp", int(time.time())))
+        nonce = int(getattr(self, "nonce", 0))
+        miner_address = str(getattr(self, "miner_address", "00" * 128))
+        transaction_signature = str(getattr(self, "transaction_signature", "00" * 48))
+        reward = str(getattr(self, "reward", 0))
+        fees = str(getattr(self, "fees", 0))
 
-        # ✅ **Ensure Difficulty Exists and Is in Proper Hex Format**
-        difficulty_str = str(getattr(self, "difficulty", Constants.GENESIS_TARGET)).strip().lower()
-        if not difficulty_str.startswith("0x"):
-            difficulty_str = "0x" + difficulty_str  # Ensure it is a valid hex representation
-
+        # ✅ Use DifficultyConverter for consistent formatting
         try:
-            difficulty = str(hex(int(difficulty_str, 16)))  # Convert difficulty to proper hex format
-        except ValueError:
-            print(f"[Block.get_header] ERROR: Invalid difficulty format: {difficulty_str}. Using Genesis Target.")
-            difficulty = str(Constants.GENESIS_TARGET)  # Fallback
+            raw_difficulty = getattr(self, "difficulty", Constants.GENESIS_TARGET)
+            difficulty = DifficultyConverter.convert(raw_difficulty)
+        except Exception as e:
+            print(f"[Block.get_header] ❌ ERROR: Failed to convert difficulty: {e}. Using fallback.")
+            difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
 
-        # ✅ **Log Fallback Values Used**
+        # ✅ Log Fallbacks
         if getattr(self, "previous_hash", None) is None:
-            print(f"[Block.get_header] WARNING: Previous hash missing, using {Constants.ZERO_HASH}")
-
+            print(f"[Block.get_header] ⚠️ WARNING: Previous hash missing, using {Constants.ZERO_HASH}")
         if getattr(self, "miner_address", None) is None:
-            print(f"[Block.get_header] WARNING: Miner address missing, using default {miner_address}")
-
+            print(f"[Block.get_header] ⚠️ WARNING: Miner address missing, using default {miner_address}")
         if getattr(self, "transaction_signature", None) is None:
-            print(f"[Block.get_header] WARNING: Transaction signature missing, using default {transaction_signature}")
-
+            print(f"[Block.get_header] ⚠️ WARNING: Transaction signature missing, using default {transaction_signature}")
         if getattr(self, "reward", None) is None:
-            print(f"[Block.get_header] WARNING: Reward missing, using default {reward}")
-
+            print(f"[Block.get_header] ⚠️ WARNING: Reward missing, using default {reward}")
         if getattr(self, "fees", None) is None:
-            print(f"[Block.get_header] WARNING: Fees missing, using default {fees}")
+            print(f"[Block.get_header] ⚠️ WARNING: Fees missing, using default {fees}")
 
-        # ✅ **Construct Header Dictionary**
+        # ✅ Construct Header
         header_dict = {
             "version": version,
             "index": index,
@@ -272,7 +264,7 @@ class Block:
             "merkle_root": merkle_root,
             "timestamp": timestamp,
             "nonce": nonce,
-            "difficulty": difficulty,  # Now properly formatted as hex
+            "difficulty": difficulty,
             "miner_address": miner_address,
             "transaction_signature": transaction_signature,
             "reward": reward,
@@ -284,6 +276,7 @@ class Block:
 
 
 
+
     def to_dict(self) -> dict:
         """
         Serialize block to a dictionary with standardized field formatting.
@@ -292,22 +285,29 @@ class Block:
         print("[Block.to_dict] INFO: Serializing block to dictionary for LMDB storage.")
 
         try:
-            # ✅ **Serialize Header Fields**
+            # ✅ Convert difficulty safely
+            try:
+                difficulty = DifficultyConverter.convert(getattr(self, 'difficulty', Constants.GENESIS_TARGET))
+            except Exception as e:
+                print(f"[Block.to_dict] ❌ ERROR: Failed to convert difficulty: {e}")
+                difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
+
+            # ✅ Serialize Header Fields
             header = {
-                "version": str(getattr(self, "version", Constants.VERSION)),  # Default to Constants.VERSION
-                "index": int(self.index),  # Block height
+                "version": str(getattr(self, "version", Constants.VERSION)),
+                "index": int(self.index),
                 "previous_hash": self.previous_hash if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
                 "merkle_root": self.merkle_root if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
-                "timestamp": int(getattr(self, "timestamp", int(time.time()))),  # Use current time if missing
-                "nonce": int(getattr(self, "nonce", 0)),  # Default nonce is 0
-                "difficulty": f"{int(getattr(self, 'difficulty', Constants.GENESIS_TARGET)):0>96x}",  # ✅ Store difficulty as a 96-character hex string
-                "miner_address": self.miner_address if isinstance(self.miner_address, str) else "00" * 64,  # Placeholder miner address
-                "transaction_signature": self.transaction_signature if isinstance(self.transaction_signature, str) else "00" * 48,  # Placeholder signature
-                "reward": str(getattr(self, "reward", "0")),  # Default reward as string
-                "fees": str(getattr(self, "fees", "0")),  # Default fees as string
+                "timestamp": int(getattr(self, "timestamp", int(time.time()))),
+                "nonce": int(getattr(self, "nonce", 0)),
+                "difficulty": difficulty,
+                "miner_address": self.miner_address if isinstance(self.miner_address, str) else "00" * 64,
+                "transaction_signature": self.transaction_signature if isinstance(self.transaction_signature, str) else "00" * 48,
+                "reward": str(getattr(self, "reward", "0")),
+                "fees": str(getattr(self, "fees", "0")),
             }
 
-            # ✅ **Serialize Transactions**
+            # ✅ Serialize Transactions
             transactions = []
             for tx in getattr(self, "transactions", []):
                 try:
@@ -316,20 +316,20 @@ class Block:
                 except Exception as e:
                     print(f"[Block.to_dict] ERROR: Failed to serialize transaction in Block {self.index}: {e}")
 
-            # ✅ **Serialize Additional Fields**
+            # ✅ Additional Fields
             additional_fields = {
-                "hash": self.mined_hash if isinstance(self.mined_hash, str) else Constants.ZERO_HASH,  # ✅ Persist PoW-mined hash
-                "metadata": getattr(self, "metadata", {}),  # Optional metadata
-                "size": int(getattr(self, "size", 0)),  # Default block size
-                "network": str(getattr(self, "network", Constants.NETWORK)),  # Default network identifier
-                "flags": list(getattr(self, "flags", [])),  # Block flags (e.g., mainnet, testnet)
+                "hash": self.mined_hash if isinstance(self.mined_hash, str) else Constants.ZERO_HASH,
+                "metadata": getattr(self, "metadata", {}),
+                "size": int(getattr(self, "size", 0)),
+                "network": str(getattr(self, "network", Constants.NETWORK)),
+                "flags": list(getattr(self, "flags", [])),
             }
 
-            # ✅ **Combine All Fields**
+            # ✅ Final Combined Dict
             block_dict = {
                 "header": header,
                 "transactions": transactions,
-                **additional_fields,  # Merge additional fields into the dictionary
+                **additional_fields,
             }
 
             print(f"[Block.to_dict] ✅ SUCCESS: Block #{self.index} serialized successfully.")
@@ -340,21 +340,22 @@ class Block:
             raise
 
 
+
+
     @classmethod
     def from_dict(cls, data: dict) -> Optional["Block"]:
         """
         Deserialize a block from a dictionary, ensuring proper type conversions and safety checks.
         - Ensures missing fields have fallbacks.
         - Converts transaction dictionaries into proper transaction objects.
-        - Parses difficulty from hex format and validates stored hash.
+        - Parses difficulty consistently with DifficultyConverter.
+        - Validates block hash format.
         """
         try:
             print("[Block.from_dict] INFO: Reconstructing block from dict...")
 
-            # ✅ **Handle Both Header-Nested and Flat Structures**
-            header = data.get("header", data)  # Use 'header' if present, else entire data
+            header = data.get("header", data)
 
-            # ✅ **Ensure Required Fields Exist (Apply Fallbacks)**
             required_fields = {
                 "index", "previous_hash", "merkle_root",
                 "timestamp", "nonce", "difficulty", "miner_address"
@@ -364,37 +365,40 @@ class Block:
             if missing_fields:
                 print(f"[Block.from_dict] WARNING: Missing required fields: {missing_fields}. Applying fallback values.")
 
-            # ✅ **Extract & Apply Fallbacks for Missing Fields**
-            block_index = int(header.get("index", data.get("block_height", 0)))  # Fallback to `block_height`
-            previous_hash = str(header.get("previous_hash", Constants.ZERO_HASH))  # Default to ZERO_HASH if missing
-            merkle_root = str(header.get("merkle_root", Constants.ZERO_HASH))  # Default to ZERO_HASH if missing
-            timestamp = int(header.get("timestamp", int(time.time())))  # Use current time if missing
-            nonce = int(header.get("nonce", 0))  # Default nonce is 0
-            miner_address = str(header.get("miner_address", "UNKNOWN_MINER"))  # Default to placeholder address
+            block_index = int(header.get("index", data.get("block_height", 0)))
+            previous_hash = str(header.get("previous_hash", Constants.ZERO_HASH))
+            merkle_root = str(header.get("merkle_root", Constants.ZERO_HASH))
+            timestamp = int(header.get("timestamp", int(time.time())))
+            nonce = int(header.get("nonce", 0))
+            miner_address = str(header.get("miner_address", "UNKNOWN_MINER"))
 
-            # ✅ **Ensure Difficulty Exists (Parse as Integer)**
+            # ✅ Use DifficultyConverter for consistency
             try:
-                difficulty_str = str(header.get("difficulty", f"{Constants.GENESIS_TARGET:0>96x}")).strip().lower()
+                difficulty_raw = header.get("difficulty", Constants.GENESIS_TARGET)
+                difficulty = DifficultyConverter.convert(difficulty_raw)
+            except Exception as e:
+                print(f"[Block.from_dict] ❌ ERROR: Failed to parse difficulty: {e}. Using fallback.")
+                difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
 
-                # Ensure valid hex format
-                difficulty = int(difficulty_str, 16) if difficulty_str.startswith("0x") else int("0x" + difficulty_str, 16)
-
-            except ValueError:
-                print(f"[Block.from_dict] ERROR: Invalid difficulty format: {difficulty_str}. Using Genesis Target.")
-                difficulty = Constants.GENESIS_TARGET  # Fallback
-
-            # ✅ **Validate Stored Block Hash**
-            stored_hash = str(data.get("hash", Constants.ZERO_HASH))  # Default to ZERO_HASH if missing
-            if not isinstance(stored_hash, str) or len(stored_hash) != Constants.SHA3_384_HASH_SIZE * 2:
-                print(f"[Block.from_dict] ERROR: Invalid block hash format. Expected 96-character hex string. Got: {stored_hash}")
+            # ✅ Validate and normalize stored hash
+            stored_hash = data.get("hash", Constants.ZERO_HASH)
+            if isinstance(stored_hash, bytes):
+                stored_hash = stored_hash.hex()
+            elif isinstance(stored_hash, str):
+                stored_hash = stored_hash.lower().strip()
+            else:
+                print(f"[Block.from_dict] ERROR: Invalid block hash type: {type(stored_hash)}")
                 return None
 
-            # ✅ **Deserialize Transactions**
+            if len(stored_hash) != 96 or not all(c in "0123456789abcdef" for c in stored_hash):
+                print(f"[Block.from_dict] ERROR: Invalid block hash format. Got: {stored_hash}")
+                return None
+
+            # ✅ Deserialize Transactions
             transactions = []
             for tx_data in data.get("transactions", []):
                 try:
                     if isinstance(tx_data, dict):
-                        # Convert dictionary to transaction object
                         if tx_data.get("type") == "COINBASE":
                             from Zyiron_Chain.transactions.coinbase import CoinbaseTx
                             tx = CoinbaseTx.from_dict(tx_data)
@@ -403,7 +407,7 @@ class Block:
                             tx = Transaction.from_dict(tx_data)
                         if tx:
                             transactions.append(tx)
-                    elif hasattr(tx_data, "to_dict"):  # Already a transaction object
+                    elif hasattr(tx_data, "to_dict"):
                         transactions.append(tx_data)
                     else:
                         print(f"[Block.from_dict] ERROR: Invalid transaction format in Block {block_index}: {type(tx_data)}")
@@ -412,7 +416,6 @@ class Block:
                     print(f"[Block.from_dict] ERROR: Failed to parse transaction in Block {block_index}: {e}")
                     return None
 
-            # ✅ **Ensure Block Has a Coinbase Transaction**
             has_coinbase = any(
                 (isinstance(tx, dict) and tx.get("type") == "COINBASE") or
                 (hasattr(tx, "type") and getattr(tx, "type") == "COINBASE")
@@ -422,20 +425,19 @@ class Block:
                 print(f"[Block.from_dict] ERROR: Block {block_index} is missing a valid Coinbase transaction!")
                 return None
 
-            # ✅ **Construct Block Object**
+            # ✅ Construct the block
             block = cls(
                 index=block_index,
                 previous_hash=previous_hash,
                 transactions=transactions,
                 timestamp=timestamp,
                 nonce=nonce,
-                difficulty=difficulty,  # ✅ Now an integer
+                difficulty=difficulty,
                 miner_address=miner_address
             )
 
-            # ✅ **Assign Correct Mined Hash**
-            block.mined_hash = stored_hash  # Set the mined_hash to the stored hash
-            block.hash = stored_hash  # Ensure hash is also set for compatibility
+            block.mined_hash = stored_hash
+            block.hash = stored_hash
 
             print(f"[Block.from_dict] ✅ SUCCESS: Block #{block.index} reconstructed with stored hash: {block.hash}")
             return block
@@ -443,7 +445,6 @@ class Block:
         except Exception as e:
             print(f"[Block.from_dict] ❌ ERROR: Failed to deserialize block: {e}. Skipping block.")
             return None
-
 
 
 
@@ -486,3 +487,40 @@ class Block:
 
         print("[Block._get_coinbase_tx_id] ❌ ERROR: No Coinbase TX found in this block.")
         return None  # If no Coinbase TX exists
+
+
+
+    @staticmethod
+    def standardize_hash(hash_input: Union[str, bytes, int]) -> str:
+        """
+        Standardizes a hash value into a 96-character lowercase hex string.
+        
+        Args:
+            hash_input (Union[str, bytes, int]): The hash input to format.
+            
+        Returns:
+            str: A 96-character lowercase hex string.
+        
+        Raises:
+            ValueError: If the input cannot be standardized.
+        """
+        try:
+            if isinstance(hash_input, bytes):
+                hex_str = hash_input.hex()
+            elif isinstance(hash_input, int):
+                hex_str = f"{hash_input:x}"
+            elif isinstance(hash_input, str):
+                hex_str = hash_input.lower().strip()
+                if hex_str.startswith("0x"):
+                    hex_str = hex_str[2:]
+            else:
+                raise ValueError("Unsupported type for hash conversion")
+
+            # Validate and pad
+            if len(hex_str) > 96:
+                raise ValueError("Hash exceeds 96 characters")
+            return hex_str.zfill(96)
+
+        except Exception as e:
+            print(f"[Block.standardize_hash] ❌ ERROR: Failed to standardize hash: {e}")
+            raise

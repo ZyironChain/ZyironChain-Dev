@@ -172,3 +172,9 @@ class MempoolStorage:
             print("[MempoolStorage.close] INFO: Mempool LMDB connection closed.")
         except Exception as e:
             print(f"[MempoolStorage.close] ERROR: Failed to close mempool LMDB connection: {e}")
+
+
+    def create_dir_if_not_exists(path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+            print(f"Created database directory: {path}")
