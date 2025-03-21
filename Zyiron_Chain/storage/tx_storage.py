@@ -70,37 +70,25 @@ class TxStorage:
         self, tx_id: str, block_hash: str, tx_data: dict, outputs: List[Dict], timestamp: int,
         tx_signature: bytes = b"", falcon_signature: bytes = b""
     ) -> None:
-        """
-        Store a transaction in LMDB.
-
-        :param tx_id: Transaction ID.
-        :param block_hash: Block hash where the transaction belongs.
-        :param tx_data: Transaction data as a dictionary.
-        :param outputs: List of transaction outputs.
-        :param timestamp: Transaction timestamp.
-        :param tx_signature: Transaction signature (SHA3-384 hashed, 48 bytes).
-        :param falcon_signature: Falcon-512 digital signature (700 bytes).
-        """
         try:
             print(f"[TxStorage.store_transaction] INFO: Storing transaction {tx_id} for block {block_hash}...")
 
             if not isinstance(tx_data, dict):
-                print(f"[TxStorage.store_transaction] ERROR: Transaction data must be a dictionary for {tx_id}.")
+                print(f"[TxStorage.store_transaction] ERROR: Transaction data must be a dictionary.")
                 return
 
-            if not all(isinstance(o, dict) for o in outputs):
-                print(f"[TxStorage.store_transaction] ERROR: Invalid outputs for transaction {tx_id}.")
+            if not outputs or not all(isinstance(o, dict) for o in outputs):
+                print(f"[TxStorage.store_transaction] ERROR: Outputs must be a list of dictionaries.")
                 return
 
             if not isinstance(timestamp, int) or not isinstance(tx_id, str) or not isinstance(block_hash, str):
-                print(f"[TxStorage.store_transaction] ERROR: Invalid transaction parameters for {tx_id}.")
+                print(f"[TxStorage.store_transaction] ERROR: Invalid transaction parameters.")
                 return
 
             if not hasattr(self, "fee_model") or not self.fee_model:
-                print(f"[TxStorage.store_transaction] ERROR: FeeModel is missing. Cannot calculate fees.")
+                print(f"[TxStorage.store_transaction] ERROR: FeeModel is missing.")
                 return
 
-            # ✅ Detect transaction type using prefix matching
             tx_type = "STANDARD"
             for t_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
                 if any(tx_id.startswith(prefix) for prefix in config.get("prefixes", [])):
@@ -109,7 +97,6 @@ class TxStorage:
 
             print(f"[TxStorage.store_transaction] INFO: Identified transaction type as {tx_type}.")
 
-            # ✅ Compute Fee Breakdown
             try:
                 total_output_amount = sum(Decimal(str(out["amount"])) for out in outputs)
                 fee_details = self.fee_model.calculate_fee_and_tax(
@@ -118,21 +105,24 @@ class TxStorage:
                     amount=total_output_amount,
                     tx_size=250
                 )
-                tax_fee = Decimal(str(fee_details.get("tax_fee", "0")))
-                miner_fee = Decimal(str(fee_details.get("miner_fee", "0")))
 
-                if tax_fee == "LOW" or miner_fee == "LOW":
-                    print(f"[TxStorage.store_transaction] WARN: Transaction {tx_id} has a low fee. Using minimum required.")
-                    tax_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
-                    miner_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
+                tax_fee = fee_details.get("tax_fee", Constants.MIN_TRANSACTION_FEE)
+                miner_fee = fee_details.get("miner_fee", Constants.MIN_TRANSACTION_FEE)
+
+                if any(str(f).upper() == "LOW" for f in [tax_fee, miner_fee]):
+                    print(f"[TxStorage.store_transaction] WARN: Low fee detected. Using minimums.")
+                    tax_fee = miner_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
+                else:
+                    tax_fee = Decimal(str(tax_fee))
+                    miner_fee = Decimal(str(miner_fee))
 
                 print(f"[TxStorage.store_transaction] INFO: Fee Breakdown - Tax Fee: {tax_fee}, Miner Fee: {miner_fee}")
 
             except Exception as fee_error:
-                print(f"[TxStorage.store_transaction] ERROR: Fee calculation failed for transaction {tx_id}: {fee_error}")
+                print(f"[TxStorage.store_transaction] ERROR: Fee calculation failed - {fee_error}")
                 return
 
-            # ✅ Store Falcon-512 signature and return SHA3-384 hash
+            # Store Falcon Signature
             txindex_path = Constants.get_db_path("txindex")
             hashed_signature = store_transaction_signature(
                 tx_id=tx_id.encode(),
@@ -140,7 +130,6 @@ class TxStorage:
                 txindex_path=txindex_path
             )
 
-            # ✅ Transaction JSON structure
             transaction_data = {
                 "tx_id": tx_id,
                 "block_hash": block_hash,
@@ -153,15 +142,13 @@ class TxStorage:
                 "tx_signature_hash": hashed_signature.hex()
             }
 
-            # ✅ Store in LMDB
             with self.txindex_db.env.begin(write=True) as txn:
                 txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
 
-            print(f"[TxStorage.store_transaction] ✅ SUCCESS: Transaction {tx_id} stored successfully.")
+            print(f"[TxStorage.store_transaction] ✅ SUCCESS: Stored {tx_id}.")
 
         except Exception as e:
-            print(f"[TxStorage.store_transaction] EXCEPTION: Failed to store transaction {tx_id} - {e}")
-
+            print(f"[TxStorage.store_transaction] EXCEPTION: {e}")
 
 
     def _detect_transaction_type(self, tx):

@@ -335,16 +335,9 @@ class Miner:
 
 
     def mining_loop(self, network=None):
-        """
-        Continuous mining loop:
-        - Resumes from the last known valid block in storage.
-        - Ensures Genesis block exists if chain is empty.
-        - Mines blocks until interrupted or failure.
-        """
         network = network or Constants.NETWORK
         print(f"\n[Miner.mining_loop] INFO: Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
 
-        # ✅ Load last block from storage (persistent chain tip)
         last_block = self.block_storage.get_latest_block()
 
         if not last_block:
@@ -353,23 +346,11 @@ class Miner:
             last_block = self.block_storage.get_latest_block()
 
             if not last_block:
-                print("[Miner.mining_loop] ❌ ERROR: Failed to initialize Genesis block. Aborting mining.")
+                with open("mining_errors.txt", "a") as f:
+                    f.write("[Miner.mining_loop] ERROR: Failed to initialize Genesis block.\n")
                 return
 
-            # ✅ Verify genesis block hash
-            expected_hash = last_block.calculate_hash()
-            if last_block.hash != expected_hash:
-                print(f"[Miner.mining_loop] ❌ ERROR: Genesis block hash mismatch! Expected: {expected_hash}, Found: {last_block.hash}")
-                return
-
-            print(f"[Miner.mining_loop] ✅ Genesis block created: {last_block.tx_id}")
-        else:
-            print(f"[Miner.mining_loop] ✅ Resuming from Block #{last_block.index} | Hash: {last_block.hash[:12]}...")
-
-        # ✅ Set latest block into BlockManager chain
         self.block_manager.chain = [last_block]
-
-        # ✅ Start from next block height
         block_height = last_block.index + 1
 
         while True:
@@ -378,14 +359,12 @@ class Miner:
 
                 block = self.mine_block(network)
                 if not block:
-                    print(f"[Miner.mining_loop] ❌ ERROR: Failed to mine block {block_height}.")
-                    break
+                    raise ValueError(f"Failed to mine block at height {block_height}")
 
                 if not self.blockchain.validate_block(block):
-                    print(f"[Miner.mining_loop] ❌ ERROR: Block {block.index} failed validation.")
-                    break
+                    raise ValueError(f"Block {block.index} failed validation.")
 
-                self.block_storage.store_block(block, block.difficulty)
+                self.block_storage.store_block(block)
                 self.block_manager.chain.append(block)
 
                 total_supply = self.block_storage.get_total_mined_supply()
@@ -394,25 +373,25 @@ class Miner:
                 try:
                     new_difficulty = self.pow_manager.adjust_difficulty()
                     print(f"[Miner.mining_loop] ✅ Difficulty adjusted to: {new_difficulty}")
-                except Exception as e:
-                    print(f"[Miner.mining_loop] ❌ ERROR: Difficulty adjustment failed: {e}")
-                    break
+                except Exception as diff_error:
+                    with open("mining_errors.txt", "a") as f:
+                        f.write(f"[Difficulty Adjustment ERROR]: {diff_error}\n")
 
                 block_height += 1
+                time.sleep(1)  # Prevent CPU overuse if block is mined too quickly
 
             except KeyboardInterrupt:
-                print(f"\n[Miner.mining_loop] INFO: Mining interrupted by user.")
+                print("\n[Miner.mining_loop] INFO: Mining interrupted by user.")
                 break
 
             except Exception as e:
-                print(f"[Miner.mining_loop] ❌ ERROR: Unexpected error: {e}")
-                last_block = self.block_storage.get_latest_block()
-                if last_block:
-                    print(f"[Miner.mining_loop] ✅ Last valid block: {last_block.tx_id}")
-                else:
-                    print("[Miner.mining_loop] ❌ ERROR: No valid blocks found.")
-                break
-
+                error_message = f"[Mining ERROR @ Height {block_height}] {e}\n"
+                print(error_message)
+                with open("mining_errors.txt", "a") as f:
+                    f.write(error_message)
+                # Continue mining after error
+                time.sleep(1)
+                continue
 
 
     def validate_new_block(self, new_block):

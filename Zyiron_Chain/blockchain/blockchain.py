@@ -133,12 +133,10 @@ class Blockchain:
 
             for block_data in stored_blocks:
                 try:
-                    if "header" in block_data:
-                        header = block_data["header"]
-                    else:
-                        header = block_data
-                        block_data = {"header": header, "transactions": block_data.get("transactions", [])}
+                    header = block_data.get("header", {})
+                    transactions_data = block_data.get("transactions", [])
 
+                    # ✅ Handle missing critical header fields with fallbacks
                     required_fields = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty"}
                     missing_fields = required_fields - header.keys()
                     if missing_fields:
@@ -149,25 +147,26 @@ class Blockchain:
                             elif field == "previous_hash":
                                 header["previous_hash"] = previous_hash
                             elif field == "merkle_root":
-                                block_data_bytes = json.dumps(block_data, sort_keys=True).encode("utf-8")
-                                header["merkle_root"] = Hashing.hash(block_data_bytes).hex()
+                                temp_data = json.dumps(block_data, sort_keys=True).encode()
+                                header["merkle_root"] = Hashing.hash(temp_data).hex()
                             elif field == "timestamp":
                                 header["timestamp"] = int(time.time())
                             elif field == "nonce":
                                 header["nonce"] = 0
                             elif field == "difficulty":
                                 header["difficulty"] = self._parse_difficulty(Constants.GENESIS_TARGET)
-                            else:
-                                header[field] = None
 
+                    # ✅ Normalize difficulty
                     header["difficulty"] = self._parse_difficulty(header.get("difficulty", Constants.GENESIS_TARGET))
+                    block_data["header"] = header
+                    block_data["transactions"] = transactions_data
 
                     block = Block.from_dict(block_data)
                     if block is None:
                         print(f"[Blockchain.load_chain_from_storage] ⚠️ WARNING: Skipping invalid block at index {header.get('index', 'Unknown')}.")
                         continue
 
-                    # ✅ Deserialize any TXs still in dict form
+                    # ✅ Deserialize transactions
                     for i, tx in enumerate(block.transactions):
                         if isinstance(tx, dict):
                             if tx.get("type") == "COINBASE":
@@ -175,44 +174,49 @@ class Blockchain:
                             else:
                                 block.transactions[i] = Transaction.from_dict(tx)
 
+                    # ✅ Genesis block validation
                     if block.index == 0:
                         if block.previous_hash != Constants.ZERO_HASH:
-                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Genesis block has invalid previous hash. Expected: {Constants.ZERO_HASH}, Found: {block.previous_hash}")
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Genesis block has invalid previous hash. Expected {Constants.ZERO_HASH}, Found: {block.previous_hash}")
                             continue
                         loaded_blocks.append(block)
                         previous_hash = block.hash
                         continue
 
+                    # ✅ Chain linkage validation
                     if block.previous_hash != previous_hash:
-                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has incorrect previous hash. Expected: {previous_hash}, Found: {block.previous_hash}")
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has incorrect previous hash. Expected {previous_hash}, Found: {block.previous_hash}")
                         continue
 
+                    # ✅ Block structure validation
                     if not self.validate_block(block):
-                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} failed validation.")
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} failed structural validation.")
                         continue
 
+                    # ✅ Transaction validation
                     valid_transactions = []
                     for tx in block.transactions:
                         tx_id = getattr(tx, "tx_id", None)
                         if not tx_id:
-                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction missing tx_id in Block {block.index}. Skipping...")
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Missing tx_id in Block {block.index}. Skipping TX.")
                             continue
 
                         stored_tx = self.tx_storage.get_transaction(tx_id)
                         if not stored_tx:
-                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction {tx_id} not found in storage. Skipping...")
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: TX {tx_id} missing from LMDB. Skipping TX.")
                             continue
 
                         if not self.transaction_manager.validate_transaction(tx):
-                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Transaction {tx_id} in Block {block.index} is invalid. Skipping...")
+                            print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: TX {tx_id} in Block {block.index} failed validation.")
                             continue
 
                         valid_transactions.append(tx)
 
                     block.transactions = valid_transactions
 
+                    # ✅ UTXO validation
                     if not self.utxo_storage.validate_utxos(block):
-                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Block {block.index} has invalid UTXOs. Skipping...")
+                        print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: UTXOs invalid for Block {block.index}. Skipping block.")
                         continue
 
                     loaded_blocks.append(block)
@@ -221,8 +225,9 @@ class Blockchain:
                 except Exception as block_error:
                     print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to process block {block_data.get('index', 'Unknown')}: {block_error}")
 
+            # ✅ Final chain validation
             if not self.validate_chain(loaded_blocks):
-                print("[Blockchain.load_chain_from_storage] ❌ ERROR: Blockchain validation failed.")
+                print("[Blockchain.load_chain_from_storage] ❌ ERROR: Final chain structure is invalid.")
                 return []
 
             print(f"[Blockchain.load_chain_from_storage] ✅ SUCCESS: Loaded {len(loaded_blocks)} valid blocks from LMDB.")
@@ -231,6 +236,7 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from LMDB: {e}")
             return []
+
 
 
     def _compute_block_hash(self, block) -> str:
@@ -302,16 +308,17 @@ class Blockchain:
             print(f"[Blockchain.add_block] INFO: Adding Block {block.index} to the chain...")
 
             # ✅ Skip validation for Genesis block
-            if not is_genesis and not self.validate_block(block):
-                print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
-                return False
+            if not is_genesis:
+                if not self.validate_block(block):
+                    print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} failed validation.")
+                    return False
 
-            # ✅ Check block version compatibility
+            # ✅ Block version compatibility
             if block.version != Constants.VERSION:
-                print(f"[Blockchain.add_block] ⚠️ WARNING: Block {block.index} has mismatched version. Expected {Constants.VERSION}, found {block.version}.")
+                print(f"[Blockchain.add_block] ⚠️ WARNING: Version mismatch in Block {block.index}. Expected {Constants.VERSION}, got {block.version}.")
                 return False
 
-            # ✅ Validate and serialize transactions
+            # ✅ Validate transactions
             valid_transactions = []
             for tx in block.transactions:
                 if isinstance(tx, dict):
@@ -319,7 +326,7 @@ class Blockchain:
                 elif hasattr(tx, "to_dict"):
                     tx_dict = tx.to_dict()
                 else:
-                    print(f"[Blockchain.add_block] ⚠️ WARNING: Transaction format unrecognized. Skipping.")
+                    print(f"[Blockchain.add_block] ⚠️ WARNING: Unrecognized transaction format in block {block.index}. Skipping.")
                     continue
 
                 tx_id = tx_dict.get("tx_id")
@@ -330,25 +337,25 @@ class Blockchain:
                 valid_transactions.append(tx_dict)
 
             if not valid_transactions:
-                print(f"[Blockchain.add_block] ❌ ERROR: No valid transactions to add.")
+                print(f"[Blockchain.add_block] ❌ ERROR: No valid transactions found in Block {block.index}.")
                 return False
 
             block.transactions = valid_transactions
 
-            # ✅ Validate UTXOs before storing the block
+            # ✅ Validate UTXOs before accepting the block
             if not self.utxo_storage.validate_utxos(valid_transactions):
-                print(f"[Blockchain.add_block] ❌ ERROR: Invalid UTXOs in Block {block.index}.")
+                print(f"[Blockchain.add_block] ❌ ERROR: Invalid UTXOs found in Block {block.index}.")
                 return False
 
-            # ✅ Store the full block
+            # ✅ Store full block (binary file + metadata)
             try:
                 self.full_block_store.store_block(block)
                 print(f"[Blockchain.add_block] ✅ INFO: Block {block.index} stored successfully.")
             except Exception as e:
-                print(f"[Blockchain.add_block] ❌ ERROR: Failed to store block {block.index}: {e}")
+                print(f"[Blockchain.add_block] ❌ ERROR: Failed to store Block {block.index}: {e}")
                 return False
 
-            # ✅ Index all transactions from the block
+            # ✅ Index transactions from the block
             for tx_dict in valid_transactions:
                 try:
                     tx_id = tx_dict.get("tx_id")
@@ -360,26 +367,26 @@ class Blockchain:
                     timestamp = tx_dict.get("timestamp", int(time.time()))
 
                     self.tx_storage.store_transaction(tx_id, block_hash, tx_dict, outputs, timestamp)
-                    print(f"[Blockchain.add_block] ✅ INFO: Transaction {tx_id} indexed successfully.")
+                    print(f"[Blockchain.add_block] ✅ INFO: Indexed transaction {tx_id}.")
 
                 except Exception as e:
-                    print(f"[Blockchain.add_block] ❌ ERROR: Failed to index transaction in Block {block.index}: {e}")
+                    print(f"[Blockchain.add_block] ❌ ERROR: Failed to index transaction {tx_id} in Block {block.index}: {e}")
 
-            # ✅ Re-validate UTXOs to ensure consistency before applying changes
-            if not self.utxo_storage.validate_utxos(valid_transactions):
-                print(f"[Blockchain.add_block] ❌ ERROR: Block {block.index} has invalid UTXOs. Aborting addition.")
+            # ✅ Update UTXO set
+            try:
+                self.utxo_storage.update_utxos(block)
+                print(f"[Blockchain.add_block] ✅ INFO: UTXOs updated for Block {block.index}.")
+            except Exception as e:
+                print(f"[Blockchain.add_block] ❌ ERROR: Failed to update UTXOs for Block {block.index}: {e}")
                 return False
 
-            self.utxo_storage.update_utxos(block)
-            print(f"[Blockchain.add_block] ✅ INFO: UTXO database updated successfully.")
-
-            # ✅ Add block to in-memory chain
+            # ✅ Add to in-memory chain
             self.chain.append(block)
             print(f"[Blockchain.add_block] ✅ SUCCESS: Block {block.index} added to the chain.")
             return True
 
         except Exception as e:
-            print(f"[Blockchain.add_block] ❌ ERROR: Failed to add Block {block.index}: {e}")
+            print(f"[Blockchain.add_block] ❌ EXCEPTION: Unexpected error while adding Block {block.index}: {e}")
             return False
 
     def _convert_tx_outputs(self, outputs) -> list:

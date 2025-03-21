@@ -243,7 +243,12 @@ class Start:
             detailed_print("----- Blockchain Operations Completed -----")
         except Exception as e:
             detailed_print(f"[run_all] ERROR: Blockchain operations failed: {e}")
-
 if __name__ == "__main__":
-    starter = Start()
-    starter.run_all()
+    try:
+        starter = Start()
+        starter.run_all()
+    except Exception as e:
+        error_msg = f"[Main Runtime ERROR]: {e}\n"
+        print(error_msg)
+        with open("runtime_errors.txt", "a") as f:
+            f.write(error_msg)
