@@ -65,3 +65,5 @@ blockchain_storage/
 block_data/
 BlockData/
 EOL
+JsonBlockIndex/
+mining_errors.txt

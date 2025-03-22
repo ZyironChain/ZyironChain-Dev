@@ -46,13 +46,14 @@ import time
 from typing import Optional, List, Dict
 from Zyiron_Chain.blockchain.constants import Constants
 
-
 class LMDBManager:
     def __init__(self, db_path: Optional[str] = None):
+        # ✅ Determine database path based on Constants or override
         db_path = db_path or os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, Constants.NETWORK_FOLDER)
         db_path = os.path.abspath(db_path)
         parent_dir = os.path.dirname(db_path)
 
+        # ✅ Create parent directory if it doesn't exist
         if parent_dir and parent_dir != db_path:
             try:
                 os.makedirs(parent_dir, exist_ok=True)
@@ -61,6 +62,11 @@ class LMDBManager:
                 print(f"Failed to create directory {parent_dir}: {str(e)}")
                 raise
 
+        # ✅ On Windows, set mutex fix for MDB_BAD_RSLOT
+        if os.name == "nt":
+            os.environ["LMDB_USE_WINDOWS_MUTEX"] = "1"
+
+        # ✅ Open LMDB environment
         try:
             self.env = lmdb.open(
                 path=db_path,
@@ -75,6 +81,7 @@ class LMDBManager:
             print(f"LMDB environment creation failed: {str(e)}")
             raise
 
+        # ✅ Initialize named databases inside LMDB
         try:
             with self.env.begin(write=True) as txn:
                 self.mempool_db = self.env.open_db(b"mempool", txn=txn)
@@ -88,8 +95,12 @@ class LMDBManager:
             self.env.close()
             raise
 
+        # ✅ Flag for transaction state (if needed)
         self.transaction_active = False
+
+        # ✅ Capacity check (resizes map if usage exceeds 80%)
         self._verify_capacity()
+
 
 
 
@@ -128,19 +139,46 @@ class LMDBManager:
 
     def _initialize_databases(self):
         """
-        Re-initializes the LMDB databases. 
-        Only use if absolutely necessary after the constructor.
+        Safely initializes all required LMDB database handles for the current network.
+        Only opens databases if they are not already opened.
         """
         try:
-            with self.env.begin(write=True) as txn:
-                self.mempool_db = self.env.open_db(b"mempool", txn=txn)
-                self.blocks_db = self.env.open_db(b"blocks", txn=txn)
-                self.transactions_db = self.env.open_db(b"transactions", txn=txn)
-                self.metadata_db = self.env.open_db(b"metadata", txn=txn)
+            print("[LMDBManager] INFO: Initializing LMDB databases...")
 
-            print("[LMDBManager] INFO: Databases re-initialized successfully.")
+            network = Constants.NETWORK
+            config = Constants.NETWORK_DATABASES.get(network)
+
+            if not config:
+                raise ValueError(f"[LMDBManager] ❌ ERROR: No LMDB config found for network: {network}")
+
+            with self.env.begin(write=True) as txn:
+                if not hasattr(self, "mempool_db"):
+                    self.mempool_db = self.env.open_db(b"mempool", txn=txn)
+                if not hasattr(self, "blocks_db"):
+                    self.blocks_db = self.env.open_db(b"blocks", txn=txn)
+                if not hasattr(self, "transactions_db"):
+                    self.transactions_db = self.env.open_db(b"transactions", txn=txn)
+                if not hasattr(self, "metadata_db"):
+                    self.metadata_db = self.env.open_db(b"metadata", txn=txn)
+
+                # ✅ Custom Blockchain DBs
+                if not hasattr(self, "block_metadata_db"):
+                    self.block_metadata_db = self.env.open_db(b"block_metadata", txn=txn)
+                if not hasattr(self, "txindex_db"):
+                    self.txindex_db = self.env.open_db(b"txindex", txn=txn)
+                if not hasattr(self, "utxo_db"):
+                    self.utxo_db = self.env.open_db(b"utxo", txn=txn)
+                if not hasattr(self, "utxo_history_db"):
+                    self.utxo_history_db = self.env.open_db(b"utxo_history", txn=txn)
+                if not hasattr(self, "fee_stats_db"):
+                    self.fee_stats_db = self.env.open_db(b"fee_stats", txn=txn)
+                if not hasattr(self, "orphan_blocks_db"):
+                    self.orphan_blocks_db = self.env.open_db(b"orphan_blocks", txn=txn)
+
+            print(f"[LMDBManager] ✅ SUCCESS: All LMDB databases initialized for {network.upper()} (only missing ones opened).")
+
         except lmdb.Error as e:
-            print(f"[LMDBManager] ERROR: Database re-initialization failed: {str(e)}")
+            print(f"[LMDBManager] ❌ ERROR: Failed to initialize LMDB databases: {e}")
             self.env.close()
             raise
 

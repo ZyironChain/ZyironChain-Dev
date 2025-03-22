@@ -374,6 +374,7 @@ class BlockStorage:
         """
         Stores a block in LMDB with comprehensive fallback logic.
         Ensures consistent difficulty formatting (96-char hex) using DifficultyConverter.
+        Indexes all transactions (not just coinbase).
         Also stores simplified metadata under 'blockmeta:<index>' for fast validation and access.
         """
         try:
@@ -402,7 +403,6 @@ class BlockStorage:
                 block.metadata = {}
                 print(f"[BlockStorage.store_block] INFO: Added fallback metadata for Block {block.index}")
 
-            # Serialize and adjust difficulty format
             try:
                 block_data = block.to_dict()
                 diff_int = int(block.difficulty, 16) if isinstance(block.difficulty, str) else int(block.difficulty)
@@ -413,14 +413,13 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed to compute block size for Block {block.index}: {e}")
                 block_data["size"] = 0
 
-            # Fix missing block_height in TXs
             for tx in block_data.get("transactions", []):
                 if not isinstance(tx, dict) or "tx_id" not in tx:
-                    print(f"[BlockStorage.store_block] ⚠️ WARNING: Invalid transaction format detected in Block {block.index}. Skipping TX.")
+                    print(f"[BlockStorage.store_block] ⚠️ WARNING: Invalid transaction format in Block {block.index}. Skipping TX.")
                     continue
                 if "block_height" not in tx or tx["block_height"] != block.index:
                     tx["block_height"] = block.index
-                    print(f"[BlockStorage.store_block] INFO: Fixed `block_height` for TX: {tx['tx_id']} -> {block.index}")
+                    print(f"[BlockStorage.store_block] INFO: Fixed `block_height` for TX: {tx['tx_id']}")
 
             try:
                 block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
@@ -454,14 +453,16 @@ class BlockStorage:
                 txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
                 txn.put(blockmeta_key, json.dumps(block_meta).encode("utf-8"))
 
-                if block.transactions:
-                    coinbase_tx = block.transactions[0]
-                    if hasattr(coinbase_tx, "tx_id"):
-                        txn.put(f"tx:{coinbase_tx.tx_id}".encode("utf-8"), json.dumps({
-                            "block_hash": block.mined_hash,
-                            "timestamp": block.timestamp
-                        }).encode("utf-8"))
-                        print(f"[BlockStorage.store_block] ✅ INFO: Indexed Coinbase TX {coinbase_tx.tx_id} in txindex.")
+                # ✅ Index ALL transactions, not just coinbase
+                for tx in block.transactions:
+                    tx_id = tx.tx_id if hasattr(tx, "tx_id") else tx.get("tx_id")
+                    if not tx_id or not isinstance(tx_id, str):
+                        continue
+                    txn.put(f"tx:{tx_id}".encode("utf-8"), json.dumps({
+                        "block_hash": block.mined_hash,
+                        "timestamp": block.timestamp
+                    }).encode("utf-8"))
+                    print(f"[BlockStorage.store_block] ✅ Indexed TX {tx_id} in txindex.")
 
             print(f"[BlockStorage.store_block] ✅ SUCCESS: Block {block.index} stored successfully with hash: {block.hash}")
 
@@ -503,7 +504,6 @@ class BlockStorage:
             except Exception as fallback_error:
                 print(f"[BlockStorage.store_block] ❌ FALLBACK ERROR: Failed to store fallback data for Block {block.index}: {fallback_error}")
                 raise
-
 
 
 

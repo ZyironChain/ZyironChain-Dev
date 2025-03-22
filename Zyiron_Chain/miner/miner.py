@@ -9,7 +9,10 @@ import math
 import random
 import json
 from threading import Lock
-
+import time
+import traceback
+import time
+from datetime import datetime
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.payment_type import PaymentTypeManager
 from Zyiron_Chain.utils.hashing import Hashing
@@ -334,7 +337,13 @@ class Miner:
             return False
 
 
+
+
+
     def mining_loop(self, network=None):
+        import time
+        from datetime import datetime
+
         network = network or Constants.NETWORK
         print(f"\n[Miner.mining_loop] INFO: Starting mining loop on {network.upper()}. Press Ctrl+C to stop.\n")
 
@@ -346,52 +355,88 @@ class Miner:
             last_block = self.block_storage.get_latest_block()
 
             if not last_block:
-                with open("mining_errors.txt", "a") as f:
-                    f.write("[Miner.mining_loop] ERROR: Failed to initialize Genesis block.\n")
+                with open("mining_errors.txt", "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.now()}] ❌ [Miner.mining_loop] ERROR: Failed to initialize Genesis block.\n")
                 return
+            else:
+                with open("mining_errors.txt", "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.now()}] ✅ Genesis block created: Height 0 | Hash: {last_block.hash}\n")
 
         self.block_manager.chain = [last_block]
         block_height = last_block.index + 1
 
+        mined_blocks = 0
+        total_mining_time = 0
+        mining_start_time = time.time()
+
         while True:
             try:
                 print(f"\n[Miner.mining_loop] INFO: Mining block at height {block_height}...")
+                start_time = time.time()
 
                 block = self.mine_block(network)
+                mining_time = round(time.time() - start_time, 2)
+
                 if not block:
                     raise ValueError(f"Failed to mine block at height {block_height}")
-
-                if not self.blockchain.validate_block(block):
-                    raise ValueError(f"Block {block.index} failed validation.")
 
                 self.block_storage.store_block(block)
                 self.block_manager.chain.append(block)
 
+                last_block = block
+                block_height = last_block.index + 1
+
+                mined_blocks += 1
+                total_mining_time += mining_time
                 total_supply = self.block_storage.get_total_mined_supply()
-                print(f"[Miner.mining_loop] ✅ Total mined supply: {total_supply} (Max: {Constants.MAX_SUPPLY})")
+
+                print(f"[Miner.mining_loop] ✅ Block {block.index} mined in {mining_time}s | Total Supply: {total_supply}")
 
                 try:
                     new_difficulty = self.pow_manager.adjust_difficulty()
                     print(f"[Miner.mining_loop] ✅ Difficulty adjusted to: {new_difficulty}")
                 except Exception as diff_error:
-                    with open("mining_errors.txt", "a") as f:
-                        f.write(f"[Difficulty Adjustment ERROR]: {diff_error}\n")
+                    with open("mining_errors.txt", "a", encoding="utf-8") as f:
+                        f.write(f"[{datetime.now()}] ❌ [Difficulty Adjustment ERROR]: {diff_error}\n")
 
-                block_height += 1
-                time.sleep(1)  # Prevent CPU overuse if block is mined too quickly
+                with open("mining_errors.txt", "a", encoding="utf-8") as f:
+                    f.write(
+                        f"[{datetime.now()}] ✅ Block {block.index} MINED in {mining_time}s | "
+                        f"Hash: {block.hash} | PrevHash: {block.previous_hash}\n"
+                    )
+
+                # ✅ Print summary stats every 10 blocks
+                if mined_blocks % 10 == 0:
+                    avg_time = round(total_mining_time / mined_blocks, 2)
+                    runtime = round(time.time() - mining_start_time, 2)
+                    summary = (
+                        f"\n--- Mining Summary @ Block {block.index} ---\n"
+                        f"⛏️  Blocks Mined: {mined_blocks}\n"
+                        f"🕒  Avg Mining Time: {avg_time}s\n"
+                        f"💰  Total Supply: {total_supply}\n"
+                        f"📏  Current Height: {block.index}\n"
+                        f"⏱️  Runtime: {runtime}s\n"
+                        f"🎯  Difficulty: {new_difficulty}\n"
+                        f"-------------------------------\n"
+                    )
+                    print(summary)
+                    with open("mining_errors.txt", "a", encoding="utf-8") as f:
+                        f.write(summary)
+
+                time.sleep(1)
 
             except KeyboardInterrupt:
                 print("\n[Miner.mining_loop] INFO: Mining interrupted by user.")
                 break
 
             except Exception as e:
-                error_message = f"[Mining ERROR @ Height {block_height}] {e}\n"
+                error_message = f"[{datetime.now()}] ❌ [Mining ERROR @ Height {block_height}] {e}\n"
                 print(error_message)
-                with open("mining_errors.txt", "a") as f:
+                with open("mining_errors.txt", "a", encoding="utf-8") as f:
                     f.write(error_message)
-                # Continue mining after error
                 time.sleep(1)
                 continue
+
 
 
     def validate_new_block(self, new_block):

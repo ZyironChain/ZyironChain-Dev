@@ -126,6 +126,7 @@ class Blockchain:
             stored_blocks = self.full_block_store.get_all_blocks()
             if not stored_blocks:
                 print("[Blockchain.load_chain_from_storage] ❌ WARNING: No blocks found in LMDB.")
+                self.chain = []  # Explicitly clear the chain if empty
                 return []
 
             loaded_blocks = []
@@ -228,13 +229,16 @@ class Blockchain:
             # ✅ Final chain validation
             if not self.validate_chain(loaded_blocks):
                 print("[Blockchain.load_chain_from_storage] ❌ ERROR: Final chain structure is invalid.")
+                self.chain = []
                 return []
 
-            print(f"[Blockchain.load_chain_from_storage] ✅ SUCCESS: Loaded {len(loaded_blocks)} valid blocks from LMDB.")
-            return loaded_blocks
+            self.chain = loaded_blocks  # ✅ FIXED: store loaded chain
+            print(f"[Blockchain.load_chain_from_storage] ✅ SUCCESS: Loaded {len(self.chain)} valid blocks from LMDB.")
+            return self.chain
 
         except Exception as e:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from LMDB: {e}")
+            self.chain = []
             return []
 
 
