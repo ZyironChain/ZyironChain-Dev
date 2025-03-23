@@ -37,7 +37,8 @@ class Transaction:
         tx_id: Optional[str] = None,
         utxo_manager: Optional[UTXOManager] = None,
         tx_type: str = "STANDARD",
-        fee_model: Optional[FeeModel] = None
+        fee_model: Optional[FeeModel] = None,
+        block_height: Optional[int] = None,  # Added block_height for UTXO tracking
     ):
         """
         Initialize a transaction object.
@@ -48,6 +49,7 @@ class Transaction:
         :param utxo_manager: Optional UTXOManager for retrieving UTXO data.
         :param tx_type: Transaction type, e.g., "STANDARD" or "COINBASE".
         :param fee_model: Optional FeeModel instance for dynamic fee calculation.
+        :param block_height: Optional block height for UTXO tracking.
         """
         try:
             # ✅ Validate inputs and outputs
@@ -92,12 +94,14 @@ class Transaction:
                 self._calculate_fee(), Decimal(Constants.MIN_TRANSACTION_FEE)
             )
 
+            # ✅ Set block height for UTXO tracking
+            self.block_height = block_height
+
             print(f"[TRANSACTION INFO] Created transaction {self.tx_id} | Type: {self.type} | Fee: {self.fee} | Size: {self.size} bytes")
 
         except Exception as e:
             print(f"[TRANSACTION ERROR] Failed to initialize transaction: {e}")
             raise ValueError("Transaction initialization failed due to an unexpected error.")
-
 
     def _generate_tx_id(self) -> str:
         """
@@ -121,7 +125,6 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION _generate_tx_id ERROR] ❌ Failed to generate tx_id: {e}")
             return Constants.ZERO_HASH
-
 
     def calculate_hash(self) -> str:
         """
@@ -185,8 +188,6 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION _calculate_size ERROR] {e}")
             return 0
-
-
 
     def _calculate_fee(self) -> Decimal:
         """
@@ -262,7 +263,6 @@ class Transaction:
             print(f"[TRANSACTION _calculate_fee ERROR] Unexpected error calculating fee: {e}")
             return Decimal("0")
 
-
     def to_dict(self) -> Dict:
         """
         Serialize the transaction to a dictionary.
@@ -278,6 +278,7 @@ class Transaction:
                 "fee": str(self.fee),  # Convert Decimal fee to string to maintain precision
                 "size": self.size,  # Transaction size in bytes
                 "hash": self.hash if isinstance(self.hash, str) else self.hash.hex(),  # Ensure hex string format for hash
+                "block_height": self.block_height,  # Include block height for UTXO tracking
             }
         except Exception as e:
             print(f"[TRANSACTION to_dict ERROR] Failed to serialize transaction {self.tx_id}: {e}")
@@ -313,16 +314,13 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION store_transaction ERROR] Could not store transaction {self.tx_id}: {e}")
 
-
-
-    def store_utxo(self):
+    def store_utxos(self):
         """
         Store each output of this transaction as a UTXO using UTXOStorage.
-        Uses lazy import to break circular dependencies.
         Ensures all UTXOs are properly formatted and stored safely.
         """
         try:
-            print(f"[TRANSACTION store_utxo INFO] Storing UTXOs for transaction {self.tx_id}...")
+            print(f"[TRANSACTION store_utxos INFO] Storing UTXOs for transaction {self.tx_id}...")
 
             # ✅ Lazy import to prevent circular import issues
             import importlib
@@ -330,12 +328,12 @@ class Transaction:
                 utxo_storage_module = importlib.import_module("Zyiron_Chain.storage.utxostorage")
                 UTXOStorage = getattr(utxo_storage_module, "UTXOStorage")
             except ImportError as e:
-                print(f"[TRANSACTION store_utxo ERROR] Failed to import UTXOStorage module: {e}")
+                print(f"[TRANSACTION store_utxos ERROR] Failed to import UTXOStorage module: {e}")
                 return
 
             # ✅ Ensure UTXOStorage has the necessary method
             if not hasattr(UTXOStorage, "store_utxo"):
-                print(f"[TRANSACTION store_utxo ERROR] UTXOStorage does not have a store_utxo method.")
+                print(f"[TRANSACTION store_utxos ERROR] UTXOStorage does not have a store_utxo method.")
                 return
 
             # ✅ Initialize UTXOStorage instance
@@ -344,28 +342,63 @@ class Transaction:
             # ✅ Store each transaction output as a UTXO
             for idx, output in enumerate(self.outputs):
                 try:
-                    utxo_id = f"{self.tx_id}-{idx}"
-
-                    # ✅ Ensure output has the necessary fields
-                    if not isinstance(output.amount, Decimal) or not isinstance(output.script_pub_key, str):
-                        print(f"[TRANSACTION store_utxo WARN] Skipping malformed output at index {idx} in transaction {self.tx_id}.")
-                        continue
-
+                    utxo_key = f"utxo:{self.tx_id}:{idx}"
                     utxo_data = {
-                        "tx_out_id": utxo_id,  # Unique UTXO ID derived from tx_id + index
+                        "tx_id": self.tx_id,
+                        "output_index": idx,
                         "amount": str(output.amount),  # Convert Decimal to string for storage
                         "script_pub_key": output.script_pub_key,
-                        "locked": output.locked,  # Preserve locked status
+                        "is_locked": output.locked,
+                        "block_height": self.block_height,
+                        "spent_status": False,  # Initially, UTXOs are unspent
                     }
 
                     # ✅ Store UTXO safely
-                    utxo_storage.store_utxo(utxo_id, utxo_data)
-                    print(f"[TRANSACTION store_utxo INFO] Stored UTXO {utxo_id} successfully.")
+                    utxo_storage.store_utxo(utxo_key, utxo_data)
+                    print(f"[TRANSACTION store_utxos INFO] Stored UTXO {utxo_key} successfully.")
 
                 except Exception as e:
-                    print(f"[TRANSACTION store_utxo ERROR] Failed to store UTXO {utxo_id}: {e}")
+                    print(f"[TRANSACTION store_utxos ERROR] Failed to store UTXO {utxo_key}: {e}")
 
-            print(f"[TRANSACTION store_utxo SUCCESS] All valid UTXOs for transaction {self.tx_id} stored successfully.")
+            print(f"[TRANSACTION store_utxos SUCCESS] All valid UTXOs for transaction {self.tx_id} stored successfully.")
 
         except Exception as e:
-            print(f"[TRANSACTION store_utxo ERROR] Unexpected failure while storing UTXOs for transaction {self.tx_id}: {e}")
+            print(f"[TRANSACTION store_utxos ERROR] Unexpected failure while storing UTXOs for transaction {self.tx_id}: {e}")
+
+    def mark_utxos_spent(self, inputs: List[TransactionIn]):
+        """
+        Mark UTXOs as spent when they are used as inputs in a new transaction.
+        """
+        try:
+            print(f"[TRANSACTION mark_utxos_spent INFO] Marking UTXOs as spent for transaction {self.tx_id}...")
+
+            # ✅ Lazy import to prevent circular import issues
+            import importlib
+            try:
+                utxo_storage_module = importlib.import_module("Zyiron_Chain.storage.utxostorage")
+                UTXOStorage = getattr(utxo_storage_module, "UTXOStorage")
+            except ImportError as e:
+                print(f"[TRANSACTION mark_utxos_spent ERROR] Failed to import UTXOStorage module: {e}")
+                return
+
+            # ✅ Ensure UTXOStorage has the necessary method
+            if not hasattr(UTXOStorage, "mark_spent"):
+                print(f"[TRANSACTION mark_utxos_spent ERROR] UTXOStorage does not have a mark_spent method.")
+                return
+
+            # ✅ Initialize UTXOStorage instance
+            utxo_storage = UTXOStorage()
+
+            # ✅ Mark each input UTXO as spent
+            for inp in inputs:
+                try:
+                    utxo_key = f"utxo:{inp.tx_out_id}:{inp.output_index}"
+                    utxo_storage.mark_spent(utxo_key)
+                    print(f"[TRANSACTION mark_utxos_spent INFO] Marked UTXO {utxo_key} as spent.")
+                except Exception as e:
+                    print(f"[TRANSACTION mark_utxos_spent ERROR] Failed to mark UTXO {utxo_key} as spent: {e}")
+
+            print(f"[TRANSACTION mark_utxos_spent SUCCESS] All UTXOs for transaction {self.tx_id} marked as spent.")
+
+        except Exception as e:
+            print(f"[TRANSACTION mark_utxos_spent ERROR] Unexpected failure while marking UTXOs as spent for transaction {self.tx_id}: {e}")

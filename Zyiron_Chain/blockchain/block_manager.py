@@ -330,26 +330,43 @@ class BlockManager:
         """
         Adds a validated block to the in-memory chain and triggers difficulty adjustment if needed.
         Also updates the latest block index in persistent LMDB storage.
+
+        Args:
+            block (Block): The block to add to the chain.
+
+        Returns:
+            bool: True if the block was added successfully, False otherwise.
         """
         try:
             print(f"[BlockManager.add_block] INFO: Adding Block {block.index}...")
 
             # ✅ Ensure block object has required attributes
-            if not hasattr(block, "index") or not hasattr(block, "difficulty"):
-                print(f"[BlockManager.add_block] ❌ ERROR: Block object missing required attributes.")
+            required_attributes = ["index", "difficulty", "previous_hash", "hash", "timestamp", "transactions"]
+            missing_attributes = [attr for attr in required_attributes if not hasattr(block, attr)]
+            if missing_attributes:
+                print(f"[BlockManager.add_block] ❌ ERROR: Block object missing required attributes: {missing_attributes}.")
                 return False
 
             # ✅ Prevent duplicate or out-of-order blocks
-            if self.chain and block.index <= self.chain[-1].index:
-                print(f"[BlockManager.add_block] ⚠️ WARNING: Block {block.index} already added or out of order.")
-                return False
+            if self.chain:
+                last_block = self.chain[-1]
+                if block.index <= last_block.index:
+                    print(f"[BlockManager.add_block] ⚠️ WARNING: Block {block.index} already added or out of order.")
+                    return False
+
+                # ✅ Validate block linkage
+                if block.previous_hash != last_block.hash:
+                    print(
+                        f"[BlockManager.add_block] ❌ ERROR: Block {block.index} has incorrect previous hash. "
+                        f"Expected: {last_block.hash}, Found: {block.previous_hash}."
+                    )
+                    return False
 
             # ✅ Append block to in-memory chain
             self.chain.append(block)
 
             # ✅ Normalize difficulty for logging
             difficulty = DifficultyConverter.convert(block.difficulty)
-
             print(
                 f"[BlockManager.add_block] ✅ SUCCESS: "
                 f"Block {block.index} added. Difficulty: {difficulty}."
@@ -374,12 +391,19 @@ class BlockManager:
             except Exception as e:
                 print(f"[BlockManager.add_block] ⚠️ WARNING: Failed to update latest_block_index: {e}")
 
+            # ✅ Store block in block storage
+            try:
+                self.block_storage.store_block(block)
+                print(f"[BlockManager.add_block] ✅ INFO: Block {block.index} stored in block storage.")
+            except Exception as e:
+                print(f"[BlockManager.add_block] ❌ ERROR: Failed to store Block {block.index} in block storage: {e}")
+                return False
+
             return True
 
         except Exception as e:
             print(f"[BlockManager.add_block] ❌ ERROR: Failed to add Block {block.index}. Exception: {e}.")
             return False
-
 
 
     def get_latest_block(self):

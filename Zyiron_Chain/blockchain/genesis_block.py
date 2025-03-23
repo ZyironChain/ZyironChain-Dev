@@ -79,13 +79,13 @@ class GenesisBlockManager:
             try:
                 print("[GenesisBlockManager.ensure_genesis_block] INFO: Checking for existing Genesis block...")
 
-                # ✅ **Check LMDB Storage for Block 0**
+                # ✅ Check LMDB Storage for Block 0
                 existing_genesis = self.block_storage.get_block_by_height(0)
 
                 if existing_genesis:
                     print(f"[GenesisBlockManager.ensure_genesis_block] ✅ INFO: Genesis Block found with hash {existing_genesis.hash}")
 
-                    # ✅ **Verify Hash Consistency**
+                    # ✅ Verify Hash Consistency
                     computed_hash = existing_genesis.calculate_hash()
                     if existing_genesis.hash == computed_hash:
                         print("[GenesisBlockManager.ensure_genesis_block] ✅ SUCCESS: Stored Genesis Block is valid.")
@@ -95,7 +95,7 @@ class GenesisBlockManager:
                         print(f"Expected: {computed_hash}, Found: {existing_genesis.hash}")
                         return None  # ❌ Block integrity issue, needs re-mining
 
-                # ✅ **Check Coinbase TX in Transaction Storage**
+                # ✅ Check Coinbase TX in Transaction Storage
                 stored_tx_id = self.block_storage.get_transaction_id("GENESIS_COINBASE")
                 if stored_tx_id:
                     print(f"[GenesisBlockManager.ensure_genesis_block] INFO: Found stored Coinbase TX ID: {stored_tx_id}")
@@ -107,15 +107,15 @@ class GenesisBlockManager:
 
                     print("[GenesisBlockManager.ensure_genesis_block] WARNING: Retrieved Genesis block is invalid or missing.")
 
-                # 🚨 **No Valid Genesis Block Found – Proceed to Mining a New One**
+                # 🚨 No Valid Genesis Block Found – Proceed to Mining a New One
                 print("[GenesisBlockManager.ensure_genesis_block] ⚠️ WARNING: No valid Genesis block found, proceeding to mine a new one...")
 
                 genesis_block = self.create_and_mine_genesis_block()
 
-                # ✅ **Ensure Genesis Block is Stored in LMDB**
-                self.block_storage.store_block(genesis_block)
+                # ✅ Store Genesis Block (Full + Metadata)
+                self.block_storage.store_block(genesis_block)  # stores both full block and metadata
 
-                # ✅ **Store the Genesis Coinbase TX ID for Future Lookups**
+                # ✅ Store the Genesis Coinbase TX ID for Future Lookups
                 if genesis_block.transactions:
                     coinbase_tx = genesis_block.transactions[0]
                     if hasattr(coinbase_tx, "tx_id"):
@@ -129,6 +129,7 @@ class GenesisBlockManager:
             except Exception as e:
                 print(f"[GenesisBlockManager.ensure_genesis_block] ❌ ERROR: Genesis initialization failed: {e}")
                 raise
+
 
 
 

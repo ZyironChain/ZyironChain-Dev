@@ -357,28 +357,37 @@ class Block:
         try:
             print("[Block.from_dict] INFO: Reconstructing block from dict...")
 
+            # ✅ Fallback to root dictionary if header is missing
             header = data.get("header", data)
 
+            # ✅ Required fields with fallback values
             required_fields = {
-                "index", "previous_hash", "merkle_root",
-                "timestamp", "nonce", "difficulty", "miner_address"
+                "index": 0,  # Fallback to 0 if missing
+                "previous_hash": Constants.ZERO_HASH,  # Fallback to zero hash
+                "merkle_root": Constants.ZERO_HASH,  # Fallback to zero hash
+                "timestamp": int(time.time()),  # Fallback to current time
+                "nonce": 0,  # Fallback to 0
+                "difficulty": Constants.GENESIS_TARGET,  # Fallback to genesis difficulty
+                "miner_address": "UNKNOWN_MINER"  # Fallback to unknown miner
             }
 
-            missing_fields = required_fields - set(header.keys())
-            if missing_fields:
-                print(f"[Block.from_dict] WARNING: Missing required fields: {missing_fields}. Applying fallback values.")
+            # ✅ Apply fallback values for missing fields
+            for field, fallback in required_fields.items():
+                if field not in header:
+                    print(f"[Block.from_dict] WARNING: Missing field '{field}'. Using fallback: {fallback}")
+                    header[field] = fallback
 
-            block_index = int(header.get("index", data.get("block_height", 0)))
-            previous_hash = str(header.get("previous_hash", Constants.ZERO_HASH))
-            merkle_root = str(header.get("merkle_root", Constants.ZERO_HASH))
-            timestamp = int(header.get("timestamp", int(time.time())))
-            nonce = int(header.get("nonce", 0))
-            miner_address = str(header.get("miner_address", "UNKNOWN_MINER"))
+            # ✅ Parse block fields
+            block_index = int(header["index"])
+            previous_hash = str(header["previous_hash"])
+            merkle_root = str(header["merkle_root"])
+            timestamp = int(header["timestamp"])
+            nonce = int(header["nonce"])
+            miner_address = str(header["miner_address"])
 
             # ✅ Use DifficultyConverter for consistency
             try:
-                difficulty_raw = header.get("difficulty", Constants.GENESIS_TARGET)
-                difficulty = DifficultyConverter.convert(difficulty_raw)
+                difficulty = DifficultyConverter.convert(header["difficulty"])
             except Exception as e:
                 print(f"[Block.from_dict] ❌ ERROR: Failed to parse difficulty: {e}. Using fallback.")
                 difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
@@ -419,6 +428,7 @@ class Block:
                     print(f"[Block.from_dict] ERROR: Failed to parse transaction in Block {block_index}: {e}")
                     return None
 
+            # ✅ Ensure at least one Coinbase transaction exists
             has_coinbase = any(
                 (isinstance(tx, dict) and tx.get("type") == "COINBASE") or
                 (hasattr(tx, "type") and getattr(tx, "type") == "COINBASE")

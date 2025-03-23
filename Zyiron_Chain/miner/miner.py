@@ -37,6 +37,7 @@ class Miner:
         transaction_manager,
         key_manager,
         mempool_storage,
+        utxo_storage,  # ✅ ADDED
         genesis_block_manager=None
     ):
         """
@@ -44,7 +45,7 @@ class Miner:
         """
         print("[Miner.__init__] INFO: Initializing Miner...")
 
-        # ✅ **Ensure required components are provided**
+        # ✅ Ensure required components are provided
         required_params = {
             "blockchain": blockchain,
             "block_manager": block_manager,
@@ -52,33 +53,39 @@ class Miner:
             "transaction_manager": transaction_manager,
             "key_manager": key_manager,
             "mempool_storage": mempool_storage,
+            "utxo_storage": utxo_storage  # ✅ INCLUDED IN CHECK
         }
 
         for param_name, param_value in required_params.items():
             if not param_value:
                 raise ValueError(f"[Miner.__init__] ERROR: `{param_name}` instance is required.")
 
-        # ✅ **Assign instances**
+        # ✅ Assign instances
         self.blockchain = blockchain
         self.block_manager = block_manager
         self.block_storage = block_storage
         self.transaction_manager = transaction_manager
         self.key_manager = key_manager
         self.mempool_storage = mempool_storage
+        self.utxo_storage = utxo_storage  # ✅ ASSIGNED
         self.genesis_block_manager = genesis_block_manager
 
-        # ✅ **Initialize Proof-of-Work Manager**
+        # ✅ Extract TxStorage from transaction_manager (needed for fallback/validation)
+        self.tx_storage = getattr(transaction_manager, "tx_storage", None)
+        if not self.tx_storage:
+            raise ValueError("[Miner.__init__] ERROR: `tx_storage` is missing from transaction_manager.")
+
+        # ✅ Initialize Proof-of-Work Manager
         self.pow_manager = PowManager(block_storage)
 
-        # ✅ **Initialize Mining Lock**
+        # ✅ Initialize Mining Lock
         self._mining_lock = Lock()
 
-        # ✅ **Initialize Current Block Size**
+        # ✅ Initialize Current Block Size
         self.current_block_size = Constants.INITIAL_BLOCK_SIZE_MB  # 🔹 Default to 0MB - 10MB
 
         print("[Miner.__init__] INFO: Miner initialized successfully.")
         print(f"[Miner.__init__] INFO: Initial block size set to {self.current_block_size} MB.")
-
 
 
     def _calculate_block_size(self):
@@ -572,6 +579,7 @@ class Miner:
         - Ensures `mined_hash` consistency in both `BlockStorage` and blockchain validation.
         - Uses `mined_hash` of the last block as `previous_hash`.
         - Retrieves transactions from mempool and includes coinbase transaction.
+        - Stores all transactions in txindex.lmdb and updates UTXOs.
         """
         with self._mining_lock:
             try:
@@ -647,7 +655,7 @@ class Miner:
                 # ✅ Construct block
                 new_block = Block(
                     index=block_height,
-                    previous_hash=previous_hash,  # Ensure previous_hash is correctly set
+                    previous_hash=previous_hash,
                     transactions=valid_txs,
                     timestamp=int(time.time()),
                     nonce=0,
@@ -673,6 +681,41 @@ class Miner:
                 new_block.mined_hash = mined_hash
                 new_block.nonce = mined_nonce
                 self.block_storage.store_block(new_block)
+
+                # ✅ Store all transactions in txindex
+                for tx in valid_txs:
+                    tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    tx_id = tx_dict.get("tx_id")
+                    outputs = tx_dict.get("outputs", [])
+                    timestamp = tx_dict.get("timestamp", int(time.time()))
+                    tx_signature = tx_dict.get("tx_signature", b"")
+                    falcon_signature = tx_dict.get("falcon_signature", b"")
+
+                    # Normalize signatures if stored as hex strings
+                    if isinstance(tx_signature, str):
+                        try:
+                            tx_signature = bytes.fromhex(tx_signature)
+                        except ValueError:
+                            tx_signature = b""
+
+                    if isinstance(falcon_signature, str):
+                        try:
+                            falcon_signature = bytes.fromhex(falcon_signature)
+                        except ValueError:
+                            falcon_signature = b""
+
+                    self.tx_storage.store_transaction(
+                        tx_id=tx_id,
+                        block_hash=new_block.mined_hash,
+                        tx_data=tx_dict,
+                        outputs=outputs,
+                        timestamp=timestamp,
+                        tx_signature=tx_signature,
+                        falcon_signature=falcon_signature
+                    )
+
+                # ✅ Corrected UTXO update: Pass full block
+                self.utxo_storage.update_utxos(new_block)
 
                 print(f"[Miner.mine_block] ✅ SUCCESS: Block {block_height} mined with hash {mined_hash[:12]}... in {time.time() - start_time:.2f}s")
                 return new_block

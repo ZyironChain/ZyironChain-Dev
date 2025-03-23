@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from decimal import Decimal
 import lmdb
 import json
@@ -47,42 +48,59 @@ import time
 from typing import Optional, List, Dict
 from Zyiron_Chain.blockchain.constants import Constants
 
-class LMDBManager:
-    def __init__(self, db_path: Optional[str] = None):
-        # ✅ Determine database path based on Constants or override
-        db_path = db_path or os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, Constants.NETWORK_FOLDER)
-        db_path = os.path.abspath(db_path)
-        parent_dir = os.path.dirname(db_path)
 
-        # ✅ Create parent directory if it doesn't exist
-        if parent_dir and parent_dir != db_path:
+
+import os
+import lmdb
+from typing import Optional
+
+class LMDBManager:
+    _environments = {}  # Singleton registry for environments
+
+    def __init__(self, db_path: Optional[str] = None, max_readers: int = 200, max_dbs: int = 10, writemap: bool = False):
+        """
+        Initialize the LMDB environment.
+
+        Args:
+            db_path (Optional[str]): Path to the LMDB database directory.
+            max_readers (int): Maximum number of readers for the LMDB environment.
+            max_dbs (int): Maximum number of sub-databases.
+            writemap (bool): Use writemap for faster writes (requires sufficient memory).
+        """
+        db_path = db_path or os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, Constants.NETWORK_FOLDER)
+        self.db_path = os.path.abspath(db_path)
+        self.max_readers = max_readers
+        self.max_dbs = max_dbs
+        self.writemap = writemap
+
+        parent_dir = os.path.dirname(self.db_path)
+        if parent_dir and parent_dir != self.db_path:
             try:
                 os.makedirs(parent_dir, exist_ok=True)
-                print(f"Created database directory: {parent_dir}")
+                print(f"[LMDBManager] Created database directory: {parent_dir}")
             except OSError as e:
-                print(f"Failed to create directory {parent_dir}: {str(e)}")
+                print(f"[LMDBManager] ERROR: Failed to create directory {parent_dir}: {str(e)}")
                 raise
 
-        # ✅ On Windows, set mutex fix for MDB_BAD_RSLOT
         if os.name == "nt":
             os.environ["LMDB_USE_WINDOWS_MUTEX"] = "1"
 
-        # ✅ Open LMDB environment
-        try:
-            self.env = lmdb.open(
-                path=db_path,
-                map_size=Constants.LMDB_MAP_SIZE,
-                create=True,
-                readahead=False,
-                writemap=True,
-                meminit=False,
-                max_dbs=Constants.MAX_LMDB_DATABASES
-            )
-        except lmdb.Error as e:
-            print(f"LMDB environment creation failed: {str(e)}")
-            raise
+        # ✅ Check for already existing environment and reopen if closed
+        existing_env = LMDBManager._environments.get(self.db_path)
+        if existing_env:
+            try:
+                with existing_env.begin():  # Try to begin txn to check if open
+                    self.env = existing_env
+                    print(f"[LMDBManager] Reused existing LMDB environment at {self.db_path}")
+            except lmdb.Error:
+                print(f"[LMDBManager] WARNING: Existing LMDB environment at {self.db_path} is closed or invalid. Reopening...")
+                del LMDBManager._environments[self.db_path]
+                self.env = self._open_env()
+        else:
+            self.env = self._open_env()
 
-        # ✅ Initialize named databases inside LMDB
+        LMDBManager._environments[self.db_path] = self.env
+
         try:
             with self.env.begin(write=True) as txn:
                 self.mempool_db = self.env.open_db(b"mempool", txn=txn)
@@ -90,140 +108,30 @@ class LMDBManager:
                 self.transactions_db = self.env.open_db(b"transactions", txn=txn)
                 self.metadata_db = self.env.open_db(b"metadata", txn=txn)
 
-            print("Database handles initialized successfully.")
+            print("[LMDBManager] Database handles initialized successfully.")
         except lmdb.Error as e:
-            print(f"Database initialization failed: {str(e)}")
-            self.env.close()
+            print(f"[LMDBManager] ERROR: Database initialization failed: {str(e)}")
+            self.close()
             raise
 
-        # ✅ Flag for transaction state (if needed)
-        self.transaction_active = False
-
-        # ✅ Capacity check (resizes map if usage exceeds 80%)
         self._verify_capacity()
 
 
-
-
-
-    def get_all_transactions(self) -> List[Dict]:
-        """
-        Retrieve all transactions from the LMDB transactions DB.
-        Fallback: Scans full block store if entries are missing or empty.
-        
-        Returns:
-            List[Dict]: A list of transaction dictionaries.
-        """
-        transactions = []
-        found_in_lmdb = False
-
-        try:
-            print("[LMDBManager.get_all_transactions] INFO: Scanning transactions_db for all transactions...")
-
-            with self.env.begin(db=self.transactions_db) as txn:
-                cursor = txn.cursor()
-                for key, value in cursor:
-                    try:
-                        key_str = key.decode("utf-8", errors="ignore")
-                        if not key_str.startswith("tx:"):
-                            continue
-
-                        tx_json = value.decode("utf-8", errors="ignore")
-                        tx_dict = json.loads(tx_json)
-
-                        if isinstance(tx_dict, dict):
-                            transactions.append(tx_dict)
-                            found_in_lmdb = True
-                            print(f"[LMDBManager.get_all_transactions] ✅ Loaded TX from {key_str}")
-                        else:
-                            print(f"[LMDBManager.get_all_transactions] ⚠️ Invalid TX format at {key_str}")
-
-                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                        print(f"[LMDBManager.get_all_transactions] ⚠️ Skipping malformed entry {key_str}: {e}")
-                        continue
-
-            if found_in_lmdb:
-                print(f"[LMDBManager.get_all_transactions] ✅ Retrieved {len(transactions)} transactions from LMDB.")
-                return transactions
-
-            # 🔁 Fallback: scan full block store
-            print("[LMDBManager.get_all_transactions] ⚠️ No transactions found in LMDB. Scanning full block store...")
-            with self.full_block_store.env.begin() as txn:
-                cursor = txn.cursor()
-                for key, value in cursor:
-                    try:
-                        if not key.startswith(b"block:"):
-                            continue
-
-                        block_data = json.loads(value.decode("utf-8"))
-                        block_transactions = block_data.get("transactions", [])
-
-                        if not isinstance(block_transactions, list):
-                            continue
-
-                        for tx in block_transactions:
-                            if isinstance(tx, dict):
-                                transactions.append(tx)
-                                print(f"[LMDBManager.get_all_transactions] 🔁 Fallback: Added TX {tx.get('tx_id', 'unknown')}")
-
-                    except Exception as fallback_error:
-                        print(f"[LMDBManager.get_all_transactions] ⚠️ Fallback TX parse failed: {fallback_error}")
-                        continue
-
-            print(f"[LMDBManager.get_all_transactions] ✅ Fallback complete. Total transactions loaded: {len(transactions)}")
-            return transactions
-
-        except Exception as e:
-            print(f"[LMDBManager.get_all_transactions] ❌ ERROR: Failed to retrieve transactions: {e}")
-            return []
-
-
-
-
-    def _initialize_databases(self):
-        """
-        Safely initializes all required LMDB database handles for the current network.
-        Only opens databases if they are not already opened.
-        """
-        try:
-            print("[LMDBManager] INFO: Initializing LMDB databases...")
-
-            network = Constants.NETWORK
-            config = Constants.NETWORK_DATABASES.get(network)
-
-            if not config:
-                raise ValueError(f"[LMDBManager] ❌ ERROR: No LMDB config found for network: {network}")
-
-            with self.env.begin(write=True) as txn:
-                if not hasattr(self, "mempool_db"):
-                    self.mempool_db = self.env.open_db(b"mempool", txn=txn)
-                if not hasattr(self, "blocks_db"):
-                    self.blocks_db = self.env.open_db(b"blocks", txn=txn)
-                if not hasattr(self, "transactions_db"):
-                    self.transactions_db = self.env.open_db(b"transactions", txn=txn)
-                if not hasattr(self, "metadata_db"):
-                    self.metadata_db = self.env.open_db(b"metadata", txn=txn)
-
-                # ✅ Custom Blockchain DBs
-                if not hasattr(self, "block_metadata_db"):
-                    self.block_metadata_db = self.env.open_db(b"block_metadata", txn=txn)
-                if not hasattr(self, "txindex_db"):
-                    self.txindex_db = self.env.open_db(b"txindex", txn=txn)
-                if not hasattr(self, "utxo_db"):
-                    self.utxo_db = self.env.open_db(b"utxo", txn=txn)
-                if not hasattr(self, "utxo_history_db"):
-                    self.utxo_history_db = self.env.open_db(b"utxo_history", txn=txn)
-                if not hasattr(self, "fee_stats_db"):
-                    self.fee_stats_db = self.env.open_db(b"fee_stats", txn=txn)
-                if not hasattr(self, "orphan_blocks_db"):
-                    self.orphan_blocks_db = self.env.open_db(b"orphan_blocks", txn=txn)
-
-            print(f"[LMDBManager] ✅ SUCCESS: All LMDB databases initialized for {network.upper()} (only missing ones opened).")
-
-        except lmdb.Error as e:
-            print(f"[LMDBManager] ❌ ERROR: Failed to initialize LMDB databases: {e}")
-            self.env.close()
-            raise
+    def reopen(self):
+        """Reopen the LMDB environment."""
+        self.close()
+        self.env = lmdb.open(
+            path=self.db_path,
+            map_size=Constants.LMDB_MAP_SIZE,
+            max_readers=self.max_readers,
+            max_dbs=self.max_dbs,
+            writemap=self.writemap,
+            create=True,
+            readahead=False,
+            meminit=False
+        )
+        LMDBManager._environments[self.db_path] = self.env
+        print(f"[LMDBManager] Reopened LMDB environment at {self.db_path}")
 
     def _verify_capacity(self):
         """
@@ -248,7 +156,7 @@ class LMDBManager:
                 if file_usage > 0.8:
                     new_size = int(map_size * 1.5)  # ✅ Increase map_size by 50%
                     self.env.set_mapsize(new_size)
-                    print(f"[LMDBManager] INFO: Increased LMDB map_size to {new_size} bytes.")
+                    print(f"[LMDBManager] INFO: Increased LMDB map_size to {new_size} bytes due to high usage ({file_usage * 100:.2f}%).")
 
             print("[LMDBManager] INFO: Capacity check completed.")
 
@@ -256,95 +164,230 @@ class LMDBManager:
             print(f"[LMDBManager] ERROR: Failed to verify LMDB capacity: {e}")
 
 
-    def get_database_status(self):
+    def get_all_transactions(self) -> List[Dict]:
         """
-        Return current database usage statistics such as used databases,
-        map size, and free space.
+        Retrieve all transactions from the LMDB database.
+        Returns a list of transaction dictionaries.
+        """
+        transactions = []
+
+        try:
+            with self.safe_transaction(db=self.transactions_db) as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    try:
+                        key_str = key.decode("utf-8", errors="ignore")
+                        if key_str.startswith("tx:"):
+                            try:
+                                tx_data = value.decode("utf-8", errors="ignore")
+                                tx_dict = json.loads(tx_data)
+                                if isinstance(tx_dict, dict):
+                                    transactions.append(tx_dict)
+                                else:
+                                    print(f"[LMDBManager] WARNING: Skipping invalid transaction entry {key_str}: Not a dictionary.")
+                            except json.JSONDecodeError as json_error:
+                                print(f"[LMDBManager] WARNING: Skipping corrupt transaction entry {key_str}: {json_error}")
+                    except UnicodeDecodeError as decode_error:
+                        print(f"[LMDBManager] ERROR: Failed to decode key {key}: {decode_error}")
+
+            print(f"[LMDBManager] INFO: Retrieved {len(transactions)} valid transactions.")
+            return transactions
+
+        except lmdb.Error as e:
+            if "closed" in str(e).lower() or "bad" in str(e).lower():
+                print(f"[LMDBManager] WARNING: Transactions DB closed. Attempting recovery: {e}")
+                self._open_env()  # Reopen the environment safely
+                return self.get_all_transactions()  # 🔁 Retry once
+            print(f"[LMDBManager] ERROR: LMDB failure: {e}")
+            return []
+
+        except Exception as e:
+            print(f"[LMDBManager] ERROR: Unexpected error while retrieving transactions: {e}")
+            return []
+
+
+
+
+
+
+    def _initialize_databases(self):
+        """
+        Safely initializes all required LMDB database handles for the current network.
+        Only opens databases if they are not already opened.
+        Includes retry and environment recovery logic if the LMDB is closed or invalid.
         """
         try:
-            with self.env.begin() as txn:
-                return {
-                    "max_databases": self.env.info().get("max_dbs", 0),
-                    "used_databases": txn.stat().get("entries", 0),
-                    "map_size": self.env.info().get("map_size", 0),
-                    "free_space": self.env.info().get("map_size", 0)
-                                 - self.env.info().get("last_pgno", 0) * self.env.info().get("psize", 4096)
-                }
+            print("[LMDBManager] INFO: Initializing LMDB databases...")
+
+            network = Constants.NETWORK
+            config = Constants.NETWORK_DATABASES.get(network)
+
+            if not config:
+                raise ValueError(f"[LMDBManager] ❌ ERROR: No LMDB config found for network: {network}")
+
+            try:
+                with self.env.begin(write=True) as txn:
+                    if not hasattr(self, "mempool_db"):
+                        self.mempool_db = self.env.open_db(b"mempool", txn=txn)
+                    if not hasattr(self, "blocks_db"):
+                        self.blocks_db = self.env.open_db(b"blocks", txn=txn)
+                    if not hasattr(self, "transactions_db"):
+                        self.transactions_db = self.env.open_db(b"transactions", txn=txn)
+                    if not hasattr(self, "metadata_db"):
+                        self.metadata_db = self.env.open_db(b"metadata", txn=txn)
+
+                    # ✅ Custom Blockchain DBs
+                    if not hasattr(self, "block_metadata_db"):
+                        self.block_metadata_db = self.env.open_db(b"block_metadata", txn=txn)
+                    if not hasattr(self, "txindex_db"):
+                        self.txindex_db = self.env.open_db(b"txindex", txn=txn)
+                    if not hasattr(self, "utxo_db"):
+                        self.utxo_db = self.env.open_db(b"utxo", txn=txn)
+                    if not hasattr(self, "utxo_history_db"):
+                        self.utxo_history_db = self.env.open_db(b"utxo_history", txn=txn)
+                    if not hasattr(self, "fee_stats_db"):
+                        self.fee_stats_db = self.env.open_db(b"fee_stats", txn=txn)
+                    if not hasattr(self, "orphan_blocks_db"):
+                        self.orphan_blocks_db = self.env.open_db(b"orphan_blocks", txn=txn)
+
+                print(f"[LMDBManager] ✅ SUCCESS: All LMDB databases initialized for {network.upper()}.")
+
+            except lmdb.Error as inner_e:
+                if "closed" in str(inner_e).lower() or "bad" in str(inner_e).lower():
+                    print(f"[LMDBManager] WARNING: LMDB was closed or invalid. Attempting environment recovery: {inner_e}")
+                    self._open_env()  # 🔄 Recover LMDB
+                    self._initialize_databases()  # 🔁 Retry once
+                else:
+                    raise inner_e
+
         except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to retrieve database status: {e}")
+            print(f"[LMDBManager] ❌ ERROR: Failed to initialize LMDB databases: {e}")
+            try:
+                self.env.close()
+            except:
+                pass
+            raise
+
+
+    def get_database_status(self) -> dict:
+        """
+        Return current database usage statistics such as used databases,
+        map size, and free space. Recovers from closed environments.
+        """
+        try:
+            with self.safe_transaction() as txn:
+                env_info = self.env.info()
+                txn_stats = txn.stat()
+
+                map_size = env_info.get("map_size", 0)
+                used_pages = env_info.get("last_pgno", 0)
+                page_size = env_info.get("psize", 4096)
+
+                free_space = map_size - (used_pages * page_size)
+
+                return {
+                    "max_databases": env_info.get("max_dbs", 0),
+                    "used_entries": txn_stats.get("entries", 0),
+                    "map_size_bytes": map_size,
+                    "free_space_bytes": free_space
+                }
+
+        except Exception as e:
+            print(f"[LMDBManager] ❌ ERROR: Failed to retrieve database status: {e}")
             return {}
 
 
     def get_db_path(self, db_name: str) -> str:
         """
-        Returns the path for the specified database name.
+        Returns the full path for the specified database name.
         """
-        db_path = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, db_name)
-        print(f"[LMDBManager] INFO: Database path for '{db_name}': {db_path}")
-        return db_path
+        try:
+            db_path = os.path.join(Constants.BLOCKCHAIN_STORAGE_PATH, db_name)
+            print(f"[LMDBManager] INFO: Database path for '{db_name}': {db_path}")
+            return db_path
+        except Exception as e:
+            print(f"[LMDBManager] ❌ ERROR: Failed to construct path for {db_name}: {e}")
+            return ""
+
 
     def fetch_all_pending_transactions(self) -> list:
         """
         Retrieve all pending transactions stored in the mempool DB.
+        Includes fallback for JSON decoding issues and env recovery.
         """
         pending_transactions = []
+
         try:
-            with self.env.begin(db=self.mempool_db) as txn:
+            with self.safe_transaction(db=self.mempool_db) as txn:
                 cursor = txn.cursor()
                 for key, value in cursor:
-                    key_str = key.decode()
-                    if key_str.startswith("mempool:pending_tx:"):
-                        try:
-                            tx_data = json.loads(value.decode("utf-8"))
-                            pending_transactions.append(tx_data)
-                        except json.JSONDecodeError as e:
-                            print(f"[LMDBManager] ERROR: Failed to decode transaction {key_str}: {e}")
+                    try:
+                        key_str = key.decode("utf-8", errors="ignore")
+                        if key_str.startswith("mempool:pending_tx:"):
+                            try:
+                                tx_data = json.loads(value.decode("utf-8"))
+                                pending_transactions.append(tx_data)
+                            except json.JSONDecodeError as e:
+                                print(f"[LMDBManager] ⚠️ Skipping corrupt transaction {key_str}: {e}")
+                    except UnicodeDecodeError as key_err:
+                        print(f"[LMDBManager] ❌ ERROR decoding key in mempool: {key_err}")
 
-            print(f"[LMDBManager] INFO: Retrieved {len(pending_transactions)} pending transactions.")
+            print(f"[LMDBManager] ✅ Retrieved {len(pending_transactions)} pending transactions.")
             return pending_transactions
 
         except lmdb.Error as e:
-            print(f"[LMDBManager] ERROR: LMDB retrieval failed: {e}")
+            print(f"[LMDBManager] ❌ ERROR: LMDB retrieval failed: {e}")
             return []
 
 
     def add_pending_transaction(self, transaction: dict):
         """
-        Add a pending transaction to the mempool DB.
+        Add a pending transaction to the mempool DB using safe_transaction.
         """
         try:
             tx_id = transaction.get("tx_id")
             if not tx_id:
-                print("[LMDBManager] ERROR: Transaction missing 'tx_id'.")
+                print("[LMDBManager] ❌ ERROR: Transaction missing 'tx_id'.")
                 return
 
-            key = f"mempool:pending_tx:{tx_id}".encode()
-            value = json.dumps(transaction).encode("utf-8")
+            key = f"mempool:pending_tx:{tx_id}".encode("utf-8")
 
-            with self.env.begin(write=True, db=self.mempool_db) as txn:
+            try:
+                value = json.dumps(transaction).encode("utf-8")
+            except (TypeError, ValueError) as json_error:
+                print(f"[LMDBManager] ❌ ERROR: Failed to encode transaction {tx_id}: {json_error}")
+                return
+
+            with self.safe_transaction(db=self.mempool_db) as txn:
                 txn.put(key, value)
 
-            print(f"[LMDBManager] INFO: Pending transaction {tx_id} stored successfully.")
+            print(f"[LMDBManager] ✅ INFO: Pending transaction {tx_id} stored successfully.")
         except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to store pending transaction: {e}")
+            print(f"[LMDBManager] ❌ ERROR: Failed to store pending transaction: {e}")
+
 
     def delete_pending_transaction(self, tx_id: str):
         """
-        Remove a pending transaction from the mempool DB.
+        Remove a pending transaction from the mempool DB using safe_transaction.
         """
         try:
-            key = f"mempool:pending_tx:{tx_id}".encode()
-            with self.env.begin(write=True, db=self.mempool_db) as txn:
+            key = f"mempool:pending_tx:{tx_id}".encode("utf-8")
+
+            with self.safe_transaction(db=self.mempool_db) as txn:
                 txn.delete(key)
 
-            print(f"[LMDBManager] INFO: Pending transaction {tx_id} removed from mempool.")
+            print(f"[LMDBManager] ✅ INFO: Pending transaction {tx_id} removed from mempool.")
         except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to remove pending transaction {tx_id}: {e}")
-
+            print(f"[LMDBManager] ❌ ERROR: Failed to remove pending transaction {tx_id}: {e}")
 
 
     def begin_transaction(self):
-        """Begin a simulated transaction."""
+        """
+        Begin a simulated transaction for tracking transaction state.
+        """
+        if not hasattr(self, "transaction_active"):
+            self.transaction_active = False
+
         if not self.transaction_active:
             print("[LMDBManager] INFO: Starting LMDB transaction (simulated).")
             self.transaction_active = True
@@ -392,7 +435,7 @@ class LMDBManager:
                     self.rollback()
                     return
 
-            # ✅ Block structure (no offset field)
+            # ✅ Block structure
             block_data = {
                 "block_header": block_header,
                 "transactions": serialized_transactions,
@@ -409,109 +452,139 @@ class LMDBManager:
                 self.rollback()
                 return
 
-            # ✅ Store in LMDB
-            with self.env.begin(write=True, db=self.blocks_db) as txn:
+            # ✅ Safe write transaction with auto-reopen support
+            with self.safe_transaction(write=True, db=self.blocks_db) as txn:
                 txn.put(key, value)
 
-                # ✅ Optional: Store latest block index (if 'index' is part of block_header)
+                # ✅ Optional: Store latest block index (if present)
                 index = block_header.get("index")
                 if index is not None:
                     txn.put(b"latest_block_index", str(index).encode("utf-8"), db=self.metadata_db)
 
             self.commit()
-            print(f"[LMDBManager] SUCCESS: Block {block_hash} stored successfully.")
+            print(f"[LMDBManager] ✅ SUCCESS: Block {block_hash} stored successfully.")
 
         except Exception as e:
             self.rollback()
-            print(f"[LMDBManager] ERROR: Failed to store block {block_hash}: {e}")
+            print(f"[LMDBManager] ❌ ERROR: Failed to store block {block_hash}: {e}")
             raise
 
 
+
     def get_block_by_index(self, index: int) -> Optional[dict]:
+        """
+        Retrieve a block by its index from metadata and then fetch the full block using its hash.
+
+        Args:
+            index (int): Block height/index to retrieve.
+
+        Returns:
+            dict | None: The full block data if found, else None.
+        """
         try:
             key = f"blockmeta:{index}".encode("utf-8")
             metadata = self.get(key, db=self.metadata_db)
-            if not metadata:
+
+            if not metadata or not isinstance(metadata, dict):
+                print(f"[LMDBManager] ⚠️ WARNING: Metadata missing or invalid for block index {index}.")
                 return None
+
             block_hash = metadata.get("hash")
-            if not block_hash:
+            if not block_hash or not isinstance(block_hash, str):
+                print(f"[LMDBManager] ⚠️ WARNING: Block hash not found in metadata for index {index}.")
                 return None
-            return self.get(f"block:{block_hash}", db=self.blocks_db)
+
+            full_block = self.get(f"block:{block_hash}", db=self.blocks_db)
+
+            if full_block is None:
+                print(f"[LMDBManager] ⚠️ WARNING: Full block not found for hash {block_hash}.")
+            else:
+                print(f"[LMDBManager] ✅ SUCCESS: Retrieved block at index {index} with hash {block_hash}.")
+
+            return full_block
+
         except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to get block by index {index}: {e}")
+            print(f"[LMDBManager] ❌ ERROR: Failed to get block by index {index}: {e}")
             return None
 
 
-
-
-    def put(self, key: Union[str, bytes], value: dict, db=None):
-        """
-        Store a JSON-serialized value in LMDB by key.
-
-        Args:
-            key (Union[str, bytes]): The key to store.
-            value (dict): The data to store (must be JSON-serializable).
-            db: The database handle to use (defaults to self.blocks_db).
-
-        Returns:
-            bool: True if the data was stored successfully, False otherwise.
-        """
+    def put(self, key: Union[str, bytes, bytearray, memoryview], value: dict, db=None) -> bool:
         db_handle = db or self.blocks_db
 
+        # Normalize key
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
-        elif isinstance(key, bytes):
-            key_bytes = key
+        elif isinstance(key, (bytes, bytearray)):
+            key_bytes = bytes(key)
+        elif isinstance(key, memoryview):
+            try:
+                key_bytes = key.tobytes()
+            except Exception as e:
+                print(f"[LMDBManager] ❌ ERROR: Failed to convert memoryview to bytes: {e}")
+                return False
         else:
-            print(f"[LMDBManager] ERROR: Invalid key type: {type(key)}. Expected str or bytes.")
-            return False
-
-        key_str = key_bytes.decode("utf-8", errors="ignore")
-
-        if not isinstance(value, dict):
-            print(f"[LMDBManager] ERROR: Invalid value type: {type(value)}. Expected dict.")
+            print(f"[LMDBManager] ❌ ERROR: Invalid key type: {type(key)}")
             return False
 
         try:
-            value_json = json.dumps(value, default=lambda x: x.hex() if isinstance(x, bytes) else str(x)).encode("utf-8")
-        except (TypeError, ValueError) as e:
-            print(f"[LMDBManager] ERROR: Failed to serialize value for key {key_str}: {e}")
+            value_json = json.dumps(value).encode("utf-8")
+        except Exception as e:
+            print(f"[LMDBManager] ❌ ERROR: Failed to serialize value: {e}")
             return False
 
         try:
             with self.env.begin(write=True, db=db_handle) as txn:
                 txn.put(key_bytes, value_json)
-            print(f"[LMDBManager] SUCCESS: Stored key: {key_str}")
+            print(f"[LMDBManager] ✅ SUCCESS: Stored key: {key_bytes[:50]}")
             return True
-        except Exception as e:
-            print(f"[LMDBManager] ERROR: Failed to store key {key_str}: {e}")
-            return False
+        except lmdb.Error as e:
+            print(f"[LMDBManager] ❌ ERROR: LMDB error during put(): {e}")
+            print("[LMDBManager] ⚠️ Attempting to reopen environment...")
+            self._open_env()
+            # Retry once
+            try:
+                with self.env.begin(write=True, db=db_handle) as txn:
+                    txn.put(key_bytes, value_json)
+                print(f"[LMDBManager] ✅ SUCCESS: Retried and stored key: {key_bytes[:50]}")
+                return True
+            except Exception as retry_e:
+                print(f"[LMDBManager] ❌ Retried put failed: {retry_e}")
+                return False
 
 
-
-    def get(self, key: Union[str, bytes], db=None):
+    def get(self, key: Union[str, bytes, bytearray, memoryview], db=None):
         """
         Retrieve a JSON-serialized value from LMDB by key.
 
         Args:
-            key (Union[str, bytes]): The key to retrieve.
+            key (Union[str, bytes, bytearray, memoryview]): The key to retrieve.
             db: The database handle to use (defaults to self.blocks_db).
 
         Returns:
-            dict: Deserialized JSON data, or None if the key is invalid or data is corrupted.
+            dict | None: Deserialized JSON data, or None if the key is invalid or data is corrupted.
         """
         db_handle = db or self.blocks_db
 
-        # ✅ Ensure key is always handled as bytes
+        # ✅ Normalize key to bytes
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
-        elif isinstance(key, bytes):
-            key_bytes = key
+        elif isinstance(key, (bytes, bytearray)):
+            key_bytes = bytes(key)
+        elif isinstance(key, memoryview):
+            try:
+                key_bytes = key.tobytes()
+            except Exception as e:
+                print(f"[LMDB ERROR] ❌ Failed to convert memoryview to bytes: {e}")
+                return None
         else:
-            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
+            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str, bytes, bytearray, or memoryview.")
             return None
 
-        key_str = key_bytes.decode("utf-8", errors="ignore")  # ✅ Safe decoding for logs
+        # ✅ For logging and fallback decoding
+        try:
+            key_str = key_bytes.decode("utf-8", errors="ignore")
+        except Exception:
+            key_str = str(key_bytes)
 
         try:
             with self.env.begin(db=db_handle) as txn:
@@ -521,15 +594,22 @@ class LMDBManager:
                     print(f"[LMDB WARNING] ⚠️ Key not found: {key_str}")
                     return None
 
-                # ✅ Ensure value is a valid JSON object
+                # ✅ Try UTF-8 JSON decode
                 try:
                     return json.loads(value.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    print(f"[LMDB ERROR] ❌ Corrupt JSON data for key {key_str}: {e}")
-                    return None
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    print(f"[LMDB WARNING] ⚠️ Non-UTF-8 or corrupted JSON for key {key_str}. Trying fallback conversions...")
+
+                    # 🛠️ Attempt to repair via fallback decoding
+                    try:
+                        fallback_str = value.decode("latin1")
+                        return json.loads(fallback_str)
+                    except Exception as e2:
+                        print(f"[LMDB ERROR] ❌ Final fallback decode failed for key {key_str}: {e2}")
+                        return None
 
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Failed to retrieve key {key_str}: {e}")
+            print(f"[LMDB ERROR] ❌ Exception while retrieving key {key_str}: {e}")
             return None
 
         
@@ -673,14 +753,97 @@ class LMDBManager:
             raise
 
 
-    def close(self):
-        """Close the LMDB environment."""
-        if hasattr(self, 'env'):
-            self.env.close()
-        print("[LMDBManager] Database environment closed.")
-
-
     def create_dir_if_not_exists(path):
         if not os.path.exists(path):
             os.makedirs(path)
             print(f"Created database directory: {path}")
+
+
+    @staticmethod
+    def close_all():
+        print("[LMDBManager] INFO: Closing all LMDB environments globally...")
+        for path, env in list(LMDBManager._environments.items()):
+            try:
+                env.close()
+                print(f"[LMDBManager] Closed LMDB environment at {path}")
+            except Exception as e:
+                print(f"[LMDBManager] ERROR closing {path}: {e}")
+        LMDBManager._environments.clear()
+
+    def _open_env(self):
+        """
+        Fallback method to reinitialize LMDB environment if it is missing or closed.
+        """
+        if not hasattr(self, "env") or self.env is None:
+            print("[LMDBManager._open_env] WARNING: Environment not found. Reinitializing LMDB environment.")
+            try:
+                self.env = lmdb.open(
+                    path=self.db_path,
+                    map_size=Constants.LMDB_MAP_SIZE,
+                    max_readers=self.max_readers,
+                    max_dbs=self.max_dbs,
+                    writemap=self.writemap,
+                    create=True,
+                    readahead=False,
+                    meminit=False
+                )
+                LMDBManager._environments[self.db_path] = self.env
+                print(f"[LMDBManager._open_env] ✅ SUCCESS: Reopened LMDB environment at {self.db_path}")
+            except Exception as e:
+                print(f"[LMDBManager._open_env] ❌ ERROR: Failed to reopen LMDB: {e}")
+                self.env = None
+                raise RuntimeError("LMDB reinitialization failed.") from e
+        else:
+            print(f"[LMDBManager._open_env] INFO: Environment already active at {self.db_path}")
+        
+        return self.env
+
+
+
+    @contextmanager
+    def safe_transaction(self, write=False, db=None):
+        """
+        Ensures the LMDB environment is open before performing any transaction.
+        Automatically reopens if needed.
+        """
+        try:
+            # If env is closed or invalid, reopen it
+            if not hasattr(self, "env") or self.env is None:
+                print("[LMDBManager.safe_transaction] 🔄 Reinitializing LMDB environment...")
+                self.env = self._open_env()
+
+            db_handle = db or self.blocks_db
+            with self.env.begin(write=write, db=db_handle) as txn:
+                yield txn
+        except lmdb.Error as e:
+            print(f"[LMDBManager.safe_transaction] ❌ LMDB error during transaction: {e}")
+            self._open_env()
+            raise
+
+    @staticmethod
+    def reopen_all():
+        """
+        Reopen any closed or inactive LMDB environments.
+        """
+        print("[LMDBManager] 🔄 Attempting to reopen all LMDB environments...")
+        for path, env in list(LMDBManager._environments.items()):
+            try:
+                with env.begin():
+                    print(f"[LMDBManager] ✅ Environment active at {path}")
+            except lmdb.Error:
+                print(f"[LMDBManager] ⚠️ Environment at {path} is closed or invalid. Reopening...")
+                try:
+                    reopened_env = lmdb.open(
+                        path=path,
+                        map_size=Constants.LMDB_MAP_SIZE,
+                        max_readers=200,
+                        max_dbs=200,
+                        writemap=False,
+                        create=True,
+                        readahead=False,
+                        meminit=False
+                    )
+                    LMDBManager._environments[path] = reopened_env
+                    print(f"[LMDBManager] ✅ Reopened LMDB environment at {path}")
+                except Exception as e:
+                    print(f"[LMDBManager] ❌ ERROR: Failed to reopen environment at {path}: {e}")

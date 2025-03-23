@@ -99,7 +99,7 @@ class Constants:
     ADDRESS_PREFIX = NETWORK_ADDRESS_PREFIXES[NETWORK]
 
 
-    MAX_LMDB_DATABASES = 150
+    MAX_LMDB_DATABASES = 200
 
 
     # 🔹 **UTXO Flags**
@@ -113,7 +113,7 @@ class Constants:
 
 # In Constants class:
     LMDB_MAP_SIZE = 128 * 1024 * 1024  # 128MB (was incorrectly set to 1024 bytes)
-
+    LMDB_MAX_READERS = 200
     
     DATABASES = {
         "block_metadata": "block_metadata",

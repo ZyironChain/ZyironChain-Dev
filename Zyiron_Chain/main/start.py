@@ -8,6 +8,7 @@ Main Entry Point (Start)
 - Assumes single SHA3-384 hashing is used throughout.
 """
 
+import atexit
 import sys
 import os
 import time
@@ -20,6 +21,7 @@ sys.path.append(project_root)
 # -------------------------------------------------------------------------
 # Imports for the new splitted storage modules
 # -------------------------------------------------------------------------
+from Zyiron_Chain.network.peerconstant import PeerConstants
 from Zyiron_Chain.storage.block_storage import BlockStorage
 from Zyiron_Chain.storage.tx_storage import TxStorage
 from Zyiron_Chain.storage.utxostorage import UTXOStorage
@@ -39,10 +41,60 @@ from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockMa
 from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # ✅ Import GenesisBlockManager
 from Zyiron_Chain.transactions.fees import FeeModel
 
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+
 def detailed_print(message: str):
     """Helper function for detailed print-based debugging."""
     print(f"[INFO] {message}")
 
+#!/usr/bin/env python3
+"""
+Main Entry Point (Start)
+
+- Initializes all core modules: KeyManager, splitted storage modules, TransactionManager,
+  Blockchain, Miner, etc.
+- Uses detailed print statements for step-by-step tracing.
+- Assumes single SHA3-384 hashing is used throughout.
+"""
+
+import atexit
+import sys
+import os
+import time
+from decimal import Decimal
+
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
+
+# -------------------------------------------------------------------------
+# Imports for the new splitted storage modules
+# -------------------------------------------------------------------------
+from Zyiron_Chain.network.peerconstant import PeerConstants
+from Zyiron_Chain.storage.block_storage import BlockStorage
+from Zyiron_Chain.storage.tx_storage import TxStorage
+from Zyiron_Chain.storage.utxostorage import UTXOStorage
+from Zyiron_Chain.storage.mempool_storage import MempoolStorage
+
+# -------------------------------------------------------------------------
+# Imports for blockchain, transactions, keys, and miner
+# -------------------------------------------------------------------------
+from Zyiron_Chain.blockchain.blockchain import Blockchain
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.miner.miner import Miner
+from Zyiron_Chain.transactions.transaction_manager import TransactionManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
+from Zyiron_Chain.storage.lmdatabase import LMDBManager  # For LMDB manager creation
+from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+from Zyiron_Chain.blockchain.block_manager import BlockManager  # Import BlockManager
+from Zyiron_Chain.blockchain.genesis_block import GenesisBlockManager  # ✅ Import GenesisBlockManager
+from Zyiron_Chain.transactions.fees import FeeModel
+
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+
+def detailed_print(message: str):
+    """Helper function for detailed print-based debugging."""
+    print(f"[INFO] {message}")
 class Start:
     def __init__(self):
         detailed_print("Initializing blockchain project...")
@@ -65,21 +117,20 @@ class Start:
         self.block_storage = BlockStorage(tx_storage=self.tx_storage, key_manager=self.key_manager)
 
         # ✅ 5. Initialize UTXO Storage (Ensure LMDB paths exist)
-        utxo_db_path = Constants.DATABASES.get("utxo")
-        utxo_history_path = Constants.DATABASES.get("utxo_history")
+        utxo_db_path = Constants.NETWORK_DATABASES[Constants.NETWORK].get("utxo")
+        utxo_history_path = Constants.NETWORK_DATABASES[Constants.NETWORK].get("utxo_history")
 
         detailed_print(f"Initializing LMDB managers for UTXO at {utxo_db_path} and UTXO history at {utxo_history_path}...")
-        utxo_db = LMDBManager(utxo_db_path)
-        utxo_history_db = LMDBManager(utxo_history_path)
+        self.utxo_db = LMDBManager(utxo_db_path)
+        self.utxo_history_db = LMDBManager(utxo_history_path)
 
         # ✅ 6. Initialize UTXO Manager
-        from Zyiron_Chain.network.peerconstant import PeerConstants
         peer_constants = PeerConstants()
         detailed_print(f"Initializing UTXOManager with peer id '{peer_constants.PEER_USER_ID}'...")
-        utxo_manager = UTXOManager(utxo_db)
+        self.utxo_manager = UTXOManager(self.utxo_db)
 
         # ✅ 7. Initialize UTXO Storage
-        self.utxo_storage = UTXOStorage(utxo_manager=utxo_manager)
+        self.utxo_storage = UTXOStorage(utxo_manager=self.utxo_manager)
         detailed_print("UTXOStorage initialized successfully.")
 
         # ✅ 8. Initialize Transaction Manager
@@ -87,7 +138,7 @@ class Start:
         self.transaction_manager = TransactionManager(
             block_storage=self.block_storage,
             tx_storage=self.tx_storage,
-            utxo_manager=utxo_manager,
+            utxo_manager=self.utxo_manager,
             key_manager=self.key_manager
         )
 
@@ -139,6 +190,7 @@ class Start:
             transaction_manager=self.transaction_manager,
             key_manager=self.key_manager,
             mempool_storage=self.mempool_storage,
+            utxo_storage=self.utxo_storage,  # ✅ ADDED to fix .mine_block crash
             genesis_block_manager=self.genesis_block_manager
         )
 
@@ -243,7 +295,37 @@ class Start:
             detailed_print("----- Blockchain Operations Completed -----")
         except Exception as e:
             detailed_print(f"[run_all] ERROR: Blockchain operations failed: {e}")
+
+    def close(self):
+        """Close all LMDB environments."""
+        detailed_print("Closing all LMDB environments...")
+        self.utxo_db.close()
+        self.utxo_history_db.close()
+        detailed_print("All LMDB environments closed.")
+
+    # Global cleanup function
+    @staticmethod
+    def close_all_lmdb_environments():
+        """Close all LMDB environments at application shutdown."""
+        LMDBManager.close_all()
+        detailed_print("Closed all LMDB environments globally.")
+
+    # Register cleanup function
+    atexit.register(close_all_lmdb_environments)
+
+
+    def check_and_reopen_all_lmdb(self):
+        """
+        Health check to reopen closed LMDB databases if needed.
+        """
+        detailed_print("Checking LMDB health and reopening if needed...")
+        LMDBManager.reopen_all()
+
+
+
+
 if __name__ == "__main__":
+    starter = None  # ✅ Pre-define it for safe access in `finally`
     try:
         starter = Start()
         starter.run_all()
@@ -252,3 +334,6 @@ if __name__ == "__main__":
         print(error_msg)
         with open("runtime_errors.txt", "a") as f:
             f.write(error_msg)
+    finally:
+        if starter:  # ✅ Only close if initialized successfully
+            starter.close()
