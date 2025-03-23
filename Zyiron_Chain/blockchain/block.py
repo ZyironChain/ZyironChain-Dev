@@ -287,7 +287,9 @@ class Block:
         try:
             # ✅ Convert difficulty safely
             try:
-                difficulty = DifficultyConverter.convert(getattr(self, 'difficulty', Constants.GENESIS_TARGET))
+                difficulty = DifficultyConverter.convert(
+                    getattr(self, 'difficulty', Constants.GENESIS_TARGET)
+                )
             except Exception as e:
                 print(f"[Block.to_dict] ❌ ERROR: Failed to convert difficulty: {e}")
                 difficulty = DifficultyConverter.convert(Constants.GENESIS_TARGET)
@@ -295,7 +297,7 @@ class Block:
             # ✅ Serialize Header Fields
             header = {
                 "version": str(getattr(self, "version", Constants.VERSION)),
-                "index": int(self.index),
+                "index": int(getattr(self, "index", 0)),
                 "previous_hash": self.previous_hash if isinstance(self.previous_hash, str) else Constants.ZERO_HASH,
                 "merkle_root": self.merkle_root if isinstance(self.merkle_root, str) else Constants.ZERO_HASH,
                 "timestamp": int(getattr(self, "timestamp", int(time.time()))),
@@ -316,13 +318,14 @@ class Block:
                 except Exception as e:
                     print(f"[Block.to_dict] ERROR: Failed to serialize transaction in Block {self.index}: {e}")
 
-            # ✅ Additional Fields
+            # ✅ Additional Fields (Ensure metadata compatibility)
             additional_fields = {
                 "hash": self.mined_hash if isinstance(self.mined_hash, str) else Constants.ZERO_HASH,
                 "metadata": getattr(self, "metadata", {}),
                 "size": int(getattr(self, "size", 0)),
                 "network": str(getattr(self, "network", Constants.NETWORK)),
                 "flags": list(getattr(self, "flags", [])),
+                "index": int(getattr(self, "index", 0)),  # Duplicated for compatibility with some metadata lookups
             }
 
             # ✅ Final Combined Dict
@@ -336,7 +339,7 @@ class Block:
             return block_dict
 
         except Exception as e:
-            print(f"[Block.to_dict] ❌ ERROR: Failed to serialize Block #{self.index}: {e}")
+            print(f"[Block.to_dict] ❌ ERROR: Failed to serialize Block #{getattr(self, 'index', 'UNKNOWN')}: {e}")
             raise
 
 

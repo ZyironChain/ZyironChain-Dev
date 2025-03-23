@@ -37,6 +37,9 @@ from Zyiron_Chain.storage.lmdatabase import LMDBManager
 from Zyiron_Chain.utils.diff_conversion import DifficultyConverter
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
 from Zyiron_Chain.transactions.tx import Transaction
+
+
+
 class Blockchain:
     """
     Main Blockchain class that:
@@ -240,8 +243,6 @@ class Blockchain:
             print(f"[Blockchain.load_chain_from_storage] ❌ ERROR: Failed to load chain from LMDB: {e}")
             self.chain = []
             return []
-
-
 
     def _compute_block_hash(self, block) -> str:
         """

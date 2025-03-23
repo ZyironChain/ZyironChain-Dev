@@ -570,7 +570,7 @@ class Miner:
         """
         Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
         - Ensures `mined_hash` consistency in both `BlockStorage` and blockchain validation.
-        - Uses `mined_hash` of last block as `previous_hash`.
+        - Uses `mined_hash` of the last block as `previous_hash`.
         - Retrieves transactions from mempool and includes coinbase transaction.
         """
         with self._mining_lock:
@@ -647,7 +647,7 @@ class Miner:
                 # ✅ Construct block
                 new_block = Block(
                     index=block_height,
-                    previous_hash=previous_hash,
+                    previous_hash=previous_hash,  # Ensure previous_hash is correctly set
                     transactions=valid_txs,
                     timestamp=int(time.time()),
                     nonce=0,

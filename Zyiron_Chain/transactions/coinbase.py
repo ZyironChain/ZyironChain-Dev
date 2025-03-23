@@ -36,6 +36,14 @@ import hashlib
 import json
 from decimal import Decimal
 from typing import Dict, Optional
+import time
+import json
+import hashlib
+from decimal import Decimal
+from typing import Dict, Optional
+
+from Zyiron_Chain.blockchain.constants import Constants
+
 
 class CoinbaseTx:
     """
@@ -66,7 +74,8 @@ class CoinbaseTx:
         self.fee = Decimal("0")
         self.metadata = {}
 
-        self.size = None
+        # ✅ Initialize .size before using it in to_dict()
+        self.size = 0
         self.size = self._estimate_size()
 
         print(f"[CoinbaseTx.__init__] Transaction size estimated: {self.size} bytes")
@@ -100,9 +109,9 @@ class CoinbaseTx:
         """
         Serialize the CoinbaseTx to a dictionary.
         """
-        print(f"[CoinbaseTx.to_dict] INFO: Serializing CoinbaseTx (tx_id: {self.tx_id.hex() if isinstance(self.tx_id, bytes) else self.tx_id})")
+        print(f"[CoinbaseTx.to_dict] INFO: Serializing CoinbaseTx (tx_id: {self.tx_id})")
         return {
-            "tx_id": self.tx_id.hex() if isinstance(self.tx_id, bytes) else self.tx_id,
+            "tx_id": self.tx_id,
             "block_height": self.block_height,
             "miner_address": self.miner_address,
             "reward": str(self.reward / Constants.COIN),  # human-readable
@@ -114,7 +123,6 @@ class CoinbaseTx:
             "size": self.size,
             "metadata": self.metadata
         }
-
 
     @classmethod
     def from_dict(cls, data: Dict) -> Optional["CoinbaseTx"]:
@@ -129,18 +137,15 @@ class CoinbaseTx:
             if missing_fields:
                 raise ValueError(f"[CoinbaseTx.from_dict] ❌ ERROR: Missing required fields: {missing_fields}")
 
-            reward_decimal = Decimal(data["reward"])  # reward is already human-readable
+            reward_decimal = Decimal(data["reward"])
 
-            # Convert tx_id back to bytes if it's a hex string
             tx_id = data.get("tx_id")
-            if tx_id and isinstance(tx_id, str):
+            if isinstance(tx_id, str) and len(tx_id) == 96:
                 try:
-                    tx_id = bytes.fromhex(tx_id)
+                    bytes.fromhex(tx_id)  # validate hex string
                 except Exception:
-                    print("[CoinbaseTx.from_dict] WARN: Failed to convert tx_id from hex, keeping as str.")
-                    pass
+                    print("[CoinbaseTx.from_dict] WARN: tx_id is not a valid hex. Using as string.")
 
-            # Initialize the CoinbaseTx object
             obj = cls(
                 block_height=data["block_height"],
                 miner_address=data["miner_address"],
@@ -148,33 +153,30 @@ class CoinbaseTx:
                 tx_id=tx_id
             )
 
-            # Optional fields
             obj.timestamp = data.get("timestamp", int(time.time()))
             obj.inputs = data.get("inputs", [])
-            
-            # Normalize outputs
-            raw_outputs = data.get("outputs", [])
+
             obj.outputs = []
-            for output in raw_outputs:
-                amount = str(output.get("amount", "0"))
-                script_pub_key = output.get("script_pub_key", "")
+            for output in data.get("outputs", []):
                 obj.outputs.append({
-                    "amount": amount,
-                    "script_pub_key": script_pub_key
+                    "amount": str(output.get("amount", "0")),
+                    "script_pub_key": output.get("script_pub_key", ""),
+                    "locked": output.get("locked", False)
                 })
 
             obj.type = data.get("type", "COINBASE")
-            obj.size = data.get("size", obj._estimate_size())
             obj.fee = Decimal(data.get("fee", "0"))
             obj.metadata = data.get("metadata", {})
 
-            print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id.hex() if isinstance(obj.tx_id, bytes) else obj.tx_id}")
+            # ✅ FIXED: Always estimate size AFTER outputs and metadata are set
+            obj.size = obj._estimate_size()
+
+            print(f"[CoinbaseTx.from_dict] ✅ SUCCESS: Deserialized CoinbaseTx with tx_id: {obj.tx_id}")
             return obj
 
         except Exception as e:
             print(f"[CoinbaseTx.from_dict] ❌ ERROR: Failed to deserialize CoinbaseTx: {e}")
             return None
-
 
 
     @property

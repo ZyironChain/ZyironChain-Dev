@@ -366,7 +366,10 @@ class UTXOStorage:
 
         Steps:
         1. Archive and remove spent UTXOs.
-        2. Register new UTXOs using store_utxo().
+        2. Register new UTXOs using inline logic (avoid nested LMDB writes).
+
+        Args:
+            block: The block containing transactions to update UTXOs.
         """
         try:
             print(f"[UTXOStorage.update_utxos] INFO: Updating UTXOs for Block {block.index}...")
@@ -377,9 +380,11 @@ class UTXOStorage:
 
                     # ✅ Step 1: Archive and remove spent UTXOs
                     for tx in block.transactions:
+                        # Extract inputs from transaction
                         inputs = tx.get("inputs", []) if isinstance(tx, dict) else getattr(tx, "inputs", [])
 
                         for tx_input in inputs:
+                            # Extract input transaction ID and output index
                             input_tx_id = (
                                 tx_input.get("tx_id") if isinstance(tx_input, dict) else getattr(tx_input, "tx_id", None)
                             )
@@ -391,19 +396,25 @@ class UTXOStorage:
                                 print(f"[UTXOStorage.update_utxos] ⚠️ WARNING: Invalid TX input format. Skipping.")
                                 continue
 
+                            # Construct UTXO key
                             utxo_key = f"utxo:{input_tx_id}:{input_index}".encode()
-                            spent_utxo = utxo_txn.get(utxo_key)
 
+                            # Retrieve and archive the spent UTXO
+                            spent_utxo = utxo_txn.get(utxo_key)
                             if spent_utxo:
+                                # Archive the spent UTXO in history
                                 history_key = f"spent_utxo:{input_tx_id}:{input_index}:{block.timestamp}".encode()
                                 history_txn.put(history_key, spent_utxo)
+
+                                # Remove the spent UTXO from the active UTXO set
                                 utxo_txn.delete(utxo_key)
                                 print(f"[UTXOStorage.update_utxos] ✅ Archived and removed spent UTXO: {input_tx_id}:{input_index}")
                             else:
                                 print(f"[UTXOStorage.update_utxos] ⚠️ Spent UTXO not found: {input_tx_id}:{input_index}")
 
-                    # ✅ Step 2: Store new UTXOs
+                    # ✅ Step 2: Store new UTXOs inline
                     for tx in block.transactions:
+                        # Extract transaction ID and outputs
                         tx_id = tx.get("tx_id") if isinstance(tx, dict) else getattr(tx, "tx_id", None)
                         outputs = tx.get("outputs", []) if isinstance(tx, dict) else getattr(tx, "outputs", [])
 
@@ -420,19 +431,9 @@ class UTXOStorage:
                                 if not isinstance(output, TransactionOut):
                                     raise ValueError("Invalid TransactionOut format")
 
-                                # Store UTXO using validated storage
-                                self.store_utxo(
-                                    tx_id=tx_id,
-                                    output_index=idx,
-                                    amount=Decimal(output.amount),
-                                    script_pub_key=output.script_pub_key,
-                                    is_locked=output.locked,
-                                    block_height=block.index
-                                )
-
-                                # Archive new UTXO
-                                archive_key = f"new_utxo:{tx_id}:{idx}:{block.timestamp}".encode()
-                                archive_value = json.dumps({
+                                # Construct UTXO data
+                                utxo_key = f"utxo:{tx_id}:{idx}".encode()
+                                utxo_data = {
                                     "tx_id": tx_id,
                                     "output_index": idx,
                                     "amount": str(output.amount),
@@ -440,10 +441,21 @@ class UTXOStorage:
                                     "is_locked": output.locked,
                                     "block_height": block.index,
                                     "spent_status": False
-                                }, sort_keys=True).encode()
+                                }
 
-                                history_txn.put(archive_key, archive_value)
-                                print(f"[UTXOStorage.update_utxos] ✅ Registered new UTXO {tx_id}:{idx} amount {output.amount}")
+                                # Serialize UTXO data
+                                utxo_value = json.dumps(utxo_data, sort_keys=True).encode()
+
+                                # Avoid duplicate insertion
+                                if not utxo_txn.get(utxo_key):
+                                    utxo_txn.put(utxo_key, utxo_value)
+                                    print(f"[UTXOStorage.update_utxos] ✅ Stored new UTXO {tx_id}:{idx} amount {output.amount}")
+                                else:
+                                    print(f"[UTXOStorage.update_utxos] ⚠️ UTXO {tx_id}:{idx} already exists. Skipping.")
+
+                                # Archive new UTXO in history
+                                archive_key = f"new_utxo:{tx_id}:{idx}:{block.timestamp}".encode()
+                                history_txn.put(archive_key, utxo_value)
 
                             except Exception as e:
                                 print(f"[UTXOStorage.update_utxos] ❌ ERROR: Failed to process output {idx} in tx {tx_id}: {e}")
@@ -565,81 +577,153 @@ class UTXOStorage:
     def get_utxos_by_address(self, address: str) -> List[dict]:
         """
         Retrieve all unspent UTXOs for a given address from LMDB safely.
-        Resolves memoryview errors, transaction slot issues, and malformed entries.
-        Adds full debugging visibility into UTXO key/value entries.
+        If not found in LMDB, fallback to full block store.
         """
         results = []
+        found_in_lmdb = False
 
         try:
-            # 🧠 Open a fresh, isolated read transaction (no reuse slot issues)
+            # ✅ Try primary LMDB lookup
             with self.utxo_db.env.begin(write=False) as txn:
                 cursor = txn.cursor()
-
                 for key_bytes, value_raw in cursor:
                     try:
-                        # ✅ Decode LMDB key
-                        key_str = (
-                            key_bytes.decode("utf-8", errors="ignore")
-                            if isinstance(key_bytes, (bytes, memoryview))
-                            else str(key_bytes)
-                        )
+                        key_str = key_bytes.decode("utf-8", errors="ignore")
                         if not key_str.startswith("utxo:"):
                             continue
 
-                        # ✅ Convert value to bytes
-                        if isinstance(value_raw, memoryview):
-                            value_bytes = value_raw.tobytes()
-                        elif isinstance(value_raw, bytes):
-                            value_bytes = value_raw
-                        else:
-                            print(f"[get_utxos_by_address] ⚠️ Unsupported value type: {type(value_raw)}")
-                            continue
+                        value_bytes = value_raw.tobytes() if isinstance(value_raw, memoryview) else value_raw
+                        utxo_json = value_bytes.decode("utf-8", errors="replace")
+                        utxo = json.loads(utxo_json)
 
-                        # ✅ Parse JSON safely
-                        try:
-                            utxo_json = value_bytes.decode("utf-8", errors="replace")
-                            utxo = json.loads(utxo_json)
-                        except Exception as decode_err:
-                            print(f"[get_utxos_by_address] ❌ ERROR: Failed to parse UTXO: {decode_err}")
-                            continue
-
-                        # ✅ Ensure it's a dictionary
                         if not isinstance(utxo, dict):
-                            print(f"[get_utxos_by_address] ❌ ERROR: Parsed UTXO is not a dictionary.")
                             continue
 
-                        # 🪪 Debug: print every UTXO before filtering
-                        print(f"[get_utxos_by_address] DEBUG: Key={key_str}, Address={utxo.get('script_pub_key')}, "
-                            f"Spent={utxo.get('spent_status')}, Amount={utxo.get('amount')}")
-
-                        # ✅ Match address and unspent status
                         if utxo.get("script_pub_key") != address:
-                            print(f"[get_utxos_by_address] ⏩ Skipping UTXO (wrong address): {utxo.get('script_pub_key')}")
                             continue
-                        if utxo.get("spent_status", True):  # Default is spent
-                            print(f"[get_utxos_by_address] ⏩ Skipping UTXO (already spent)")
+                        if utxo.get("spent_status", True):
                             continue
 
-                        # ✅ Normalize amount
-                        try:
-                            utxo["amount"] = str(Decimal(str(utxo.get("amount", "0"))))
-                        except Exception as e:
-                            print(f"[get_utxos_by_address] ⚠️ Invalid amount format: {utxo.get('amount')} | {e}")
-                            utxo["amount"] = "0"
-
+                        utxo["amount"] = str(Decimal(str(utxo.get("amount", "0"))))
                         results.append(utxo)
+                        found_in_lmdb = True
 
-                    except Exception as entry_err:
-                        print(f"[get_utxos_by_address] ⚠️ Skipping UTXO entry: {entry_err}")
+                    except Exception as e:
+                        print(f"[get_utxos_by_address] ⚠️ Skipping invalid UTXO: {e}")
                         continue
 
-            print(f"[get_utxos_by_address] ✅ Found {len(results)} unspent UTXOs for address: {address}")
+            if found_in_lmdb:
+                print(f"[get_utxos_by_address] ✅ Found {len(results)} UTXOs from LMDB for address: {address}")
+                return results
+
+            # 🔁 Fallback: scan full block store if nothing found in LMDB
+            print(f"[get_utxos_by_address] ⚠️ No valid UTXOs found in LMDB. Scanning full block storage...")
+            all_blocks = self.block_storage.get_all_blocks()
+
+            for block in all_blocks:
+                transactions = block.transactions if isinstance(block.transactions, list) else []
+                for tx in transactions:
+                    outputs = getattr(tx, "outputs", []) if not isinstance(tx, dict) else tx.get("outputs", [])
+                    tx_id = getattr(tx, "tx_id", None) if not isinstance(tx, dict) else tx.get("tx_id")
+
+                    for idx, output in enumerate(outputs):
+                        try:
+                            if isinstance(output, dict):
+                                script = output.get("script_pub_key")
+                                amount = Decimal(output.get("amount", "0"))
+                                locked = output.get("locked", False)
+                            else:
+                                script = getattr(output, "script_pub_key", None)
+                                amount = Decimal(getattr(output, "amount", 0))
+                                locked = getattr(output, "locked", False)
+
+                            if script != address:
+                                continue
+
+                            utxo_entry = {
+                                "tx_id": tx_id,
+                                "output_index": idx,
+                                "amount": str(amount),
+                                "script_pub_key": script,
+                                "is_locked": locked,
+                                "block_height": block.index,
+                                "spent_status": False
+                            }
+                            results.append(utxo_entry)
+
+                            # 🔁 Store in LMDB
+                            self.store_utxo(
+                                tx_id=tx_id,
+                                output_index=idx,
+                                amount=amount,
+                                script_pub_key=script,
+                                is_locked=locked,
+                                block_height=block.index
+                            )
+
+                            print(f"[get_utxos_by_address] ✅ Recovered UTXO from block {block.index} for address: {address}")
+
+                        except Exception as e:
+                            print(f"[get_utxos_by_address] ⚠️ Error while processing fallback output: {e}")
+                            continue
+
+            print(f"[get_utxos_by_address] ✅ Total UTXOs found (LMDB + fallback): {len(results)}")
             return results
 
-        except lmdb.Error as lmdb_err:
-            print(f"[get_utxos_by_address] ❌ LMDB Error: {lmdb_err}")
+        except Exception as general_error:
+            print(f"[get_utxos_by_address] ❌ General Error: {general_error}")
             return []
 
-        except Exception as gen_err:
-            print(f"[get_utxos_by_address] ❌ General Error: {gen_err}")
-            return []
+
+
+    def enable_block_storage_fallback(self, block_storage):
+        """
+        Attach a reference to BlockStorage for fallback UTXO reconstruction.
+        """
+        self.block_storage = block_storage
+        print("[UTXOStorage] ✅ Fallback block storage enabled.")
+
+    def recover_missing_utxos_from_blockchain(self, address: str) -> int:
+        """
+        Scan full block storage for UTXOs for a given address if they are missing in LMDB.
+
+        Returns:
+            int: Count of recovered UTXOs.
+        """
+        if not hasattr(self, "block_storage"):
+            print("[recover_missing_utxos_from_blockchain] ❌ ERROR: Block storage not attached. Use `enable_block_storage_fallback()` first.")
+            return 0
+
+        recovered = 0
+        try:
+            print(f"[recover_missing_utxos_from_blockchain] 🔍 Scanning full block storage for address: {address}")
+
+            all_blocks = self.block_storage.get_all_blocks()
+            for block in all_blocks:
+                for tx in block.transactions:
+                    for idx, output in enumerate(tx.outputs):
+                        if output.script_pub_key != address:
+                            continue
+
+                        utxo_key = f"utxo:{tx.tx_id}:{idx}".encode("utf-8")
+
+                        with self.utxo_db.env.begin() as txn:
+                            if txn.get(utxo_key):
+                                continue  # Already stored
+
+                        self.store_utxo(
+                            tx_id=tx.tx_id,
+                            output_index=idx,
+                            amount=Decimal(output.amount),
+                            script_pub_key=output.script_pub_key,
+                            is_locked=output.locked,
+                            block_height=block.index
+                        )
+                        recovered += 1
+
+            print(f"[recover_missing_utxos_from_blockchain] ✅ Recovered {recovered} missing UTXOs for address: {address}")
+            return recovered
+
+        except Exception as e:
+            print(f"[recover_missing_utxos_from_blockchain] ❌ ERROR: {e}")
+            return 0

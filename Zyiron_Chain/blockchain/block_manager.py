@@ -384,7 +384,8 @@ class BlockManager:
 
     def get_latest_block(self):
         """
-        Returns the last block in the in-memory chain, or retrieves it from block_metadata if empty.
+        Returns the last block in the in-memory chain, or retrieves it from block storage or metadata if empty.
+        Includes fallbacks and type checks to avoid runtime errors.
         """
         try:
             # ✅ Retrieve latest block from in-memory chain
@@ -393,13 +394,34 @@ class BlockManager:
                 print(f"[BlockManager.get_latest_block] ✅ INFO: Latest block is Block {latest_block.index}.")
                 return latest_block
 
-            # ✅ Retrieve latest block from block metadata storage
-            latest_block_data = self.block_metadata.get_latest_block()
-            if latest_block_data:
-                print(f"[BlockManager.get_latest_block] ✅ INFO: Retrieved latest block from storage: {latest_block_data['index']}.")
-                return latest_block_data
+            # ✅ Attempt fallback from full block storage (if available)
+            if hasattr(self.block_storage, "get_latest_block"):
+                block = self.block_storage.get_latest_block()
+                if block:
+                    print(f"[BlockManager.get_latest_block] ✅ INFO: Retrieved latest block from block storage: Block {block.index}.")
+                    return block
 
-            print("[BlockManager.get_latest_block] ❌ WARNING: No blocks found in-memory or storage.")
+            # ✅ Fallback: Try direct LMDB scan if block_metadata provides no method
+            if hasattr(self.block_metadata, "env"):
+                with self.block_metadata.env.begin() as txn:
+                    cursor = txn.cursor()
+                    latest_index = -1
+                    latest_block = None
+                    for key, value in cursor:
+                        if key.startswith(b"blockmeta:"):
+                            try:
+                                block_meta = json.loads(value.decode("utf-8"))
+                                index = block_meta.get("index", -1)
+                                if index > latest_index:
+                                    latest_index = index
+                                    latest_block = block_meta
+                            except Exception as parse_err:
+                                print(f"[BlockManager.get_latest_block] ⚠️ Failed to parse metadata for key {key}: {parse_err}")
+                    if latest_block:
+                        print(f"[BlockManager.get_latest_block] ✅ INFO: Retrieved latest block from metadata DB: Block {latest_index}")
+                        return latest_block
+
+            print("[BlockManager.get_latest_block] ❌ WARNING: No blocks found in memory, block storage, or metadata.")
             return None
 
         except Exception as e:

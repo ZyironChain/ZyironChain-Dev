@@ -35,32 +35,30 @@ def store_transaction_signature(tx_id: bytes, falcon_signature: bytes, txindex_p
     Returns:
         bytes: SHA3-384 hash (48 bytes) stored in block.data.
     """
-
-    # ✅ Generate a 512-byte cryptographic salt
+    # Generate a 512-byte cryptographic salt
     salt = os.urandom(512)
 
-    # ✅ Compute SHA3-384 hash: Falcon-512 Signature + Salt
+    # Compute SHA3-384 hash: Falcon-512 Signature + Salt
     sha3_384_hash = hashlib.sha3_384(falcon_signature + salt).digest()
 
-    # ✅ Ensure the LMDB environment is opened correctly
+    # Ensure the LMDB environment is opened correctly
     env = lmdb.open(txindex_path, map_size=512 * 1024 * 1024, max_dbs=1)
 
-    # ✅ Store full Falcon-512 signature + salt in `txindex.lmdb`
+    # Store full Falcon-512 signature + salt in `txindex.lmdb`
     try:
         with env.begin(write=True) as txn:
-            txn.put(tx_id, salt + falcon_signature)  # ✅ Store salt + full signature
+            txn.put(tx_id, salt + falcon_signature)  # Store salt + full signature
 
         print(f"[INFO] ✅ Falcon-512 Signature stored in `txindex.lmdb` for TX ID {tx_id.hex()}.")
 
     except Exception as e:
         print(f"[ERROR] ❌ Failed to store Falcon-512 Signature: {e}")
 
-    # ✅ Close LMDB environment after use
+    # Close LMDB environment after use
     env.close()
 
-    # ✅ Return SHA3-384 hashed signature for block storage (`block.data`)
+    # Return SHA3-384 hashed signature for block storage (`block.data`)
     return sha3_384_hash
-
 
 
 
@@ -304,7 +302,6 @@ class Constants:
     @staticmethod
     def get_db_path(db_name: str) -> str:
         """Returns the correct database path based on the current network and db type."""
-        
         # Ensure network is assigned correctly
         network = Constants.NETWORK
         print(f"[DEBUG] Fetching database path for network: {network}")

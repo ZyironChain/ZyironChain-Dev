@@ -140,6 +140,8 @@ class UTXOManager:
         Expects block["transactions"] to be a list of transaction dictionaries,
         with the first transaction as the coinbase transaction.
 
+        This method is thread-safe and ensures atomic updates using a lock.
+
         :param block: Dictionary representing the block.
         """
         if not isinstance(block, dict) or "transactions" not in block:
@@ -148,44 +150,45 @@ class UTXOManager:
 
         print(f"[UTXOManager INFO] 🔄 update_from_block: Processing block UTXO updates for peer {self.peer_id}.")
 
-        # ✅ Process coinbase transaction first (index 0)
-        coinbase_tx = block["transactions"][0]
-        if isinstance(coinbase_tx, dict) and "outputs" in coinbase_tx:
-            for output in coinbase_tx["outputs"]:
-                try:
-                    tx_out = TransactionOut.from_dict(output)
-                    self.register_utxo(tx_out)
-                    print(f"[UTXOManager INFO] ✅ Processed Coinbase UTXO {tx_out.tx_out_id}.")
-                except Exception as e:
-                    print(f"[UTXOManager ERROR] ❌ Failed to process Coinbase UTXO: {e}")
+        with self.lock:
+            # ✅ Process coinbase transaction first (index 0)
+            coinbase_tx = block["transactions"][0]
+            if isinstance(coinbase_tx, dict) and "outputs" in coinbase_tx:
+                for output in coinbase_tx["outputs"]:
+                    try:
+                        tx_out = TransactionOut.from_dict(output)
+                        self.register_utxo(tx_out)
+                        print(f"[UTXOManager INFO] ✅ Processed Coinbase UTXO {tx_out.tx_out_id}.")
+                    except Exception as e:
+                        print(f"[UTXOManager ERROR] ❌ Failed to process Coinbase UTXO: {e}")
 
-        # ✅ Process subsequent transactions
-        for tx_data in block["transactions"][1:]:
-            if not isinstance(tx_data, dict) or "outputs" not in tx_data or "inputs" not in tx_data:
-                print(f"[UTXOManager WARN] ⚠️ Skipping malformed transaction: {tx_data}")
-                continue
-
-            # ✅ Register new outputs
-            for output in tx_data["outputs"]:
-                try:
-                    tx_out = TransactionOut.from_dict(output)
-                    self.register_utxo(tx_out)
-                    print(f"[UTXOManager INFO] ✅ Registered UTXO {tx_out.tx_out_id}.")
-                except Exception as e:
-                    print(f"[UTXOManager ERROR] ❌ Failed to register UTXO: {e}")
-
-            # ✅ Consume spent inputs
-            for tx_in in tx_data["inputs"]:
-                tx_out_id = tx_in.get("tx_out_id")
-                if not tx_out_id or not isinstance(tx_out_id, str):
-                    print(f"[UTXOManager WARN] ⚠️ Skipping transaction input with missing 'tx_out_id': {tx_in}")
+            # ✅ Process subsequent transactions
+            for tx_data in block["transactions"][1:]:
+                if not isinstance(tx_data, dict) or "outputs" not in tx_data or "inputs" not in tx_data:
+                    print(f"[UTXOManager WARN] ⚠️ Skipping malformed transaction: {tx_data}")
                     continue
 
-                try:
-                    self.consume_utxo(tx_out_id)
-                    print(f"[UTXOManager INFO] ✅ Consumed UTXO {tx_out_id}.")
-                except Exception as e:
-                    print(f"[UTXOManager ERROR] ❌ Failed to consume UTXO {tx_out_id}: {e}")
+                # ✅ Register new outputs
+                for output in tx_data["outputs"]:
+                    try:
+                        tx_out = TransactionOut.from_dict(output)
+                        self.register_utxo(tx_out)
+                        print(f"[UTXOManager INFO] ✅ Registered UTXO {tx_out.tx_out_id}.")
+                    except Exception as e:
+                        print(f"[UTXOManager ERROR] ❌ Failed to register UTXO: {e}")
+
+                # ✅ Consume spent inputs
+                for tx_in in tx_data["inputs"]:
+                    tx_out_id = tx_in.get("tx_out_id")
+                    if not tx_out_id or not isinstance(tx_out_id, str):
+                        print(f"[UTXOManager WARN] ⚠️ Skipping transaction input with missing 'tx_out_id': {tx_in}")
+                        continue
+
+                    try:
+                        self.consume_utxo(tx_out_id)
+                        print(f"[UTXOManager INFO] ✅ Consumed UTXO {tx_out_id}.")
+                    except Exception as e:
+                        print(f"[UTXOManager ERROR] ❌ Failed to consume UTXO {tx_out_id}: {e}")
 
     def consume_utxo(self, tx_out_id: str):
         """

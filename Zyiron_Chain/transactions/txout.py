@@ -65,17 +65,19 @@ class TransactionOut:
     def _calculate_tx_out_id(self) -> str:
         """
         Generate a unique UTXO ID using single SHA3-384 hashing.
-        Combines script_pub_key, amount, and locked flag into a bytes object.
+        Combines script_pub_key, amount, locked flag, and a nanosecond timestamp.
         """
         try:
-            data = f"{self.script_pub_key}{self.amount}{self.locked}".encode("utf-8")
+            salt = str(time.time_ns())  # ✅ Add high-resolution salt for uniqueness
+            data = f"{self.script_pub_key}{self.amount}{self.locked}{salt}".encode("utf-8")
             tx_out_id_bytes = Hashing.hash(data)
-            tx_out_id = tx_out_id_bytes.hex()  # ✅ Ensure hex string format
-            print(f"[TransactionOut INFO] ✅ Calculated tx_out_id: {tx_out_id}")
+            tx_out_id = tx_out_id_bytes.hex()  # ✅ Return hex string for LMDB/storage
+            print(f"[TransactionOut INFO] ✅ Calculated tx_out_id with salt: {tx_out_id}")
             return tx_out_id
         except Exception as e:
             print(f"[TransactionOut ERROR] ❌ Failed to generate tx_out_id: {e}")
-            return Constants.ZERO_HASH  # Return ZERO_HASH on failure
+            return Constants.ZERO_HASH  # Return fallback on failure
+
 
     def to_dict(self) -> Dict[str, str]:
         """

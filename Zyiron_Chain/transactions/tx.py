@@ -102,26 +102,26 @@ class Transaction:
     def _generate_tx_id(self) -> str:
         """
         Generate a unique transaction ID using single SHA3-384 hashing.
-        Ensures a hex-encoded string output for consistency.
+        Returns a hex-encoded ID for LMDB key compatibility and display.
+        Includes fallback logic for any failure in generation.
         """
         try:
-            # ✅ Retrieve prefix for transaction type
+            # ✅ Retrieve the transaction prefix from constants (default to empty string)
             prefix = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [""])[0]
 
-            # ✅ Use high-resolution time-based salt
-            salt = str(time.time_ns())  # Nanosecond precision for uniqueness
+            # ✅ Use nanosecond-level timestamp as a salt
+            salt = str(time.time_ns())
+            tx_data = f"{prefix}{self.timestamp}{salt}".encode("utf-8")
 
-            # ✅ Construct transaction data to hash
-            tx_data = f"{prefix}{self.timestamp}{salt}".encode()
-
-            # ✅ Compute SHA3-384 hash
-            tx_id = hashlib.sha3_384(tx_data).hexdigest()
-
-            print(f"[TRANSACTION _generate_tx_id INFO] Generated tx_id: {tx_id}")
+            # ✅ Return SHA3-384 digest (hex string, for LMDB key compatibility)
+            tx_id = Hashing.hash(tx_data).hex()
+            print(f"[TRANSACTION _generate_tx_id INFO] ✅ Generated tx_id: {tx_id}")
             return tx_id
+
         except Exception as e:
-            print(f"[TRANSACTION _generate_tx_id ERROR] Failed to generate tx_id: {e}")
-            return Constants.ZERO_HASH  # Fallback to zero hash
+            print(f"[TRANSACTION _generate_tx_id ERROR] ❌ Failed to generate tx_id: {e}")
+            return Constants.ZERO_HASH
+
 
     def calculate_hash(self) -> str:
         """
@@ -197,7 +197,6 @@ class Transaction:
         - Ensure fee meets the minimum required by the fee model.
         """
         try:
-            # ✅ **Coinbase transactions have zero fees**
             if self.type == "COINBASE":
                 print(f"[TRANSACTION _calculate_fee INFO] Coinbase transaction detected (tx_id: {self.tx_id}); fee set to 0.")
                 return Decimal("0")
@@ -205,35 +204,41 @@ class Transaction:
             input_total = Decimal("0")
             output_total = Decimal("0")
 
-            # ✅ **Retrieve and sum UTXO input values**
+            # ✅ Retrieve input amounts using UTXOManager
             if self.utxo_manager:
                 for inp in self.inputs:
                     try:
                         utxo = self.utxo_manager.get_utxo(inp.tx_out_id)
-                        if not utxo or "amount" not in utxo:
-                            print(f"[TRANSACTION _calculate_fee WARN] Missing or invalid UTXO for {inp.tx_out_id}; defaulting to 0.")
+                        if not utxo:
+                            print(f"[TRANSACTION _calculate_fee WARN] UTXO not found for {inp.tx_out_id}.")
                             continue
-                        input_total += Decimal(str(utxo["amount"]))
+
+                        # ✅ Handle both TransactionOut and dict fallback
+                        if hasattr(utxo, "amount"):
+                            input_total += Decimal(str(utxo.amount))
+                        elif isinstance(utxo, dict) and "amount" in utxo:
+                            input_total += Decimal(str(utxo["amount"]))
+                        else:
+                            print(f"[TRANSACTION _calculate_fee WARN] UTXO {inp.tx_out_id} missing 'amount'.")
                     except Exception as e:
                         print(f"[TRANSACTION _calculate_fee ERROR] Failed to retrieve UTXO amount for {inp.tx_out_id}: {e}")
-
             else:
                 print("[TRANSACTION _calculate_fee WARN] No UTXO manager provided; input_total = 0.")
 
-            # ✅ **Retrieve and sum output values**
+            # ✅ Sum all output amounts
             for out in self.outputs:
                 try:
                     output_total += Decimal(str(out.amount))
                 except Exception as e:
-                    print(f"[TRANSACTION _calculate_fee ERROR] Invalid output amount for {out}: {e}")
+                    print(f"[TRANSACTION _calculate_fee ERROR] Invalid output amount: {e}")
 
-            # ✅ **Compute raw transaction fee**
+            # ✅ Compute fee
             fee = input_total - output_total
             if fee < 0:
-                print(f"[TRANSACTION _calculate_fee WARN] Negative fee detected ({fee}); clamping to 0.")
+                print(f"[TRANSACTION _calculate_fee WARN] Negative fee ({fee}); setting to 0.")
                 fee = Decimal("0")
 
-            # ✅ **Ensure fee meets the minimum required**
+            # ✅ Apply fee model if available
             required_fee = Decimal("0")
             if self.fee_model:
                 try:
@@ -245,19 +250,17 @@ class Transaction:
                     )
                 except Exception as e:
                     print(f"[TRANSACTION _calculate_fee ERROR] Fee model calculation failed: {e}")
-                    required_fee = Decimal("0")
 
             if fee < required_fee:
-                print(f"[TRANSACTION _calculate_fee INFO] Adjusting fee for {self.tx_id} to required minimum: {required_fee} (raw fee: {fee})")
+                print(f"[TRANSACTION _calculate_fee INFO] Adjusting fee for {self.tx_id} to minimum required: {required_fee}")
                 fee = required_fee
 
-            print(f"[TRANSACTION _calculate_fee INFO] Computed fee for {self.tx_id}: {fee} (Inputs: {input_total}, Outputs: {output_total}, Required: {required_fee})")
+            print(f"[TRANSACTION _calculate_fee INFO] Final Fee: {fee} | Inputs: {input_total} | Outputs: {output_total} | Required: {required_fee}")
             return fee
 
         except Exception as e:
             print(f"[TRANSACTION _calculate_fee ERROR] Unexpected error calculating fee: {e}")
             return Decimal("0")
-
 
 
     def to_dict(self) -> Dict:

@@ -8,6 +8,8 @@ import hashlib
 from decimal import Decimal
 from typing import List, Optional, Dict
 
+import lmdb
+
 # Set module search path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
@@ -66,11 +68,21 @@ class TxStorage:
             print(f"[TxStorage.__init__] ERROR: Failed to initialize TxStorage: {e}")
             raise
 
+
+
+
+
+
+
+
     def store_transaction(
-        self, tx_id: str, block_hash: str, tx_data: dict, outputs: List[Dict], timestamp: int,
+        self, tx_id: Union[str, bytes], block_hash: str, tx_data: dict, outputs: List[Dict], timestamp: int,
         tx_signature: bytes = b"", falcon_signature: bytes = b""
     ) -> None:
         try:
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.hex()
+
             print(f"[TxStorage.store_transaction] INFO: Storing transaction {tx_id} for block {block_hash}...")
 
             if not isinstance(tx_data, dict):
@@ -89,40 +101,33 @@ class TxStorage:
                 print(f"[TxStorage.store_transaction] ERROR: FeeModel is missing.")
                 return
 
-            tx_type = "STANDARD"
-            for t_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
-                if any(tx_id.startswith(prefix) for prefix in config.get("prefixes", [])):
-                    tx_type = t_type
-                    break
+            # Use helper for transaction type detection
+            tx_type_enum = self._detect_transaction_type(tx_data)
+            tx_type = tx_type_enum.name if hasattr(tx_type_enum, "name") else str(tx_type_enum)
+            print(f"[TxStorage.store_transaction] INFO: Detected transaction type: {tx_type}")
 
-            print(f"[TxStorage.store_transaction] INFO: Identified transaction type as {tx_type}.")
+            # Skip fee calculation for CoinbaseTx
+            if tx_type == "COINBASE":
+                tax_fee = miner_fee = Decimal("0.00")
+            else:
+                try:
+                    total_output_amount = sum(Decimal(str(out["amount"])) for out in outputs)
+                    fee_details = self.fee_model.calculate_fee_and_tax(
+                        block_size=1,
+                        payment_type=tx_type,
+                        amount=total_output_amount,
+                        tx_size=tx_data.get("size", 250)
+                    )
 
-            try:
-                total_output_amount = sum(Decimal(str(out["amount"])) for out in outputs)
-                fee_details = self.fee_model.calculate_fee_and_tax(
-                    block_size=1,
-                    payment_type=tx_type,
-                    amount=total_output_amount,
-                    tx_size=250
-                )
+                    tax_fee = Decimal(str(fee_details.get("tax_fee", Constants.MIN_TRANSACTION_FEE)))
+                    miner_fee = Decimal(str(fee_details.get("miner_fee", Constants.MIN_TRANSACTION_FEE)))
 
-                tax_fee = fee_details.get("tax_fee", Constants.MIN_TRANSACTION_FEE)
-                miner_fee = fee_details.get("miner_fee", Constants.MIN_TRANSACTION_FEE)
+                    print(f"[TxStorage.store_transaction] INFO: Fee Breakdown - Tax Fee: {tax_fee}, Miner Fee: {miner_fee}")
+                except Exception as fee_error:
+                    print(f"[TxStorage.store_transaction] ERROR: Fee calculation failed - {fee_error}")
+                    return
 
-                if any(str(f).upper() == "LOW" for f in [tax_fee, miner_fee]):
-                    print(f"[TxStorage.store_transaction] WARN: Low fee detected. Using minimums.")
-                    tax_fee = miner_fee = Decimal(Constants.MIN_TRANSACTION_FEE)
-                else:
-                    tax_fee = Decimal(str(tax_fee))
-                    miner_fee = Decimal(str(miner_fee))
-
-                print(f"[TxStorage.store_transaction] INFO: Fee Breakdown - Tax Fee: {tax_fee}, Miner Fee: {miner_fee}")
-
-            except Exception as fee_error:
-                print(f"[TxStorage.store_transaction] ERROR: Fee calculation failed - {fee_error}")
-                return
-
-            # Store Falcon Signature
+            # Store Falcon Signature Hash
             txindex_path = Constants.get_db_path("txindex")
             hashed_signature = store_transaction_signature(
                 tx_id=tx_id.encode(),
@@ -130,6 +135,7 @@ class TxStorage:
                 txindex_path=txindex_path
             )
 
+            # Final transaction data to store
             transaction_data = {
                 "tx_id": tx_id,
                 "block_hash": block_hash,
@@ -142,76 +148,204 @@ class TxStorage:
                 "tx_signature_hash": hashed_signature.hex()
             }
 
+            # Store in LMDB
             with self.txindex_db.env.begin(write=True) as txn:
                 txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
 
-            print(f"[TxStorage.store_transaction] ✅ SUCCESS: Stored {tx_id}.")
+            print(f"[TxStorage.store_transaction] ✅ SUCCESS: Stored transaction {tx_id}.")
 
         except Exception as e:
             print(f"[TxStorage.store_transaction] EXCEPTION: {e}")
 
 
-    def _detect_transaction_type(self, tx):
-        if isinstance(tx, CoinbaseTx):
+    def _detect_transaction_type(self, tx: Union[Transaction, dict]) -> TransactionType:
+        if isinstance(tx, dict):
+            # Use 'type' field if available
+            tx_type = tx.get("type", "").upper()
+            return TransactionType[tx_type] if tx_type in TransactionType.__members__ else TransactionType.STANDARD
+        elif isinstance(tx, CoinbaseTx):
             return TransactionType.COINBASE
-        elif tx.tx_id.startswith(b'S-'):
-            return TransactionType.SMART
-        elif tx.tx_id.startswith(b'PID-') or tx.tx_id.startswith(b'CID-'):
-            return TransactionType.INSTANT
-        else:
-            return TransactionType.STANDARD
+        elif isinstance(tx, Transaction):
+            if tx.tx_id.startswith(b'S-'):
+                return TransactionType.SMART
+            elif tx.tx_id.startswith(b'PID-') or tx.tx_id.startswith(b'CID-'):
+                return TransactionType.INSTANT
+        return TransactionType.STANDARD
+
 
 
     def get_transaction(self, tx_id: str) -> Optional[Dict]:
         """
-        Retrieve a transaction from LMDB using 'block_tx:<tx_id>' key.
+        Retrieve a transaction from txindex.lmdb, and fallback to full_block_chain if missing.
 
-        :param tx_id: Transaction ID to fetch.
-        :return: Transaction dictionary or None if not found or invalid.
+        Args:
+            tx_id (str): Transaction ID to look up.
+
+        Returns:
+            Optional[Dict]: Transaction data dictionary or None.
         """
         try:
             key = f"block_tx:{tx_id}".encode()
             data = self.txindex_db.get(key)
 
-            if not data:
-                print(f"[TxStorage.get_transaction] ⚠️ WARNING: Transaction {tx_id} not found in LMDB.")
-                return None
+            if data:
+                try:
+                    transaction = json.loads(data.decode("utf-8"))
+                    print(f"[TxStorage.get_transaction] ✅ SUCCESS: Retrieved transaction {tx_id} from txindex.lmdb.")
+                    return transaction
+                except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
+                    print(f"[TxStorage.get_transaction] ❌ ERROR: Decoding failed in txindex: {decode_error}")
+                    return None
 
-            try:
-                transaction = json.loads(data.decode())
-                print(f"[TxStorage.get_transaction] ✅ SUCCESS: Retrieved transaction {tx_id}.")
-                return transaction
-            except (json.JSONDecodeError, UnicodeDecodeError) as decode_error:
-                print(f"[TxStorage.get_transaction] ❌ ERROR: Failed to decode transaction {tx_id}: {decode_error}")
-                return None
+            # Fallback: try full_block_chain
+            print(f"[TxStorage.get_transaction] ⚠️ TX {tx_id} not found in txindex.lmdb. Falling back to full_block_chain...")
+
+            from Zyiron_Chain.storage.block_storage import BlockStorage
+            from Zyiron_Chain.accounts.key_manager import KeyManager
+
+            fallback_storage = BlockStorage(tx_storage=self, key_manager=KeyManager())
+            all_blocks = fallback_storage.get_all_blocks()
+
+            for block_dict in all_blocks:
+                transactions = block_dict.get("transactions", [])
+                for tx in transactions:
+                    # 🧠 Safe serialization
+                    if isinstance(tx, dict):
+                        tx_dict = tx
+                    elif hasattr(tx, "to_dict"):
+                        tx_dict = tx.to_dict()
+                    else:
+                        print(f"[TxStorage.get_transaction] ⚠️ Skipping invalid TX format in fallback.")
+                        continue
+
+                    if tx_dict.get("tx_id") != tx_id:
+                        continue
+
+                    print(f"[TxStorage.get_transaction] 🧩 Found TX {tx_id} in block #{block_dict.get('index')} (fallback). Reinserting...")
+
+                    # 🛡️ Normalize falcon signature
+                    falcon_sig = tx_dict.get("falcon_signature", b"")
+                    if isinstance(falcon_sig, str):
+                        try:
+                            falcon_sig = bytes.fromhex(falcon_sig)
+                        except ValueError:
+                            falcon_sig = b""
+
+                    # 🧬 Store Falcon-512 signature
+                    tx_sig_hash = store_transaction_signature(
+                        tx_id=tx_id.encode(),
+                        falcon_signature=falcon_sig,
+                        txindex_path=Constants.get_db_path("txindex")
+                    )
+
+                    transaction_data = {
+                        "tx_id": tx_id,
+                        "block_hash": block_dict.get("hash"),
+                        "data": tx_dict,
+                        "outputs": tx_dict.get("outputs", []),
+                        "timestamp": tx_dict.get("timestamp", int(time.time())),
+                        "type": tx_dict.get("type", "STANDARD"),
+                        "tax_fee": "0",
+                        "miner_fee": "0",
+                        "tx_signature_hash": tx_sig_hash.hex()
+                    }
+
+                    try:
+                        with self.txindex_db.env.begin(write=True) as txn:
+                            txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode("utf-8"))
+                    except Exception as lmdb_error:
+                        print(f"[TxStorage.get_transaction] ⚠️ Failed to reinsert TX into txindex.lmdb: {lmdb_error}")
+
+                    print(f"[TxStorage.get_transaction] ✅ Reinjected TX {tx_id} into txindex.lmdb from full block store.")
+                    return transaction_data
+
+            print(f"[TxStorage.get_transaction] ❌ TX {tx_id} not found in full_block_chain either.")
+            return None
 
         except Exception as e:
             print(f"[TxStorage.get_transaction] ❌ ERROR: Failed to retrieve transaction {tx_id}: {e}")
             return None
 
+
+
     def get_all_transactions(self) -> List[Dict]:
         """
         Retrieve all stored transactions in LMDB under 'block_tx:*' keys.
+        Falls back to full_block_chain to recover missing transactions.
 
-        :return: List of transaction dictionaries.
+        Returns:
+            List[Dict]: A list of transaction dictionaries.
         """
-        transactions = []
+        transactions = {}
         try:
-            all_entries = self.txindex_db.get_all_transactions()
-            if not all_entries:
-                print(f"[TxStorage.get_all_transactions] ℹ️ INFO: No transactions found in LMDB.")
-                return []
+            print("[TxStorage.get_all_transactions] INFO: Scanning txindex.lmdb for all transactions...")
 
-            for raw in all_entries:
-                try:
-                    tx_data = json.loads(raw.decode())
-                    if isinstance(tx_data, dict):
-                        transactions.append(tx_data)
-                except Exception as parse_error:
-                    print(f"[TxStorage.get_all_transactions] ⚠️ WARNING: Skipping invalid transaction entry: {parse_error}")
+            # Step 1: Load from txindex.lmdb
+            with self.txindex_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key_bytes, value_bytes in cursor:
+                    try:
+                        key_str = key_bytes.decode("utf-8", errors="ignore")
+                        if not key_str.startswith("block_tx:"):
+                            continue
 
-            print(f"[TxStorage.get_all_transactions] ✅ Retrieved {len(transactions)} valid transactions.")
-            return transactions
+                        tx_id = key_str.replace("block_tx:", "")
+                        tx_json = value_bytes.decode("utf-8", errors="replace")
+                        tx_data = json.loads(tx_json)
+
+                        if isinstance(tx_data, dict):
+                            transactions[tx_id] = tx_data
+                            print(f"[TxStorage.get_all_transactions] ✅ Loaded TX {tx_id} from txindex.lmdb")
+                        else:
+                            print(f"[TxStorage.get_all_transactions] ⚠️ Invalid format for TX {tx_id}")
+                    except Exception as e:
+                        print(f"[TxStorage.get_all_transactions] ⚠️ Skipping malformed TX entry: {e}")
+                        continue
+
+            # Step 2: Fallback to full_block_chain for missing TXs
+            from Zyiron_Chain.storage.block_storage import BlockStorage
+            fallback_store = BlockStorage(self, self.fee_model.key_manager)  # Pass required args
+
+            all_blocks = fallback_store.get_all_blocks()
+            print(f"[TxStorage.get_all_transactions] INFO: Scanning {len(all_blocks)} blocks from full_block_chain for missing TXs...")
+
+            for block in all_blocks:
+                block_txns = block.get("transactions", []) if isinstance(block, dict) else getattr(block, "transactions", [])
+
+                for tx in block_txns:
+                    tx_obj = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    tx_id = tx_obj.get("tx_id")
+                    if not tx_id or tx_id in transactions:
+                        continue  # Already indexed
+
+                    # Fallback reindex
+                    falcon_sig = getattr(tx, "falcon_signature", b"")
+                    sig_hash = store_transaction_signature(
+                        tx_id=tx_id.encode(),
+                        falcon_signature=falcon_sig,
+                        txindex_path=Constants.get_db_path("txindex")
+                    )
+
+                    transaction_data = {
+                        "tx_id": tx_id,
+                        "block_hash": block.get("hash", ""),
+                        "data": tx_obj,
+                        "outputs": tx_obj.get("outputs", []),
+                        "timestamp": tx_obj.get("timestamp", int(time.time())),
+                        "type": tx_obj.get("type", "STANDARD"),
+                        "tax_fee": "0",
+                        "miner_fee": "0",
+                        "tx_signature_hash": sig_hash.hex()
+                    }
+
+                    with self.txindex_db.env.begin(write=True) as txn:
+                        txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
+
+                    transactions[tx_id] = transaction_data
+                    print(f"[TxStorage.get_all_transactions] 🔁 Fallback indexed TX {tx_id} from full block storage.")
+
+            print(f"[TxStorage.get_all_transactions] ✅ Total Transactions Retrieved: {len(transactions)}")
+            return list(transactions.values())
 
         except Exception as e:
             print(f"[TxStorage.get_all_transactions] ❌ ERROR: Failed to retrieve all transactions: {e}")
