@@ -108,31 +108,73 @@ class LMDBManager:
 
     def get_all_transactions(self) -> List[Dict]:
         """
-        Retrieve all transactions from the LMDB database.
-        Returns a list of transaction dictionaries.
+        Retrieve all transactions from the LMDB transactions DB.
+        Fallback: Scans full block store if entries are missing or empty.
+        
+        Returns:
+            List[Dict]: A list of transaction dictionaries.
         """
         transactions = []
+        found_in_lmdb = False
+
         try:
-            with self.env.begin() as txn:
-                cursor = txn.cursor(db=self.transactions_db)
+            print("[LMDBManager.get_all_transactions] INFO: Scanning transactions_db for all transactions...")
+
+            with self.env.begin(db=self.transactions_db) as txn:
+                cursor = txn.cursor()
                 for key, value in cursor:
                     try:
                         key_str = key.decode("utf-8", errors="ignore")
-                        if key_str.startswith("tx:"):
-                            try:
-                                tx_data = value.decode("utf-8", errors="ignore")
-                                tx_dict = json.loads(tx_data)
-                                transactions.append(tx_dict)
-                            except json.JSONDecodeError as json_error:
-                                print(f"[LMDBManager.get_all_transactions] WARNING: Skipping corrupt transaction entry {key_str}: {json_error}")
-                    except UnicodeDecodeError as decode_error:
-                        print(f"[LMDBManager.get_all_transactions] ERROR: Failed to decode key {key}: {decode_error}")
+                        if not key_str.startswith("tx:"):
+                            continue
 
-            print(f"[LMDBManager.get_all_transactions] INFO: Retrieved {len(transactions)} valid transactions.")
+                        tx_json = value.decode("utf-8", errors="ignore")
+                        tx_dict = json.loads(tx_json)
+
+                        if isinstance(tx_dict, dict):
+                            transactions.append(tx_dict)
+                            found_in_lmdb = True
+                            print(f"[LMDBManager.get_all_transactions] ✅ Loaded TX from {key_str}")
+                        else:
+                            print(f"[LMDBManager.get_all_transactions] ⚠️ Invalid TX format at {key_str}")
+
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        print(f"[LMDBManager.get_all_transactions] ⚠️ Skipping malformed entry {key_str}: {e}")
+                        continue
+
+            if found_in_lmdb:
+                print(f"[LMDBManager.get_all_transactions] ✅ Retrieved {len(transactions)} transactions from LMDB.")
+                return transactions
+
+            # 🔁 Fallback: scan full block store
+            print("[LMDBManager.get_all_transactions] ⚠️ No transactions found in LMDB. Scanning full block store...")
+            with self.full_block_store.env.begin() as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    try:
+                        if not key.startswith(b"block:"):
+                            continue
+
+                        block_data = json.loads(value.decode("utf-8"))
+                        block_transactions = block_data.get("transactions", [])
+
+                        if not isinstance(block_transactions, list):
+                            continue
+
+                        for tx in block_transactions:
+                            if isinstance(tx, dict):
+                                transactions.append(tx)
+                                print(f"[LMDBManager.get_all_transactions] 🔁 Fallback: Added TX {tx.get('tx_id', 'unknown')}")
+
+                    except Exception as fallback_error:
+                        print(f"[LMDBManager.get_all_transactions] ⚠️ Fallback TX parse failed: {fallback_error}")
+                        continue
+
+            print(f"[LMDBManager.get_all_transactions] ✅ Fallback complete. Total transactions loaded: {len(transactions)}")
             return transactions
 
         except Exception as e:
-            print(f"[LMDBManager.get_all_transactions] ERROR: Failed to retrieve transactions: {e}")
+            print(f"[LMDBManager.get_all_transactions] ❌ ERROR: Failed to retrieve transactions: {e}")
             return []
 
 
@@ -399,12 +441,15 @@ class LMDBManager:
             print(f"[LMDBManager] ERROR: Failed to get block by index {index}: {e}")
             return None
 
-    def put(self, key: Union[str, bytes, bytearray, memoryview], value: dict, db=None) -> bool:
+
+
+
+    def put(self, key: Union[str, bytes], value: dict, db=None):
         """
         Store a JSON-serialized value in LMDB by key.
 
         Args:
-            key (Union[str, bytes, bytearray, memoryview]): The key to store.
+            key (Union[str, bytes]): The key to store.
             value (dict): The data to store (must be JSON-serializable).
             db: The database handle to use (defaults to self.blocks_db).
 
@@ -413,88 +458,60 @@ class LMDBManager:
         """
         db_handle = db or self.blocks_db
 
-        # ✅ Normalize key to bytes
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
-        elif isinstance(key, (bytes, bytearray)):
-            key_bytes = bytes(key)
-        elif isinstance(key, memoryview):
-            try:
-                key_bytes = key.tobytes()
-            except Exception as e:
-                print(f"[LMDBManager] ❌ ERROR: Failed to convert memoryview to bytes: {e}")
-                return False
+        elif isinstance(key, bytes):
+            key_bytes = key
         else:
-            print(f"[LMDBManager] ❌ ERROR: Invalid key type: {type(key)}. Expected str, bytes, bytearray, or memoryview.")
+            print(f"[LMDBManager] ERROR: Invalid key type: {type(key)}. Expected str or bytes.")
             return False
 
-        # ✅ Safe key string for logs
-        try:
-            key_str = key_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            key_str = str(key_bytes)
+        key_str = key_bytes.decode("utf-8", errors="ignore")
 
-        # ✅ Validate value
         if not isinstance(value, dict):
-            print(f"[LMDBManager] ❌ ERROR: Invalid value type: {type(value)}. Expected dict.")
+            print(f"[LMDBManager] ERROR: Invalid value type: {type(value)}. Expected dict.")
             return False
 
-        # ✅ Serialize with fallback for bytes, Decimal, sets, etc.
         try:
-            value_json = json.dumps(value, default=lambda x: (
-                x.hex() if isinstance(x, bytes)
-                else str(x) if isinstance(x, (set, Decimal, Exception))
-                else list(x) if isinstance(x, (tuple, range))
-                else None  # fallback to None for unknown
-            )).encode("utf-8")
+            value_json = json.dumps(value, default=lambda x: x.hex() if isinstance(x, bytes) else str(x)).encode("utf-8")
         except (TypeError, ValueError) as e:
-            print(f"[LMDBManager] ❌ ERROR: Failed to serialize value for key {key_str}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to serialize value for key {key_str}: {e}")
             return False
 
-        # ✅ Store in LMDB
         try:
             with self.env.begin(write=True, db=db_handle) as txn:
                 txn.put(key_bytes, value_json)
-            print(f"[LMDBManager] ✅ SUCCESS: Stored key: {key_str}")
+            print(f"[LMDBManager] SUCCESS: Stored key: {key_str}")
             return True
         except Exception as e:
-            print(f"[LMDBManager] ❌ ERROR: Failed to store key {key_str}: {e}")
+            print(f"[LMDBManager] ERROR: Failed to store key {key_str}: {e}")
             return False
 
 
-    def get(self, key: Union[str, bytes, bytearray, memoryview], db=None):
+
+    def get(self, key: Union[str, bytes], db=None):
         """
         Retrieve a JSON-serialized value from LMDB by key.
 
         Args:
-            key (Union[str, bytes, bytearray, memoryview]): The key to retrieve.
+            key (Union[str, bytes]): The key to retrieve.
             db: The database handle to use (defaults to self.blocks_db).
 
         Returns:
-            dict | None: Deserialized JSON data, or None if the key is invalid or data is corrupted.
+            dict: Deserialized JSON data, or None if the key is invalid or data is corrupted.
         """
         db_handle = db or self.blocks_db
 
-        # ✅ Normalize key to bytes
+        # ✅ Ensure key is always handled as bytes
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
-        elif isinstance(key, (bytes, bytearray)):
-            key_bytes = bytes(key)
-        elif isinstance(key, memoryview):
-            try:
-                key_bytes = key.tobytes()
-            except Exception as e:
-                print(f"[LMDB ERROR] ❌ Failed to convert memoryview to bytes: {e}")
-                return None
+        elif isinstance(key, bytes):
+            key_bytes = key
         else:
-            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str, bytes, bytearray, or memoryview.")
+            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str or bytes.")
             return None
 
-        # ✅ For logging and fallback decoding
-        try:
-            key_str = key_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            key_str = str(key_bytes)
+        key_str = key_bytes.decode("utf-8", errors="ignore")  # ✅ Safe decoding for logs
 
         try:
             with self.env.begin(db=db_handle) as txn:
@@ -504,22 +521,15 @@ class LMDBManager:
                     print(f"[LMDB WARNING] ⚠️ Key not found: {key_str}")
                     return None
 
-                # ✅ Try UTF-8 JSON decode
+                # ✅ Ensure value is a valid JSON object
                 try:
                     return json.loads(value.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    print(f"[LMDB WARNING] ⚠️ Non-UTF-8 or corrupted JSON for key {key_str}. Trying fallback conversions...")
-
-                    # 🛠️ Attempt to repair via fallback decoding
-                    try:
-                        fallback_str = value.decode("latin1")
-                        return json.loads(fallback_str)
-                    except Exception as e2:
-                        print(f"[LMDB ERROR] ❌ Final fallback decode failed for key {key_str}: {e2}")
-                        return None
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    print(f"[LMDB ERROR] ❌ Corrupt JSON data for key {key_str}: {e}")
+                    return None
 
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Exception while retrieving key {key_str}: {e}")
+            print(f"[LMDB ERROR] ❌ Failed to retrieve key {key_str}: {e}")
             return None
 
         

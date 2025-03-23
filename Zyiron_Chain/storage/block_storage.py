@@ -475,20 +475,6 @@ class BlockStorage:
 
             block_key = f"block:{block.index}".encode("utf-8")
             block_hash_key = f"block_hash:{block.mined_hash}".encode("utf-8")
-            blockmeta_key = f"blockmeta:{block.index}".encode("utf-8")
-
-            block_meta = {
-                "index": block.index,
-                "hash": block.mined_hash,
-                "timestamp": block.timestamp,
-                "difficulty": DifficultyConverter.to_hex(diff_int),
-                "size": block_data.get("size", 0),
-                "previous_hash": block.previous_hash,
-                "merkle_root": block.merkle_root,
-                "miner_address": block.miner_address,
-                "transaction_count": len(block.transactions),
-                "total_fees": str(block.fees)
-            }
 
             with self.full_block_store.env.begin() as txn:
                 if txn.get(block_key):
@@ -499,17 +485,20 @@ class BlockStorage:
                 txn.put(block_key, block_bytes)
                 txn.put(block_hash_key, block_key)
                 txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
-                txn.put(blockmeta_key, json.dumps(block_meta).encode("utf-8"))
 
-            # ✅ Index all transactions
+            # ✅ Index transactions
             for tx in block.transactions:
                 try:
                     tx_id = getattr(tx, "tx_id", None)
                     if not tx_id or not isinstance(tx_id, str):
                         continue
 
-                    tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx
-                    outputs = [out.to_dict() for out in getattr(tx, "outputs", [])] if hasattr(tx, "outputs") else tx.get("outputs", [])
+                    if isinstance(tx, dict):
+                        tx_dict = tx
+                        outputs = tx.get("outputs", [])
+                    else:
+                        tx_dict = tx.to_dict()
+                        outputs = [out.to_dict() for out in getattr(tx, "outputs", [])]
 
                     self.tx_storage.store_transaction(
                         tx_id=tx_id,
@@ -524,7 +513,7 @@ class BlockStorage:
                     print(f"[BlockStorage.store_block] ⚠️ TX indexing failed for {tx_id}: {tx_err}")
                     continue
 
-            # ✅ Store in `block_metadata.lmdb`
+            # ✅ Store metadata in block_metadata.lmdb
             if not self.store_block_metadata(block):
                 print(f"[BlockStorage.store_block] ⚠️ WARNING: Failed to store metadata for block {block.index} in block_metadata.lmdb.")
 
@@ -553,20 +542,15 @@ class BlockStorage:
                     txn.put(f"block:{block.index}".encode("utf-8"), fallback_block_bytes)
                     txn.put(f"block_hash:{fallback_block_data['hash']}".encode("utf-8"), f"block:{block.index}".encode("utf-8"))
                     txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
-                    txn.put(f"blockmeta:{block.index}".encode("utf-8"), json.dumps({
-                        "index": block.index,
-                        "hash": fallback_block_data["hash"],
-                        "timestamp": block.timestamp,
-                        "difficulty": fallback_block_data["difficulty"],
-                        "size": 0,
-                        "previous_hash": fallback_block_data["previous_hash"],
-                        "merkle_root": getattr(block, "merkle_root", Constants.ZERO_HASH)
-                    }).encode("utf-8"))
 
-                print(f"[BlockStorage.store_block] ✅ FALLBACK: Block {block.index} stored minimally.")
+                if not self.store_block_metadata(block):
+                    print(f"[BlockStorage.store_block] ⚠️ Fallback metadata failed for Block {block.index}")
+                else:
+                    print(f"[BlockStorage.store_block] ✅ FALLBACK: Block {block.index} stored minimally.")
             except Exception as fallback_error:
                 print(f"[BlockStorage.store_block] ❌ FALLBACK ERROR: {fallback_error}")
                 raise
+
 
 
     def initialize_txindex(self):
@@ -1227,7 +1211,7 @@ class BlockStorage:
         """
         try:
             block_height = getattr(block, "height", None) or getattr(block, "index", None)
-            block_hash = getattr(block, "hash", None)
+            block_hash = getattr(block, "hash", None) or getattr(block, "mined_hash", None)
 
             # ✅ Validate block height and hash
             if block_height is None or block_hash is None:
@@ -1240,8 +1224,8 @@ class BlockStorage:
                 print(f"[store_block_metadata] ❌ ERROR: Invalid block hash format: {block_hash}")
                 return False
 
-            # ✅ Construct compact metadata dictionary
-            difficulty = block.difficulty
+            # ✅ Convert difficulty
+            difficulty = getattr(block, "difficulty", None)
             if isinstance(difficulty, int):
                 difficulty_hex = DifficultyConverter.to_hex(difficulty)
             elif isinstance(difficulty, str):
@@ -1263,6 +1247,7 @@ class BlockStorage:
 
             key = f"blockmeta:{block_height}".encode("utf-8")
             value = json.dumps(metadata, sort_keys=True).encode("utf-8")
+
             self.block_metadata_db.put(key, value)
 
             print(f"[store_block_metadata] ✅ SUCCESS: Stored metadata for Block #{block_height} (Hash: {block_hash})")
@@ -1270,9 +1255,6 @@ class BlockStorage:
 
         except json.JSONEncodeError as e:
             print(f"[store_block_metadata] ❌ ERROR: Failed to serialize block metadata: {e}")
-            return False
-        except struct.error as e:
-            print(f"[store_block_metadata] ❌ ERROR: Failed to encode block height: {e}")
             return False
         except Exception as e:
             print(f"[store_block_metadata] ❌ ERROR: Unexpected failure while storing metadata: {e}")
