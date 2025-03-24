@@ -101,21 +101,29 @@ class KeyManager:
 
 
 
-    def validate_miner_key(self, network):
-        """Validate miner keys for specific network"""
-        if network not in self.keys:
-            return False
+    def validate_key_pair(self, network: str, identifier: str) -> bool:
+        """Validate key consistency using the deserializer"""
+        try:
+            key_data = self.keys[network]["keys"].get(identifier)
+            if not key_data:
+                return False
+                
+            # Will raise exception if invalid
+            secret_key, public_key = self.deserialize_falcon_key(key_data)
             
-        # Check if default miner key exists and is valid
-        if "miner" not in self.keys[network]["defaults"]:
-            return False
+            # Additional consistency checks
+            test_msg = b"test_validation"
+            sig = secret_key.sign(test_msg)
+            if not public_key.verify(test_msg, sig):
+                raise ValueError("Key pair failed consistency check")
+                
+            return True
             
-        identifier = self.keys[network]["defaults"]["miner"]
-        miner_key = self.keys[network]["keys"].get(identifier, {})
+        except Exception as e:
+            print(f"❌ Key validation failed for {network}/{identifier}: {str(e)}")
+            return False
         
-        required_keys = ["public_key", "private_key"]
-        return all(k in miner_key for k in required_keys)
-
+        
     def _auto_set_network_defaults(self):
         """Ensure default keys exist but do not regenerate if they already exist."""
         network = self.network
@@ -262,17 +270,39 @@ class KeyManager:
             print(f"❌ Unexpected error during deserialization: {e}")
             raise
         
-    def reconstruct_secret_key(self, f, g, F, G):
+    def _convert_json_complex(self, obj):
         """
-        Reconstruct the Falcon SecretKey from the deserialized polynomials.
+        Recursively convert dictionaries with 'real' and 'imag' keys into complex numbers.
+        Handles nested structures (lists/dicts) and logs conversion issues for debugging.
         """
         try:
-            secret_key = SecretKey(512, polys=[f, g, F, G])
-            print("✅ SecretKey reconstructed successfully.")
-            return secret_key
+            if isinstance(obj, dict):
+                # Convert dicts with 'real' and 'imag' to complex numbers
+                if 'real' in obj and 'imag' in obj:
+                    try:
+                        return complex(float(obj['real']), float(obj['imag']))
+                    except (TypeError, ValueError) as e:
+                        print(f"⚠️ Failed to convert dict to complex: {obj}. Error: {e}")
+                        return obj  # Return original if conversion fails
+                
+                # Recursively process other dictionaries
+                return {k: self._convert_json_complex(v) for k, v in obj.items()}
+            
+            elif isinstance(obj, list):
+                # Recursively process lists
+                return [self._convert_json_complex(v) for v in obj]
+            
+            else:
+                # Return non-convertible values as-is
+                return obj
+
         except Exception as e:
-            print(f"❌ Failed to reconstruct SecretKey: {e}")
-            raise
+            print(f"❌ Critical error in _convert_json_complex: {e}")
+            raise ValueError(f"Complex number conversion failed: {e}")
+        
+
+
+
     def initialize_keys_structure(self):
         """
         Initialize the key structure with essential roles and create a new JSON file.
@@ -471,60 +501,73 @@ class KeyManager:
             elif choice == "5":
                 self.list_default_keys()
             elif choice == "6":
-                # ✅ Signing a message
-                network = input("Enter the network (testnet or mainnet): ").strip().lower()
-                identifier = input("Enter the key identifier (default miner, validator, etc.): ").strip()
-                message = input("Enter the message to sign: ").strip().encode("utf-8")
-
+                # Signing a message
                 try:
-                    # ✅ Verify and update the hashed public key before signing
-                    recomputed_hashed_key = self.recompute_hashed_public_key(network, identifier)
-                    stored_hashed_key = self.keys[network]["keys"][identifier]["hashed_public_key"]
+                    network = input("Enter the network (testnet or mainnet): ").strip().lower()
+                    identifier = input("Enter the key identifier: ").strip()
+                    message = input("Enter the message to sign: ").strip()
+                    
+                    # Convert to bytes once (consistent encoding)
+                    message_bytes = message.encode('utf-8')
 
-                    if stored_hashed_key != recomputed_hashed_key:
-                        print(f"\n⚠️ Hashed public key mismatch! Updating stored value...")
-                        self.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hashed_key
+                    # Verify hashed public key consistency
+                    recomputed_hash = self.recompute_hashed_public_key(network, identifier)
+                    stored_hash = self.keys[network]["keys"][identifier]["hashed_public_key"]
+                    
+                    if recomputed_hash != stored_hash:
+                        print(f"\n⚠️ Updating inconsistent public key hash...")
+                        self.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hash
                         self.save_keys()
 
-                    signature = self.sign_transaction(message, network, identifier)
-                    signature_base64 = base64.b64encode(signature).decode("utf-8")
+                    # Sign the message
+                    signature = self.sign_transaction(message_bytes, network, identifier)
+                    signature_b64 = base64.b64encode(signature).decode('utf-8')
                     
                     print("\n✅ Message signed successfully!")
-                    print(f"🔹 Signature (Base64 Encoded): {signature_base64}")
+                    print(f"🔹 Signature (Base64): {signature_b64}")
+                    print(f"🔹 Message length: {len(message_bytes)} bytes")
+                    print(f"🔹 Signature length: {len(signature)} bytes")
+
                 except Exception as e:
-                    print(f"\n❌ Failed to sign the message: {e}")
+                    print(f"\n❌ Signing failed: {str(e)}")
 
             elif choice == "7":
-                # ✅ Verifying a message like a node would
-                network = input("Enter the network (testnet or mainnet): ").strip().lower()
-                identifier = input("Enter the key identifier used for signing: ").strip()
-                message = input("Enter the original message: ").strip().encode("utf-8")
-                signature_base64 = input("Enter the signature (Base64 format): ").strip()
-
+                # Verifying a message
                 try:
-                    signature = base64.b64decode(signature_base64)
+                    network = input("Enter the network (testnet or mainnet): ").strip().lower()
+                    identifier = input("Enter the key identifier: ").strip()
+                    message = input("Enter the original message: ").strip()
+                    signature_b64 = input("Enter the Base64 signature: ").strip()
+                    
+                    # Convert to same format used for signing
+                    message_bytes = message.encode('utf-8')
+                    signature_bytes = base64.b64decode(signature_b64)
 
-                    # ✅ Verify that the stored public key hash matches the recomputed one
-                    recomputed_hashed_key = self.recompute_hashed_public_key(network, identifier)
-                    stored_hashed_key = self.keys[network]["keys"][identifier]["hashed_public_key"]
-
-                    if stored_hashed_key != recomputed_hashed_key:
-                        print(f"\n⚠️ Hashed public key mismatch! Expected: {recomputed_hashed_key}, Found: {stored_hashed_key}")
-                        print("🔹 Updating to ensure consistency...")
-                        self.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hashed_key
+                    # Verify public key consistency
+                    recomputed_hash = self.recompute_hashed_public_key(network, identifier)
+                    stored_hash = self.keys[network]["keys"][identifier]["hashed_public_key"]
+                    
+                    if recomputed_hash != stored_hash:
+                        print(f"\n⚠️ Updating inconsistent public key hash...")
+                        self.keys[network]["keys"][identifier]["hashed_public_key"] = recomputed_hash
                         self.save_keys()
 
-                    # ✅ Verify the transaction signature
-                    if self.verify_transaction(message, signature, network, identifier):
-                        print("\n✅ Signature verification successful! The message is authentic.")
+                    # Verify signature
+                    if self.verify_transaction(message_bytes, signature_bytes, network, identifier):
+                        print("\n✅ Signature is VALID")
+                        print(f"🔹 Verified message: '{message}'")
                     else:
-                        print("\n❌ Signature verification failed! The message is NOT authentic.")
+                        print("\n❌ Signature is INVALID")
+                        print("Possible causes:")
+                        print("- Message was modified")
+                        print("- Wrong signing key was used")
+                        print("- Signature was corrupted")
 
                 except Exception as e:
-                    print(f"\n❌ Failed to verify the message: {e}")
+                    print(f"\n❌ Verification failed: {str(e)}")
 
             elif choice == "8":
-                self.export_keys()  # ✅ Export function
+                self.export_keys()
             elif choice == "0":
                 print("Exiting Key Manager.")
                 break
@@ -711,82 +754,88 @@ class KeyManager:
             return [self._convert_json_complex(v) for v in obj]
         else:
             return obj
-
     def sign_transaction(self, message: bytes, network: str, identifier: str) -> bytes:
-        """Sign a message using the specified key."""
-        network = network.lower()
-        if network not in ["testnet", "mainnet"]:
-            raise ValueError(f"Invalid network: {network}")
-
-        # Ensure message is bytes (accepts both str and bytes input)
-        if isinstance(message, str):
-            message = message.encode('utf-8')
-
-        key_data = self.keys[network]["keys"].get(identifier)
-        if not key_data:
-            raise ValueError(f"Key '{identifier}' not found")
-
+        """Sign using the deserialize_falcon_key function"""
         try:
-            # Reconstruct the secret key
-            private_key_data = self.deserialize_polynomials(key_data["private_key"])
-            secret_key = SecretKey(512, polys=[
-                private_key_data['f'],
-                private_key_data['g'],
-                private_key_data['F'],
-                private_key_data['G']
-            ])
-
-            # Sign raw message (Falcon handles hashing internally)
-            print(f"🔹 Using Falcon-512 (signing {len(message)}-byte message)")
-            signature = secret_key.sign(message)
-            print(f"✅ Generated signature ({len(signature)} bytes)")
-            return signature
-
+            key_data = self.keys[network]["keys"].get(identifier)
+            if not key_data:
+                raise ValueError(f"Key '{identifier}' not found")
+                
+            # Deserialize using centralized function
+            secret_key, _ = self.deserialize_falcon_key(key_data)
+            
+            message_bytes = message.encode('utf-8') if isinstance(message, str) else message
+            return secret_key.sign(message_bytes)
+            
         except Exception as e:
             print(f"❌ Signing failed: {str(e)}")
             raise
 
 
 
-    def verify_transaction(self, message: bytes, signature: (str|bytes), network: str, identifier: str) -> bool:
-        """Verify a transaction signature using the stored public key."""
-        network = network.lower()
-        if network not in ["testnet", "mainnet"]:
-            raise ValueError(f"Invalid network: {network}. Must be 'testnet' or 'mainnet'.")
-
-        # Retrieve the public key
-        key_data = self.keys[network]["keys"].get(identifier)
-        if not key_data:
-            raise ValueError(f"Key '{identifier}' not found in {network}.")
-
+    def deserialize_falcon_key(self, key_data: dict) -> tuple[SecretKey, PublicKey]:
+        """
+        Fully reconstruct Falcon keys from serialized data with validation.
+        Returns: (secret_key, public_key)
+        Raises: ValueError if deserialization fails
+        """
         try:
-            # Decode public key
-            public_key_json = json.loads(base64.b64decode(key_data["public_key"]).decode("utf-8"))
-            public_key = PublicKey(SecretKey(512))
-            public_key.h = [complex(x) for x in public_key_json["h"]]
+            # Deserialize private key polynomials
+            private_polys = self.deserialize_polynomials(key_data["private_key"])
             
-            # Ensure signature is bytes
-            if isinstance(signature, str):
-                signature_bytes = base64.b64decode(signature)
-            else:
-                signature_bytes = signature
+            # Reconstruct SecretKey
+            secret_key = SecretKey(512, polys=[
+                private_polys['f'],
+                private_polys['g'],
+                private_polys['F'],
+                private_polys['G']
+            ])
+            
+            # Deserialize public key with complex number handling
+            public_key_json = json.loads(
+                base64.b64decode(key_data["public_key"]).decode("utf-8"),
+                object_hook=self._convert_json_complex
+            )
+            
+            # Reconstruct PublicKey
+            public_key = PublicKey(secret_key)  # Creates blank key
+            public_key.h = public_key_json["h"]  # Set the actual public values
+            
+            return secret_key, public_key
+            
+        except Exception as e:
+            raise ValueError(f"Key deserialization failed: {str(e)}")
 
-            # Ensure message is bytes
-            if isinstance(message, str):
-                message = message.encode('utf-8')
 
-            # Verify
-            is_valid = public_key.verify(message, signature_bytes)
+
+
+    def verify_transaction(self, message: bytes, signature: (str|bytes), network: str, identifier: str) -> bool:
+        """Verify a signature using the deserialize_falcon_key function"""
+        try:
+            # Get key data
+            key_data = self.keys[network]["keys"].get(identifier)
+            if not key_data:
+                raise ValueError(f"Key '{identifier}' not found")
+            
+            # Deserialize keys using centralized function
+            _, public_key = self.deserialize_falcon_key(key_data)
+            
+            # Convert inputs to bytes if needed
+            signature_bytes = base64.b64decode(signature) if isinstance(signature, str) else signature
+            message_bytes = message.encode('utf-8') if isinstance(message, str) else message
+            
+            # Verify signature
+            is_valid = public_key.verify(message_bytes, signature_bytes)
             
             if is_valid:
-                print("✅ Signature is valid (squared norm checks passed)")
+                print("✅ Signature valid (squared norm = {public_key.get_squared_norm(signature_bytes)}")
             else:
-                print("❌ Signature verification failed")
-            
+                print("❌ Signature invalid")
+                
             return is_valid
-
+            
         except Exception as e:
-            print(f"❌ Verification error: {e}")
+            print(f"❌ Verification failed: {str(e)}")
             return False
 
     def export_keys(self):
