@@ -1,9 +1,10 @@
-import sys
+import json
+
 import os
-import json 
-# Add the project root directory to sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
-sys.path.append(project_root)
+import sys
+
+# 🔧 Dynamically add the root directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
 
@@ -13,7 +14,7 @@ from termcolor import colored
 
 
 import argparse
-from Zyiron_Chain.blockchain.utils.key_manager import KeyManager
+from Zyiron_Chain.accounts.key_manager import KeyManager
 
 def load_keys_from_json_or_generate(key_manager, file_path="keys.json"):
     """

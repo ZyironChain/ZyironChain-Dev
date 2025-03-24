@@ -185,7 +185,7 @@ class TxStorage:
             Optional[Dict]: Transaction data dictionary or None.
         """
         try:
-            # ✅ Try primary lookup in txindex.lmdb
+            # ✅ Primary lookup in txindex.lmdb
             key = f"block_tx:{tx_id}".encode()
             data = self.txindex_db.get(key)
 
@@ -198,26 +198,26 @@ class TxStorage:
                     print(f"[TxStorage.get_transaction] ❌ ERROR: Decoding failed in txindex: {decode_error}")
                     return None
 
-            # ✅ Fallback: Scan full_block_chain if transaction is not found in txindex.lmdb
+            # ⚠️ Fallback to full_block_chain if tx is not found
             print(f"[TxStorage.get_transaction] ⚠️ TX {tx_id} not found in txindex.lmdb. Falling back to full_block_chain...")
 
             from Zyiron_Chain.storage.block_storage import BlockStorage
             from Zyiron_Chain.accounts.key_manager import KeyManager
+            from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+            from Zyiron_Chain.transactions.tx import Transaction
 
-            # Initialize fallback storage
             fallback_storage = BlockStorage(tx_storage=self, key_manager=KeyManager())
             all_blocks = fallback_storage.get_all_blocks()
 
             for block_dict in all_blocks:
                 transactions = block_dict.get("transactions", [])
                 for tx in transactions:
-                    # 🧠 Safe serialization
                     if isinstance(tx, dict):
                         tx_dict = tx
                     elif hasattr(tx, "to_dict"):
                         tx_dict = tx.to_dict()
                     else:
-                        print(f"[TxStorage.get_transaction] ⚠️ Skipping invalid TX format in fallback.")
+                        print("[TxStorage.get_transaction] ⚠️ Skipping invalid TX format in fallback.")
                         continue
 
                     if tx_dict.get("tx_id") != tx_id:
@@ -225,7 +225,7 @@ class TxStorage:
 
                     print(f"[TxStorage.get_transaction] 🧩 Found TX {tx_id} in block #{block_dict.get('index')} (fallback). Reinserting...")
 
-                    # 🛡️ Normalize falcon signature
+                    # Normalize Falcon signature
                     falcon_sig = tx_dict.get("falcon_signature", b"")
                     if isinstance(falcon_sig, str):
                         try:
@@ -233,44 +233,39 @@ class TxStorage:
                         except ValueError:
                             falcon_sig = b""
 
-                    # 🧬 Store Falcon-512 signature
+                    # Store Falcon-512 signature
                     tx_sig_hash = store_transaction_signature(
                         tx_id=tx_id.encode(),
                         falcon_signature=falcon_sig,
                         txindex_path=Constants.get_db_path("txindex")
                     )
 
-                    # Deserialize transaction into the appropriate class
-                    from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-                    from Zyiron_Chain.transactions.tx import Transaction
-
+                    # Reconstruct transaction object
                     if tx_dict.get("type") == "COINBASE":
                         tx_obj = CoinbaseTx.from_dict(tx_dict)
                     else:
                         tx_obj = Transaction.from_dict(tx_dict)
 
-                    # Re-serialize the transaction object to ensure consistency
+                    # Prepare data for reinsertion
                     transaction_data = tx_obj.to_dict()
-
-                    # Add additional metadata
                     transaction_data.update({
                         "block_hash": block_dict.get("hash"),
                         "outputs": tx_dict.get("outputs", []),
                         "timestamp": tx_dict.get("timestamp", int(time.time())),
                         "type": tx_dict.get("type", "STANDARD"),
-                        "tax_fee": "0",
-                        "miner_fee": "0",
+                        "tax_fee": tx_dict.get("tax_fee", "0"),
+                        "miner_fee": tx_dict.get("miner_fee", "0"),
                         "tx_signature_hash": tx_sig_hash.hex()
                     })
 
+                    # Reinserting into txindex.lmdb
                     try:
-                        # Reinsert the transaction into txindex.lmdb
                         with self.txindex_db.env.begin(write=True) as txn:
-                            txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode("utf-8"))
+                            txn.put(key, json.dumps(transaction_data).encode("utf-8"))
+                        print(f"[TxStorage.get_transaction] ✅ Reinjected TX {tx_id} into txindex.lmdb from full block store.")
                     except Exception as lmdb_error:
                         print(f"[TxStorage.get_transaction] ⚠️ Failed to reinsert TX into txindex.lmdb: {lmdb_error}")
 
-                    print(f"[TxStorage.get_transaction] ✅ Reinjected TX {tx_id} into txindex.lmdb from full block store.")
                     return transaction_data
 
             print(f"[TxStorage.get_transaction] ❌ TX {tx_id} not found in full_block_chain either.")

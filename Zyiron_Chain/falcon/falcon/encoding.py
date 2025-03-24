@@ -1,8 +1,8 @@
 import sys
 import os
+
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-
 
 
 
@@ -33,7 +33,7 @@ def compress(v, slen):
         # Encode the high bits
         s += "0" * (abs(coef) >> 7) + "1"
         u += s
-    # The encoding is too long
+    # The encoding is too longa
     if len(u) > 8 * slen:
         return False
     u += "0" * (8 * slen - len(u))

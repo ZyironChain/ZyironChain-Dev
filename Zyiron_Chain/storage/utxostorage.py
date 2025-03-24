@@ -75,9 +75,9 @@ class UTXOStorage:
             # ✅ Initialize LMDB for UTXO storage
             self.utxo_db = LMDBManager(
                 utxo_db_path,
-                max_readers=200,  # Pass max_readers explicitly
-                max_dbs=200,      # Pass max_dbs explicitly
-                writemap=True     # Enable writemap for better performance
+                max_readers=200,
+                max_dbs=200,
+                writemap=True
             )
             self.utxo_history_db = LMDBManager(
                 utxo_history_db_path,
@@ -87,19 +87,23 @@ class UTXOStorage:
             )
 
             # ✅ Local Cache for UTXO Lookups
-            self._cache: Dict[str, dict] = {}  # type: ignore
-            self._db_lock = threading.Lock()  # ✅ Add a lock for thread safety
+            self._cache: Dict[str, dict] = {}
+            self._db_lock = threading.Lock()  # ✅ Thread-safe access
 
+            # ✅ Logging initialization success
             print(f"[UTXOStorage.__init__] ✅ SUCCESS: UTXOStorage initialized for {network_flag}.")
             print(f"[UTXOStorage.__init__] INFO: UTXO Database Path: {utxo_db_path}")
             print(f"[UTXOStorage.__init__] INFO: UTXO History Database Path: {utxo_history_db_path}")
 
-            if block_storage:
-                print(f"[UTXOStorage.__init__] INFO: BlockStorage fallback enabled for UTXO retrieval.")
+            if self.block_storage is not None:
+                print(f"[UTXOStorage.__init__] INFO: BlockStorage fallback enabled for full block UTXO recovery.")
+            else:
+                print(f"[UTXOStorage.__init__] ⚠️ WARNING: BlockStorage fallback is disabled. Some UTXOs may be unrecoverable.")
 
         except Exception as e:
             print(f"[UTXOStorage.__init__] ❌ ERROR: Failed to initialize UTXOStorage: {e}")
             raise
+
 
     def validate_utxos(self, transactions: Union[List[Dict], Block]) -> bool:
         """

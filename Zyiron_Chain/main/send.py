@@ -1,142 +1,152 @@
-#!/usr/bin/env python3
-import sys
-import os
-import time
-import logging
-from decimal import Decimal, getcontext
+from decimal import Decimal
+from typing import Optional, List, Dict, Union
 
-# Set high precision for financial calculations
-getcontext().prec = 18
-
-# Add the project root directory to sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
-sys.path.append(project_root)
-
-# Import required modules from the project
 from Zyiron_Chain.blockchain.constants import Constants
-from Zyiron_Chain.accounts.key_manager import KeyManager
-from Zyiron_Chain.transactions.utxo_manager import UTXOManager
-from Zyiron_Chain.transactions.transaction_manager import TransactionManager
-from Zyiron_Chain.transactions.tx import Transaction
-from Zyiron_Chain.transactions.txin import TransactionIn
-from Zyiron_Chain.transactions.txout import TransactionOut
+from Zyiron_Chain.transaction.tx import Transaction
+from Zyiron_Chain.transaction.coinbase import CoinbaseTx
+from Zyiron_Chain.transaction.txin import TransactionIn
+from Zyiron_Chain.transaction.txout import TransactionOut
+from Zyiron_Chain.utxo.utxo_manager import UTXOManager
+from Zyiron_Chain.fees.fee_model import FeeModel
+from Zyiron_Chain.transaction.tx_storage import TxStorage
+from Zyiron_Chain.mempool.standard import StandardMempool
+from Zyiron_Chain.mempool.smart import SmartMempool
+from Zyiron_Chain.utils.hashing import Hashing
+from Zyiron_Chain.security.signature import FalconSignatureVerifier
 
-# Import WalletStorage to fetch wallet index balance from LMDB
-from Zyiron_Chain.database.wallet_index import WalletStorage # type: ignore
-from Zyiron_Chain.database.storage_manager import StorageManager # type: ignore
-from Zyiron_Chain.blockchain.blockchain import Blockchain
 
-def debug_print(msg: str):
-    print(f"[SEND.PY DEBUG] {msg}")
-
-class TransactionSender:
+class PaymentProcessor:
     """
-    Interactive transaction sender that allows users to:
-      - Check wallet UTXO balances (via LMDB wallet index),
-      - Send transactions (Standard, Smart, Instant),
-      - And view detailed debug output.
-      
-    This class integrates key management, wallet index, UTXO management,
-    transaction creation, and blockchain/mempool operations.
+    Central processor for all payments across transaction models:
+    - Standard
+    - Smart Contract-based
+    - Instant
+    - Coinbase
+
+    Handles:
+    - Fee calculation
+    - Transaction validation
+    - UTXO management
+    - Mempool routing
+    - Signature verification
     """
-    def __init__(self):
-        debug_print("Initializing TransactionSender...")
-        # Initialize core modules
-        self.key_manager = KeyManager()
-        self.storage_manager = StorageManager()
-        self.blockchain = Blockchain(self.storage_manager, None, self.key_manager)
-        
-        # Retrieve the user's wallet address from KeyManager
-        self.user_address = self.key_manager.get_default_public_key(Constants.NETWORK, "user")
-        debug_print(f"User wallet address: {self.user_address}")
-        
-        # Initialize WalletStorage to fetch UTXO balance from the wallet index LMDB
-        self.wallet_storage = WalletStorage()  # Assumes WalletStorage initializes with correct DB path
-        
-        # For UTXOManager, we use the user's wallet address
-        self.utxo_manager = UTXOManager(self.user_address)
-        self.transaction_manager = TransactionManager(self.storage_manager, self.key_manager, None)
-        debug_print("Modules initialized successfully.")
 
-    def display_menu(self):
-        print("\n=== Transaction Sender Menu ===")
-        print("1. Check Wallet Balance (from Wallet Index)")
-        print("2. Send Standard Transaction")
-        print("3. Send Smart Transaction")
-        print("4. Send Instant Transaction")
-        print("5. Exit")
-        print("================================")
+    def __init__(self,
+                 utxo_manager: UTXOManager,
+                 tx_storage: TxStorage,
+                 standard_mempool: StandardMempool,
+                 smart_mempool: SmartMempool):
+        self.utxo_manager = utxo_manager
+        self.tx_storage = tx_storage
+        self.standard_mempool = standard_mempool
+        self.smart_mempool = smart_mempool
+        self.fee_model = FeeModel()
+        self.verifier = FalconSignatureVerifier()
 
-    def get_wallet_balance(self):
-        debug_print("Fetching wallet balance from LMDB Wallet Index...")
-        try:
-            balance = self.wallet_storage.get_balance(self.user_address)
-            print(f"Wallet Balance for {self.user_address}: {balance} {Constants.ADDRESS_PREFIX}")
-            debug_print("Wallet balance fetched successfully from Wallet Index.")
-        except Exception as e:
-            print(f"Error fetching wallet balance: {e}")
-            debug_print(f"get_wallet_balance error: {e}")
+        print("[PaymentProcessor INIT] ✅ Initialized PaymentProcessor")
 
-    def send_transaction(self, payment_type: str):
+    def send_payment(self,
+                     sender_priv_key: str,
+                     sender_pub_key: str,
+                     recipient_address: str,
+                     amount: Decimal,
+                     tx_type: str = "STANDARD",
+                     metadata: Optional[dict] = None) -> Optional[str]:
         """
-        Prepares and sends a transaction of the given payment type.
-        Payment type can be 'STANDARD', 'SMART', or 'INSTANT'.
+        Process a new payment request:
+        - Validates input
+        - Gathers UTXOs
+        - Creates transaction
+        - Verifies signature
+        - Sends to appropriate mempool
         """
-        try:
-            recipient = input("Enter recipient address: ").strip()
-            if not recipient:
-                print("Recipient address cannot be empty.")
-                return
+        print(f"[PaymentProcessor] 🔄 Initiating send_payment() - Type: {tx_type}")
 
-            amount_input = input("Enter amount to send: ").strip()
-            try:
-                amount = Decimal(amount_input)
-            except Exception:
-                print("Invalid amount. Please enter a valid number.")
-                return
+        if amount <= 0:
+            print("[PaymentProcessor ERROR] ❌ Amount must be positive.")
+            return None
 
-            debug_print(f"Preparing {payment_type.upper()} transaction to {recipient} for amount {amount}.")
-            # Use the maximum block size (converted from bytes to MB) from Constants
-            block_size_mb = Constants.MAX_BLOCK_SIZE_BYTES / (1024 * 1024)
-            
-            # Create transaction via TransactionManager
-            tx_data = self.transaction_manager.create_transaction(
-                recipient_script_pub_key=recipient,
-                amount=amount,
-                block_size=block_size_mb,
-                payment_type=payment_type.upper()
-            )
-            if tx_data and "transaction" in tx_data:
-                transaction: Transaction = tx_data["transaction"]
-                print(f"Transaction {transaction.tx_id} created and broadcasted.")
-                debug_print(f"Transaction details: {transaction.to_dict()}")
-            else:
-                print("Transaction creation failed.")
-        except Exception as e:
-            print(f"Error sending transaction: {e}")
-            debug_print(f"send_transaction error: {e}")
+        if tx_type not in Constants.TRANSACTION_MEMPOOL_MAP:
+            print(f"[PaymentProcessor ERROR] ❌ Unknown transaction type: {tx_type}")
+            return None
 
-    def run(self):
-        debug_print("Starting interactive transaction sender...")
-        while True:
-            self.display_menu()
-            choice = input("Select an option (1-5): ").strip()
-            if choice == "1":
-                self.get_wallet_balance()
-            elif choice == "2":
-                self.send_transaction("STANDARD")
-            elif choice == "3":
-                self.send_transaction("SMART")
-            elif choice == "4":
-                self.send_transaction("INSTANT")
-            elif choice == "5":
-                print("Exiting Transaction Sender.")
+        # Step 1: Gather UTXOs and calculate total input
+        utxos, total_input = self._select_utxos(sender_pub_key, amount)
+        if not utxos:
+            print("[PaymentProcessor ERROR] ❌ No valid UTXOs to cover transaction.")
+            return None
+
+        # Step 2: Calculate fee
+        fee = self.fee_model.calculate_fee(tx_type=tx_type, tx_size=512)  # Estimated size
+        if total_input < amount + fee:
+            print("[PaymentProcessor ERROR] ❌ Insufficient funds after fee.")
+            return None
+
+        # Step 3: Build inputs and outputs
+        inputs = [TransactionIn(tx_out_id=utxo.tx_out_id, script_sig="") for utxo in utxos]
+        outputs = [TransactionOut(script_pub_key=recipient_address, amount=amount)]
+        if total_input > amount + fee:
+            change_amount = total_input - amount - fee
+            outputs.append(TransactionOut(script_pub_key=sender_pub_key, amount=change_amount))
+
+        # Step 4: Create transaction
+        tx = Transaction(inputs=inputs, outputs=outputs, tx_type=tx_type, metadata=metadata or {})
+        tx.sign(sender_priv_key, sender_pub_key)
+
+        # Step 5: Verify signature
+        if not self.verifier.verify(tx.signature, sender_pub_key, tx.hash()):
+            print("[PaymentProcessor ERROR] ❌ Signature verification failed.")
+            return None
+
+        # Step 6: Lock UTXOs
+        self.utxo_manager.lock_selected_utxos([utxo.tx_out_id for utxo in utxos])
+
+        # Step 7: Route to appropriate mempool
+        success = self._route_to_mempool(tx)
+        if not success:
+            self.utxo_manager.unlock_selected_utxos([utxo.tx_out_id for utxo in utxos])
+            return None
+
+        print(f"[PaymentProcessor SUCCESS] ✅ Payment sent. TXID: {tx.tx_id}")
+        return tx.tx_id
+
+    def _select_utxos(self, address: str, required_amount: Decimal) -> (List[TransactionOut], Decimal):
+        """
+        Select UTXOs for given address to meet the required amount + estimated fees.
+        Returns a list of TransactionOut and the total selected input.
+        """
+        print(f"[PaymentProcessor] 🔍 Selecting UTXOs for address {address}...")
+        utxos = self.utxo_manager.utxo_storage.get_utxos_by_address(address)
+        selected = []
+        total = Decimal("0")
+
+        for utxo_dict in utxos:
+            utxo = TransactionOut.from_dict(utxo_dict)
+            if utxo.locked:
+                continue
+            selected.append(utxo)
+            total += utxo.amount
+            if total >= required_amount:
                 break
-            else:
-                print("Invalid option. Please choose between 1 and 5.")
-            # Pause briefly for readability
-            time.sleep(1)
 
-if __name__ == "__main__":
-    sender = TransactionSender()
-    sender.run()
+        print(f"[PaymentProcessor] 🧮 Selected {len(selected)} UTXOs, total: {total}")
+        return selected, total
+
+    def _route_to_mempool(self, tx: Transaction) -> bool:
+        """
+        Routes a validated transaction to the appropriate mempool.
+        """
+        try:
+            prefix = tx.tx_type.upper()
+            if prefix.startswith("S"):
+                print(f"[PaymentProcessor] 🚀 Routing to SmartMempool")
+                return self.smart_mempool.add_transaction(tx)
+            elif prefix.startswith("I"):
+                print(f"[PaymentProcessor] ⚡ Instant Payments not yet implemented")
+                return False  # Instant logic will be integrated later
+            else:
+                print(f"[PaymentProcessor] 📥 Routing to StandardMempool")
+                return self.standard_mempool.add_transaction(tx)
+        except Exception as e:
+            print(f"[PaymentProcessor ERROR] ❌ Failed to route to mempool: {e}")
+            return False

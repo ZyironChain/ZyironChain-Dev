@@ -1489,8 +1489,3 @@ class BlockStorage:
             os.makedirs(path)
             print(f"Created database directory: {path}")
 
-
-
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        self.close()

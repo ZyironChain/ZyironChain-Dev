@@ -4,6 +4,8 @@ Profile the code with:
 """
 from test import *
 
+from Zyiron_Chain.falcon.falcon.test import test_signature
+
 if __name__ == "__main__":
     test_signature(1024, 100)
     # test_ntrugen(1024, 10)
