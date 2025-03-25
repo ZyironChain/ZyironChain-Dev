@@ -50,35 +50,34 @@ class UTXOStorage:
     All operations use LMDB and rely on Constants for configuration.
     Detailed print statements are provided for each operation and error condition.
     """
-    def __init__(self, utxo_manager: UTXOManager, block_storage: Optional["BlockStorage"] = None):
+    def __init__(self, utxo_manager: Optional[UTXOManager] = None, block_storage: Optional["BlockStorage"] = None):
         try:
-            # ✅ Ensure utxo_manager is valid
-            if not isinstance(utxo_manager, UTXOManager):
+            if utxo_manager is not None and not isinstance(utxo_manager, UTXOManager):
                 raise ValueError("[UTXOStorage.__init__] ERROR: Invalid utxo_manager instance provided.")
 
-            self.utxo_manager = utxo_manager  # ✅ Store UTXOManager reference
-            self.block_storage = block_storage  # ✅ Store BlockStorage reference for fallback
+            self.utxo_manager = utxo_manager
+            self.block_storage = block_storage
 
-            # ✅ Determine the correct database paths based on the active network
             network_flag = Constants.NETWORK
             db_paths = Constants.NETWORK_DATABASES.get(network_flag)
 
             if not db_paths:
-                raise ValueError(f"[UTXOStorage.__init__] ERROR: No database paths found for network {network_flag}.")
+                raise ValueError(f"[UTXOStorage.__init__] ERROR: No database paths found for network '{network_flag}'.")
 
             utxo_db_path = db_paths.get("utxo")
             utxo_history_db_path = db_paths.get("utxo_history")
 
             if not utxo_db_path or not utxo_history_db_path:
-                raise ValueError(f"[UTXOStorage.__init__] ERROR: Missing UTXO database paths for {network_flag}.")
+                raise ValueError(f"[UTXOStorage.__init__] ERROR: Missing UTXO or UTXO History path for network '{network_flag}'.")
 
-            # ✅ Initialize LMDB for UTXO storage
+            # ✅ Use LMDBManager instead of raw lmdb
             self.utxo_db = LMDBManager(
                 utxo_db_path,
                 max_readers=200,
                 max_dbs=200,
                 writemap=True
             )
+
             self.utxo_history_db = LMDBManager(
                 utxo_history_db_path,
                 max_readers=200,
@@ -86,24 +85,26 @@ class UTXOStorage:
                 writemap=True
             )
 
-            # ✅ Local Cache for UTXO Lookups
             self._cache: Dict[str, dict] = {}
-            self._db_lock = threading.Lock()  # ✅ Thread-safe access
+            self._db_lock = threading.Lock()
 
-            # ✅ Logging initialization success
-            print(f"[UTXOStorage.__init__] ✅ SUCCESS: UTXOStorage initialized for {network_flag}.")
-            print(f"[UTXOStorage.__init__] INFO: UTXO Database Path: {utxo_db_path}")
-            print(f"[UTXOStorage.__init__] INFO: UTXO History Database Path: {utxo_history_db_path}")
+            print(f"[UTXOStorage.__init__] ✅ Initialized for {network_flag}")
+            print(f"[UTXOStorage.__init__] INFO: UTXO DB Path: {utxo_db_path}")
+            print(f"[UTXOStorage.__init__] INFO: UTXO History DB Path: {utxo_history_db_path}")
 
-            if self.block_storage is not None:
-                print(f"[UTXOStorage.__init__] INFO: BlockStorage fallback enabled for full block UTXO recovery.")
+            if self.block_storage:
+                print("[UTXOStorage.__init__] 🔁 Fallback to BlockStorage enabled.")
             else:
-                print(f"[UTXOStorage.__init__] ⚠️ WARNING: BlockStorage fallback is disabled. Some UTXOs may be unrecoverable.")
+                print("[UTXOStorage.__init__] ⚠️ No BlockStorage fallback provided.")
 
         except Exception as e:
-            print(f"[UTXOStorage.__init__] ❌ ERROR: Failed to initialize UTXOStorage: {e}")
+            print(f"[UTXOStorage.__init__] ❌ ERROR: {e}")
             raise
 
+
+    @property
+    def env(self):
+        return self.utxo_db.env  # ✅ gives access to LMDB env from outside
 
     def validate_utxos(self, transactions: Union[List[Dict], Block]) -> bool:
         """
@@ -143,21 +144,23 @@ class UTXOStorage:
                         return False
 
                     tx_out_id = tx_input.get("tx_out_id")
-                    output_index = tx_input.get("output_index")
-
-                    if not tx_out_id or not isinstance(tx_out_id, str) or not isinstance(output_index, int):
-                        print(f"[UTXOStorage.validate_utxos] ERROR: Missing or invalid UTXO reference in transaction {tx_id}.")
+                    if not tx_out_id or not isinstance(tx_out_id, str):
+                        print(f"[UTXOStorage.validate_utxos] ERROR: tx_out_id is missing or invalid in transaction {tx_id}.")
                         return False
 
-                    # ✅ Retrieve UTXO from storage (calls LMDB database)
-                    utxo = self.utxo_db.get(f"utxo:{tx_out_id}:{output_index}")
+                    try:
+                        parsed_tx_id, output_index = self.parse_tx_out_id(tx_out_id)
+                    except Exception as parse_err:
+                        print(f"[UTXOStorage.validate_utxos] ERROR: Failed to parse tx_out_id '{tx_out_id}' in tx {tx_id}: {parse_err}")
+                        return False
 
+                    utxo = self.get_utxo(parsed_tx_id, output_index)
                     if not utxo:
-                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id} at index {output_index} not found for tx {tx_id}.")
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {parsed_tx_id}:{output_index} not found for tx {tx_id}.")
                         return False
 
                     if utxo.get("spent_status"):
-                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {tx_out_id}:{output_index} is already spent in tx {tx_id}.")
+                        print(f"[UTXOStorage.validate_utxos] ERROR: UTXO {parsed_tx_id}:{output_index} is already spent in tx {tx_id}.")
                         return False
 
             print("[UTXOStorage.validate_utxos] ✅ SUCCESS: All UTXOs validated successfully.")
@@ -522,6 +525,24 @@ class UTXOStorage:
             print(f"[UTXOStorage.validate_utxo] ERROR: Failed to validate UTXO {tx_id}:{output_index}: {e}")
             return False
 
+    def mark_spent(self, tx_id: str, output_index: int) -> bool:
+        try:
+            utxo_key = f"utxo:{tx_id}:{output_index}".encode()
+            with self.utxo_db.env.begin(write=True) as txn:
+                raw = txn.get(utxo_key)
+                if not raw:
+                    print(f"[mark_spent] ⚠️ UTXO {tx_id}:{output_index} not found.")
+                    return False
+
+                utxo = json.loads(raw.decode("utf-8"))
+                utxo["spent_status"] = True
+                txn.put(utxo_key, json.dumps(utxo, sort_keys=True).encode())
+                print(f"[mark_spent] ✅ UTXO {tx_id}:{output_index} marked as spent.")
+                return True
+
+        except Exception as e:
+            print(f"[mark_spent] ❌ ERROR: {e}")
+            return False
 
 
 
@@ -651,6 +672,7 @@ class UTXOStorage:
         """
         Retrieve all unspent UTXOs for a given address from LMDB safely.
         If not found in LMDB, fallback to full block store.
+        Ensures every returned UTXO includes tx_out_id via TransactionOut.to_dict().
         """
         results = []
         found_in_lmdb = False
@@ -677,8 +699,10 @@ class UTXOStorage:
                         if utxo.get("spent_status", True):
                             continue
 
-                        utxo["amount"] = str(Decimal(str(utxo.get("amount", "0"))))
-                        results.append(utxo)
+                        # ✅ Convert back to TransactionOut to ensure to_dict() includes tx_out_id
+                        from Zyiron_Chain.transactions.txout import TransactionOut
+                        tx_out = TransactionOut.from_dict(utxo)
+                        results.append(tx_out.to_dict())
                         found_in_lmdb = True
 
                     except Exception as e:
@@ -718,13 +742,12 @@ class UTXOStorage:
                                 continue
 
                             utxo_entry = {
-                                "tx_id": tx_id,
-                                "output_index": idx,
+                                "tx_out_id": f"{tx_id}:{idx}",
                                 "amount": str(amount),
                                 "script_pub_key": script,
-                                "is_locked": locked,
-                                "block_height": block.index,
-                                "spent_status": False
+                                "locked": locked,
+                                "spent_status": False,
+                                "block_height": block.index
                             }
                             results.append(utxo_entry)
 
@@ -813,4 +836,14 @@ class UTXOStorage:
         self.block_storage = block_storage
         print("[UTXOStorage] ✅ Fallback block storage enabled.")
 
-
+    @staticmethod
+    def parse_tx_out_id(tx_out_id: str) -> (str, int):
+        """
+        Split tx_out_id (e.g., "abc123...:1") into tx_id and output_index
+        """
+        try:
+            tx_id, index_str = tx_out_id.split(":")
+            return tx_id, int(index_str)
+        except Exception as e:
+            print(f"[parse_tx_out_id] ❌ ERROR: {e}")
+            raise ValueError("Invalid tx_out_id format. Expected 'tx_id:output_index'")

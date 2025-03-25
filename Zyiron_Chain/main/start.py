@@ -13,6 +13,8 @@ import sys
 import os
 import time
 from decimal import Decimal
+import subprocess
+import platform
 
 # Adjust Python path for project structure
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
@@ -322,18 +324,3 @@ class Start:
         LMDBManager.reopen_all()
 
 
-
-
-if __name__ == "__main__":
-    starter = None  # ✅ Pre-define it for safe access in `finally`
-    try:
-        starter = Start()
-        starter.run_all()
-    except Exception as e:
-        error_msg = f"[Main Runtime ERROR]: {e}\n"
-        print(error_msg)
-        with open("runtime_errors.txt", "a") as f:
-            f.write(error_msg)
-    finally:
-        if starter:  # ✅ Only close if initialized successfully
-            starter.close()

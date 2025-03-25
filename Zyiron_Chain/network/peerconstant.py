@@ -1,11 +1,15 @@
 import sys
 import os
 
-# Add the project root to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+import sys
+import os
+from typing import List, Optional
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
 
 from decimal import Decimal
-
+import lmdb
 
 from Zyiron_Chain.blockchain.constants import Constants  # ✅ Import primary blockchain constants
 

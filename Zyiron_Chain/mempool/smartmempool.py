@@ -29,25 +29,29 @@ from Zyiron_Chain.utils.deserializer import Deserializer
 class SmartMempool:
     """Manages the Smart Mempool with dynamic transaction prioritization."""
 
-    def __init__(self, peer_id: str = None, max_size_mb=None):
+    def __init__(self, utxo_storage, peer_id: str = None, max_size_mb=None):
         """
         Initialize the Smart Mempool.
+
+        :param utxo_storage: UTXOStorage instance for validating UTXOs
+        :param peer_id: Optional peer identifier (defaults to current user)
+        :param max_size_mb: Optional override for mempool size
         """
+        self.utxo_storage = utxo_storage
         self.peer_id = peer_id if peer_id is not None else f"peer_{PeerConstants.PEER_USER_ID}"
         self.transactions = {}  # In-memory transaction tracking
         self.lock = Lock()  # Handle concurrency
 
-        # Allow size override while maintaining Constants default
         self.max_size_mb = max_size_mb if max_size_mb is not None else Constants.MEMPOOL_MAX_SIZE_MB
-        self.max_size_bytes = self.max_size_mb * 1024 * 1024  # Convert MB to bytes
+        self.max_size_bytes = self.max_size_mb * 1024 * 1024
+        self.current_size_bytes = 0
+        self.confirmation_blocks = Constants.SMART_MEMPOOL_PRIORITY_BLOCKS
 
-        self.current_size_bytes = 0  # Track current memory usage
-        self.confirmation_blocks = Constants.SMART_MEMPOOL_PRIORITY_BLOCKS  # Dynamic confirmation window
+        # Use LMDB for smart mempool storage
+        self.lmdb = LMDBManager(f"./blockchain_storage/BlockData/smart_mempool_{self.peer_id}.lmdb")
 
-        # Set the correct path for the smart_mempool LMDB database
-        self.lmdb = LMDBManager(f"./blockchain_storage/BlockData/smart_mempool_{self.peer_id}.lmdb")  # Correct path
+        print(f"[MEMPOOL] ✅ Initialized Smart Mempool with max size {self.max_size_mb} MB and peer_id {self.peer_id}")
 
-        logging.info(f"[MEMPOOL] Initialized Smart Mempool with max size {self.max_size_mb} MB and peer_id {self.peer_id}")
 
     def add_transaction(self, transaction: SmartTransaction, current_block_height: int):
         """

@@ -29,7 +29,6 @@ class Transaction:
     - Uses single SHA3-384 hashing via Hashing.hash().
     - Detailed print statements are provided for debugging.
     """
-
     def __init__(
         self,
         inputs: List[TransactionIn],
@@ -38,7 +37,7 @@ class Transaction:
         utxo_manager: Optional[UTXOManager] = None,
         tx_type: str = "STANDARD",
         fee_model: Optional[FeeModel] = None,
-        block_height: Optional[int] = None,  # Added block_height for UTXO tracking
+        block_height: Optional[int] = None,
     ):
         """
         Initialize a transaction object.
@@ -60,41 +59,48 @@ class Transaction:
                 print("[TRANSACTION ERROR] All outputs must be instances of TransactionOut.")
                 raise TypeError("All outputs must be instances of TransactionOut.")
 
-            # ✅ Assign UTXO Manager (create default if not provided)
-            self.utxo_manager = utxo_manager if utxo_manager else None  # No automatic UTXOManager creation
-
-            # ✅ Ensure inputs and outputs are correctly formatted instances
             self.inputs = inputs
             self.outputs = outputs
+            self.utxo_manager = utxo_manager
 
-            # ✅ Set timestamp and transaction type formatting
+            # ✅ Set and validate transaction type
             self.timestamp = int(time.time())
             self.type = tx_type.upper().strip()
-            if self.type not in ["STANDARD", "COINBASE"]:
+            if self.type not in ["STANDARD", "SMART", "INSTANT", "COINBASE"]:
                 print(f"[TRANSACTION WARNING] Unknown transaction type '{self.type}'. Defaulting to STANDARD.")
                 self.type = "STANDARD"
 
-            # ✅ Generate transaction ID if not provided
+            self.tx_type = self.type  # ✅ Alias to avoid AttributeError in mempool and processors
+
+            # ✅ Generate or assign tx_id
             self.tx_id = tx_id if tx_id else self._generate_tx_id()
             if not isinstance(self.tx_id, str):
-                print("[TRANSACTION ERROR] Transaction ID must be a string.")
                 raise TypeError("Transaction ID must be a valid string.")
 
-            # ✅ Compute transaction hash
+            # ✅ Compute hash using SHA3-384
             self.hash = self.calculate_hash()
 
-            # ✅ Assign FeeModel if provided, else default to None
+            # ✅ Assign FeeModel and calculate size
             self.fee_model = fee_model
-
-            # ✅ Compute transaction size (optional, used for fee calculation)
             self.size = self._calculate_size()
 
-            # ✅ Calculate fee only if fee_model is provided
-            self.fee = Decimal(Constants.MIN_TRANSACTION_FEE) if not self.fee_model else max(
-                self._calculate_fee(), Decimal(Constants.MIN_TRANSACTION_FEE)
-            )
+            # ✅ Calculate fee if model provided
+            self.fee = Decimal(Constants.MIN_TRANSACTION_FEE)
+            if self.fee_model:
+                try:
+                    self.fee = max(
+                        self.fee_model.calculate_fee(
+                            block_size=Constants.INITIAL_BLOCK_SIZE_MB,
+                            payment_type=self.type,
+                            amount=sum([Decimal(out.amount) for out in self.outputs]),
+                            tx_size=self.size
+                        ),
+                        Decimal(Constants.MIN_TRANSACTION_FEE)
+                    )
+                except Exception as fe:
+                    print(f"[TRANSACTION FEE ERROR] Failed to calculate fee: {fe}")
 
-            # ✅ Set block height for UTXO tracking
+            # ✅ Set block height
             self.block_height = block_height
 
             print(f"[TRANSACTION INFO] Created transaction {self.tx_id} | Type: {self.type} | Fee: {self.fee} | Size: {self.size} bytes")
@@ -110,8 +116,9 @@ class Transaction:
         Includes fallback logic for any failure in generation.
         """
         try:
-            # ✅ Retrieve the transaction prefix from constants (default to empty string)
-            prefix = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [""])[0]
+            # ✅ Retrieve the transaction prefix with safe fallback
+            prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes") or [""]
+            prefix = prefixes[0]  # Always safe now
 
             # ✅ Use nanosecond-level timestamp as a salt
             salt = str(time.time_ns())
@@ -125,6 +132,7 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION _generate_tx_id ERROR] ❌ Failed to generate tx_id: {e}")
             return Constants.ZERO_HASH
+
 
     def calculate_hash(self) -> str:
         """
@@ -262,6 +270,56 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION _calculate_fee ERROR] Unexpected error calculating fee: {e}")
             return Decimal("0")
+
+
+
+    def sign(self, sender_priv_key, sender_pub_key):
+        """
+        Sign the transaction using Falcon-512 and store it in script_sig of each input.
+        """
+        try:
+            # ✅ Ensure both keys are provided
+            if not sender_priv_key or not sender_pub_key:
+                raise ValueError("Missing sender private or public key for signing.")
+
+            # ✅ Use existing transaction hash (already computed at init)
+            if isinstance(self.hash, str):
+                message = self.hash.encode("utf-8")
+            else:
+                raise TypeError("Transaction hash must be a string before signing.")
+
+            # ✅ Lazy import KeyManager
+            from Zyiron_Chain.accounts.key_manager import KeyManager
+            key_manager = KeyManager()
+
+            # ✅ Detect current network
+            network = key_manager.network
+            identifier = None
+
+            # ✅ Match public key hash to an identifier
+            for id_, data in key_manager.keys[network]["keys"].items():
+                if data["hashed_public_key"] == sender_pub_key:
+                    identifier = id_
+                    break
+
+            if not identifier:
+                raise ValueError("Sender's public key not found in KeyManager.")
+
+            # ✅ Use Falcon to sign the message
+            signature = key_manager.sign_transaction(message, network, identifier)
+
+            # ✅ Apply hex signature to all inputs
+            for txin in self.inputs:
+                txin.script_sig = signature.hex()
+
+            self.signature = signature
+            print(f"[TRANSACTION SIGN] ✅ Transaction {self.tx_id} signed successfully.")
+
+        except Exception as e:
+            print(f"[TRANSACTION SIGN ERROR] ❌ {e}")
+            raise
+
+
 
     def to_dict(self) -> Dict:
         """

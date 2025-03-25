@@ -176,10 +176,28 @@ class FeeModel:
         Calculate the transaction fee based on block size, payment type, transaction amount, and transaction size.
         """
         congestion_level = self.get_congestion_level(block_size, payment_type, amount)
-        base_fee_percentage = self.fee_percentages[congestion_level].get(payment_type, Decimal("0"))
+
+        # ✅ Map simplified levels to internal fee tiers
+        level_map = {
+            "LOW": "LOW_MODERATE_LOW",
+            "MODERATE": "MODERATE_HIGH_HIGH",
+            "HIGH": "HIGH"
+        }
+
+        # Get mapped internal level for fee_percentages
+        internal_level = level_map.get(congestion_level)
+        if not internal_level:
+            print(f"[FeeModel.calculate_fee] ❌ Invalid congestion level mapping for: {congestion_level}")
+            return Decimal(self.min_transaction_fee)
+
+        # Calculate base fee percentage
+        base_fee_percentage = self.fee_percentages.get(internal_level, {}).get(payment_type.upper(), Decimal("0"))
         fee = max(Decimal(self.min_transaction_fee), base_fee_percentage * Decimal(tx_size))
-        print(f"[FeeModel.calculate_fee] ✅ Block Size: {block_size}, Payment Type: {payment_type}, Fee: {fee}")
+
+        print(f"[FeeModel.calculate_fee] ✅ Block Size: {block_size}, Payment Type: {payment_type}, "
+            f"Congestion Level: {congestion_level}, Internal Tier: {internal_level}, Fee: {fee}")
         return fee
+
 
     def store_fee(self, transaction_id: str, block_hash: str, base_fee: Decimal, tax_fee: Decimal, miner_fee: Decimal, congestion_level: str) -> bool:
         """

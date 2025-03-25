@@ -1,6 +1,10 @@
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from typing import List, Optional
+# Adjust Python path for project structure
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+sys.path.append(project_root)
+
 import hashlib
 import os
 from lmdb import Environment

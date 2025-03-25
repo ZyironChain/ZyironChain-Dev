@@ -48,7 +48,7 @@ class TransactionManager:
         :param utxo_manager: UTXOManager instance for UTXO lookups.
         :param key_manager: KeyManager for retrieving keys.
         """
-        self.block_storage = block_storage  # ✅ Uses BlockStorage instead of BlockMetadata
+        self.block_storage = block_storage
         self.tx_storage = tx_storage
         self.utxo_manager = utxo_manager
         self.key_manager = key_manager
@@ -56,37 +56,34 @@ class TransactionManager:
         self.network = Constants.NETWORK
         self.version = Constants.VERSION
 
-        # ✅ Initialize LMDB Storage for Transactions, UTXOs, and Indexes
+        # ✅ Initialize LMDB storage
         utxo_db = LMDBManager(Constants.get_db_path("utxo"))
         utxo_history_db = LMDBManager(Constants.get_db_path("utxo_history"))
         txindex_db = LMDBManager(Constants.get_db_path("txindex"))
-
-        # ✅ Corrected UTXOStorage initialization
-        self.utxo_storage = UTXOStorage(
-            utxo_manager=utxo_manager  # ✅ Pass utxo_manager instead of utxo_db
-        )
-
         self.txindex_db = txindex_db
 
-        # ✅ Initialize the two mempools
+        # ✅ Initialize UTXO storage from manager
+        self.utxo_storage = UTXOStorage(utxo_manager=self.utxo_manager)
+
+        # ✅ Initialize Standard and Smart mempools with utxo_storage
         self.standard_mempool = StandardMempool(
             utxo_storage=self.utxo_storage,
             max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_STANDARD_ALLOCATION)
         )
         self.smart_mempool = SmartMempool(
+            utxo_storage=self.utxo_storage,  # ✅ <-- this was missing
             max_size_mb=int(Constants.MEMPOOL_MAX_SIZE_MB * Constants.MEMPOOL_SMART_ALLOCATION)
         )
 
         self.transaction_mempool_map = Constants.TRANSACTION_MEMPOOL_MAP
         self._mempool = self.standard_mempool
-
         self.mempool_lock = Lock()
 
         print(f"[TransactionManager.__init__] Initialized on {self.network.upper()} | Version {self.version} | "
               f"Standard Mempool: {Constants.MEMPOOL_STANDARD_ALLOCATION * 100}% | "
               f"Smart Mempool: {Constants.MEMPOOL_SMART_ALLOCATION * 100}% | "
               f"TX Index DB: {Constants.get_db_path('txindex')}")
-    
+
     def create_transaction(self, sender, recipient_address=None, amount=None, fee=None, transaction_type="STANDARD", **kwargs):
         """
         Create a new transaction.

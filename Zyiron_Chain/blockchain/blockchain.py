@@ -18,7 +18,7 @@ sys.path.append(project_root)
 
 import json
 import time
-
+import lmdb
 # -------------------------------------------------------------------------
 # Imports from our new splitted storage modules and block code
 # -------------------------------------------------------------------------

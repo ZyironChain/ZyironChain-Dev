@@ -31,16 +31,16 @@ from decimal import Decimal
 class TransactionOut:
     """Represents a transaction output (UTXO)."""
 
-    def __init__(self, script_pub_key: str, amount: Decimal, locked: bool = False):
+    def __init__(self, script_pub_key: str, amount: Decimal, locked: bool = False, tx_out_id: str = None):
         """
         Initialize a Transaction Output.
 
         :param script_pub_key: The address or script receiving funds.
         :param amount: The amount of currency being sent.
         :param locked: Whether the UTXO is locked (e.g., for HTLCs).
+        :param tx_out_id: Optional precomputed UTXO ID (used during deserialization).
         """
         try:
-            # ✅ Ensure amount is a valid Decimal
             self.amount = Decimal(str(amount))
             if self.amount < Constants.COIN:
                 print(f"[TransactionOut WARN] ⚠️ Amount below minimum {Constants.COIN}. Adjusting to minimum.")
@@ -49,7 +49,6 @@ class TransactionOut:
             print(f"[TransactionOut ERROR] ❌ Invalid amount format: {e}")
             raise ValueError(f"Invalid amount format: {e}")
 
-        # ✅ Ensure `script_pub_key` is a valid non-empty string
         if not isinstance(script_pub_key, str) or not script_pub_key.strip():
             print("[TransactionOut ERROR] ❌ script_pub_key must be a non-empty string.")
             raise ValueError("script_pub_key must be a non-empty string.")
@@ -57,10 +56,12 @@ class TransactionOut:
         self.script_pub_key = script_pub_key.strip()
         self.locked = locked
 
-        # ✅ Generate unique UTXO ID using single SHA3-384 hashing
-        self.tx_out_id = self._calculate_tx_out_id()
-
-        print(f"[TransactionOut INFO] ✅ Created UTXO: tx_out_id={self.tx_out_id} | Amount: {self.amount} | Locked: {self.locked}")
+        if tx_out_id:
+            self.tx_out_id = tx_out_id
+            print(f"[TransactionOut INFO] ✅ Loaded UTXO from existing ID: {self.tx_out_id}")
+        else:
+            self.tx_out_id = self._calculate_tx_out_id()
+            print(f"[TransactionOut INFO] ✅ Created UTXO: tx_out_id={self.tx_out_id} | Amount: {self.amount} | Locked: {self.locked}")
 
     def _calculate_tx_out_id(self) -> str:
         """
@@ -85,12 +86,19 @@ class TransactionOut:
 
         :return: Dictionary representation of the transaction output.
         """
-        return {
+        result = {
             "script_pub_key": self.script_pub_key,
             "amount": str(self.amount),  # ✅ Preserve precision as string
             "locked": self.locked,
             "tx_out_id": self.tx_out_id  # ✅ Ensure UTXO ID is included
         }
+
+        # ✅ Fallback: include tx_out_index if available
+        if hasattr(self, "tx_out_index"):
+            result["tx_out_index"] = self.tx_out_index
+
+        return result
+
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TransactionOut":
@@ -129,8 +137,16 @@ class TransactionOut:
                 amount = Constants.COIN
 
             locked = data.get("locked", False)
+            tx_out_id = data.get("tx_out_id")  # Optional
+            tx_out_index = data.get("tx_out_index")  # ✅ Optional fallback field
+
             print(f"[TransactionOut INFO] ✅ Parsed TransactionOut from dict with script_pub_key: {script_pub_key}")
-            return cls(script_pub_key=script_pub_key, amount=amount, locked=locked)
+
+            obj = cls(script_pub_key=script_pub_key, amount=amount, locked=locked, tx_out_id=tx_out_id)
+            if tx_out_index is not None:
+                obj.tx_out_index = tx_out_index  # ✅ Inject fallback field
+
+            return obj
 
         except Exception as e:
             print(f"[TransactionOut ERROR] ❌ Failed to parse TransactionOut: {e}")

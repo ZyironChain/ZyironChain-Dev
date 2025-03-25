@@ -71,6 +71,22 @@ class TxStorage:
 
 
 
+    def get_transaction_count(self) -> int:
+        """
+        Returns the number of stored transactions in txindex.lmdb.
+        """
+        try:
+            count = 0
+            with self.env.begin(db=self.db, write=False) as txn:
+                cursor = txn.cursor()
+                for key, _ in cursor:
+                    if key.startswith(b"tx:"):
+                        count += 1
+            print(f"[TxStorage] ✅ Transaction count: {count}")
+            return count
+        except Exception as e:
+            print(f"[TxStorage] ❌ Error counting transactions: {e}")
+            return 0
 
 
 

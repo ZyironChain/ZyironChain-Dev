@@ -17,6 +17,12 @@ import os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 sys.path.append(project_root)
 
+from threading import Lock
+from decimal import Decimal
+from Zyiron_Chain.blockchain.constants import Constants
+from Zyiron_Chain.transactions.fees import FeeModel
+from Zyiron_Chain.storage.lmdatabase import LMDBManager
+
 class StandardMempool:
     def __init__(self, utxo_storage, max_size_mb=None):
         """
@@ -27,23 +33,25 @@ class StandardMempool:
         """
         self.utxo_storage = utxo_storage
         self.lock = Lock()
-        
+
         # Use LMDB for transaction persistence
         self.lmdb = LMDBManager(Constants.get_db_path("mempool"))
 
-        # Allow size override while maintaining Constants default
+        # Set maximum size
         self.max_size_mb = max_size_mb if max_size_mb is not None else Constants.MEMPOOL_MAX_SIZE_MB
         self.max_size_bytes = self.max_size_mb * 1024 * 1024  # Convert MB to bytes
-        
+
+        # Runtime parameters
         self.current_size_bytes = 0
         self.timeout = Constants.MEMPOOL_TRANSACTION_EXPIRY
         self.expiry_time = Constants.MEMPOOL_TRANSACTION_EXPIRY
         self.fee_model = FeeModel(max_supply=Decimal(Constants.MAX_SUPPLY))
 
-        # Load existing transactions from LMDB on initialization
+        # Load persisted transactions on startup
         self._load_pending_transactions()
 
-        print(f"[MEMPOOL] Initialized Standard Mempool with max size {self.max_size_mb} MB")
+        print(f"[MEMPOOL] ✅ Initialized Standard Mempool with max size {self.max_size_mb} MB")
+
 
     def _load_pending_transactions(self):
         """Load pending transactions from LMDB into memory."""
