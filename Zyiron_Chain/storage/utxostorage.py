@@ -12,6 +12,7 @@ import lmdb
 
 from Zyiron_Chain.storage.block_storage import BlockStorage
 from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+from Zyiron_Chain.transactions.tx import Transaction
 
 # Adjust system path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -589,6 +590,155 @@ class UTXOStorage:
             print(f"[UTXOStorage.validate_utxo] ERROR: Failed to validate UTXO {tx_id}:{output_index}: {e}")
             return False
 
+
+
+    def get_all_utxos_by_tx_id(self, tx_id: str) -> List[Dict]:
+        """
+        Retrieve all UTXOs associated with a given transaction ID.
+        Supports fallback to full block storage if LMDB lookup fails.
+
+        Args:
+            tx_id (str): Transaction ID to search for.
+
+        Returns:
+            List[Dict]: List of UTXO dictionaries associated with the given tx_id.
+        """
+        results = []
+        try:
+            # ✅ First, scan active UTXO LMDB
+            with self.utxo_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key_bytes, value_bytes in cursor:
+                    key_str = key_bytes.decode("utf-8", errors="ignore")
+                    if not key_str.startswith(f"utxo:{tx_id}:"):
+                        continue
+
+                    try:
+                        value_raw = value_bytes.tobytes() if isinstance(value_bytes, memoryview) else value_bytes
+                        utxo_dict = json.loads(value_raw.decode("utf-8"))
+                        results.append(utxo_dict)
+                    except Exception as e:
+                        print(f"[get_all_utxos_by_tx_id] ⚠️ Skipping corrupted entry {key_str}: {e}")
+
+            if results:
+                print(f"[get_all_utxos_by_tx_id] ✅ Found {len(results)} UTXOs in LMDB for tx_id={tx_id}")
+                return results
+
+            # 🔁 Fallback: scan full block storage
+            if not hasattr(self, "block_storage") or not self.block_storage:
+                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not attached. Cannot perform fallback.")
+                return []
+
+            print(f"[get_all_utxos_by_tx_id] ⚠️ No LMDB UTXOs found for tx_id={tx_id}. Scanning full block storage...")
+
+            from Zyiron_Chain.blockchain.block import Block
+            from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+            from Zyiron_Chain.transactions.tx import Transaction
+            from Zyiron_Chain.transactions.txout import TransactionOut
+
+            def safe_deserialize_block(blk):
+                try:
+                    if isinstance(blk, dict):
+                        return Block.from_dict(blk)
+                    return blk
+                except Exception as e:
+                    print(f"[safe_deserialize_block] ❌ Failed to deserialize block: {e}")
+                    return None
+
+            all_blocks = self.block_storage.get_all_blocks()
+            print(f"[get_all_utxos_by_tx_id] ✅ Loaded {len(all_blocks)} blocks from block storage.")
+
+            for blk in all_blocks:
+                block_obj = safe_deserialize_block(blk)
+                if not block_obj:
+                    continue
+
+                for tx in getattr(block_obj, "transactions", []):
+                    try:
+                        tx_obj = (
+                            CoinbaseTx.from_dict(tx)
+                            if isinstance(tx, dict) and tx.get("type") == "COINBASE"
+                            else Transaction.from_dict(tx)
+                            if isinstance(tx, dict)
+                            else tx
+                        )
+                    except Exception as deser:
+                        print(f"[get_all_utxos_by_tx_id] ⚠️ Failed to parse tx: {deser}")
+                        continue
+
+                    if not hasattr(tx_obj, "tx_id") or tx_obj.tx_id != tx_id:
+                        continue
+
+                    for idx, output in enumerate(tx_obj.outputs):
+                        try:
+                            output_obj = TransactionOut.from_dict(output) if isinstance(output, dict) else output
+                            utxo_entry = {
+                                "tx_id": tx_id,
+                                "output_index": idx,
+                                "amount": str(output_obj.amount),
+                                "script_pub_key": output_obj.script_pub_key,
+                                "is_locked": output_obj.locked,
+                                "block_height": getattr(block_obj, "index", 0),
+                                "spent_status": False
+                            }
+                            results.append(utxo_entry)
+                        except Exception as output_err:
+                            print(f"[get_all_utxos_by_tx_id] ⚠️ Output parse error: {output_err}")
+                            continue
+
+            print(f"[get_all_utxos_by_tx_id] ✅ Fallback result: {len(results)} UTXOs recovered from full block storage for tx_id={tx_id}")
+            return results
+
+        except Exception as e:
+            print(f"[get_all_utxos_by_tx_id] ❌ ERROR: Failed to get UTXOs for tx_id={tx_id}: {e}")
+            return []
+
+
+
+
+
+    def safe_deserialize_block(block_data) -> Optional["Block"]:
+        """
+        Robustly deserialize a block dict or object.
+        Ensures transactions are deserialized into full objects (CoinbaseTx / Transaction).
+        """
+        from Zyiron_Chain.blockchain.block import Block
+        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+        from Zyiron_Chain.transactions.tx import Transaction
+
+        try:
+            # If it's already a Block instance, just return it
+            if isinstance(block_data, Block):
+                return block_data
+
+            block_obj = Block.from_dict(block_data)
+            tx_list = getattr(block_obj, "transactions", [])
+
+            new_tx_list = []
+            for tx in tx_list:
+                if isinstance(tx, dict):
+                    if tx.get("type") == "COINBASE":
+                        tx_obj = CoinbaseTx.from_dict(tx)
+                    else:
+                        tx_obj = Transaction.from_dict(tx)
+                    new_tx_list.append(tx_obj)
+                else:
+                    new_tx_list.append(tx)
+
+            block_obj.transactions = new_tx_list
+            return block_obj
+
+        except Exception as e:
+            print(f"[safe_deserialize_block] ❌ Failed to deserialize block: {e}")
+            return None
+
+
+
+
+
+
+
+
     def mark_spent(self, tx_id: str, output_index: int) -> bool:
         try:
             utxo_key = f"utxo:{tx_id}:{output_index}".encode()
@@ -899,6 +1049,61 @@ class UTXOStorage:
 
         self.block_storage = block_storage
         print("[UTXOStorage] ✅ Fallback block storage enabled.")
+
+
+
+
+
+
+
+    def get_all_utxos_by_tx_id(self, tx_id: str) -> List[dict]:
+        """
+        Retrieve all UTXOs associated with a given tx_id from full block storage.
+        """
+        results = []
+        try:
+            if not self.block_storage:
+                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not attached.")
+                return []
+
+            blocks = self.block_storage.get_all_blocks()
+            for block in blocks:
+                for tx in block.transactions:
+                    if isinstance(tx, dict):
+                        if tx.get("tx_id") != tx_id:
+                            continue
+                        outputs = tx.get("outputs", [])
+                    else:
+                        if getattr(tx, "tx_id", "") != tx_id:
+                            continue
+                        outputs = getattr(tx, "outputs", [])
+
+                    for idx, output in enumerate(outputs):
+                        utxo_entry = {
+                            "tx_id": tx_id,
+                            "output_index": idx,
+                            "amount": str(output.get("amount") if isinstance(output, dict) else output.amount),
+                            "script_pub_key": output.get("script_pub_key") if isinstance(output, dict) else output.script_pub_key,
+                            "is_locked": output.get("locked") if isinstance(output, dict) else output.locked,
+                            "block_height": block.index,
+                            "spent_status": False
+                        }
+                        results.append(utxo_entry)
+
+            print(f"[get_all_utxos_by_tx_id] ✅ Found {len(results)} UTXOs for tx_id={tx_id}")
+            return results
+
+        except Exception as e:
+            print(f"[get_all_utxos_by_tx_id] ❌ ERROR: Failed to get UTXOs for tx_id={tx_id}: {e}")
+            return []
+
+
+
+
+
+
+
+
 
 
 

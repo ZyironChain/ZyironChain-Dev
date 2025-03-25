@@ -594,7 +594,6 @@ class Miner:
                     print("[Miner.mine_block] ERROR: `block_storage` is not initialized.")
                     return None
 
-                # ✅ Get latest block
                 print("[Miner.mine_block] INFO: Fetching latest block.")
                 last_block = self.block_manager.get_latest_block()
 
@@ -620,6 +619,13 @@ class Miner:
 
                 block_height = last_block.index + 1
                 print(f"[Miner.mine_block] INFO: Preparing new block at height {block_height}.")
+
+                # ✅ PREVENT DUPLICATE MINING
+                existing_block = self.block_storage.get_block_by_height(block_height)
+                if existing_block:
+                    print(f"[Miner.mine_block] ✅ Block at height {block_height} already exists. Skipping mining.")
+                    self.block_manager.chain.append(existing_block)  # ✅ Critical fix to prevent re-mining loop
+                    return existing_block
 
                 # ✅ Adjust difficulty
                 current_target = self.pow_manager.adjust_difficulty()
@@ -677,12 +683,10 @@ class Miner:
                     print("[Miner.mine_block] ERROR: Mined hash does not meet target.")
                     return None
 
-                # ✅ Finalize and store block
                 new_block.mined_hash = mined_hash
                 new_block.nonce = mined_nonce
                 self.block_storage.store_block(new_block)
 
-                # ✅ Store all transactions in txindex
                 for tx in valid_txs:
                     tx_dict = tx.to_dict() if hasattr(tx, "to_dict") else tx
                     tx_id = tx_dict.get("tx_id")
@@ -691,7 +695,6 @@ class Miner:
                     tx_signature = tx_dict.get("tx_signature", b"")
                     falcon_signature = tx_dict.get("falcon_signature", b"")
 
-                    # Normalize signatures if stored as hex strings
                     if isinstance(tx_signature, str):
                         try:
                             tx_signature = bytes.fromhex(tx_signature)
@@ -714,8 +717,10 @@ class Miner:
                         falcon_signature=falcon_signature
                     )
 
-                # ✅ Corrected UTXO update: Pass full block
                 self.utxo_storage.update_utxos(new_block)
+
+                # ✅ Update block manager in-memory state
+                self.block_manager.chain.append(new_block)
 
                 print(f"[Miner.mine_block] ✅ SUCCESS: Block {block_height} mined with hash {mined_hash[:12]}... in {time.time() - start_time:.2f}s")
                 return new_block

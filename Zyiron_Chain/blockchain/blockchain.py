@@ -584,12 +584,23 @@ class Blockchain:
         - Ensures each block is valid and linked correctly.
         - Validates all transactions in each block using the TransactionManager.
         - Handles missing or invalid data gracefully.
+        - Uses stored `mined_hash` for accurate previous_hash comparison.
+        - Falls back to block_storage if `chain` is None or incomplete.
         """
         try:
-            if chain is None:
-                chain = self.chain
-
             print("[Blockchain.validate_chain] INFO: Validating blockchain...")
+
+            if chain is None or len(chain) == 0:
+                print("[Blockchain.validate_chain] INFO: No in-memory chain found. Using block_storage fallback.")
+                chain = []
+                height = 0
+                while True:
+                    block = self.block_storage.get_block_by_height(height)
+                    if not block:
+                        print(f"[Blockchain.validate_chain] INFO: Reached end of chain at block height {height}.")
+                        break
+                    chain.append(block)
+                    height += 1
 
             if not chain:
                 print("[Blockchain.validate_chain] ❌ ERROR: Blockchain is empty.")
@@ -618,14 +629,20 @@ class Blockchain:
                         print(f"[Blockchain.validate_chain] ❌ ERROR: Genesis block previous hash mismatch.\nExpected: {Constants.ZERO_HASH}\nFound:    {block.previous_hash}")
                         return False
                 else:
+                    # ✅ Use mined_hash or fallback to hash for previous block
+                    previous_block = chain[i - 1]
+                    expected_prev_hash = getattr(previous_block, "mined_hash", previous_block.hash)
+
                     # Ensure previous_hash exists
                     if not hasattr(block, "previous_hash"):
                         print(f"[Blockchain.validate_chain] ⚠️ WARNING: Block {block.index} missing 'previous_hash'. Using fallback.")
-                        block.previous_hash = Constants.ZERO_HASH
+                        block.previous_hash = expected_prev_hash
 
                     # ✅ Check block linkage
-                    if block.previous_hash != chain[i - 1].hash:
-                        print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} not linked correctly.\nExpected: {chain[i - 1].hash}\nFound:    {block.previous_hash}")
+                    if block.previous_hash != expected_prev_hash:
+                        print(f"[Blockchain.validate_chain] ❌ ERROR: Block {block.index} not linked correctly.")
+                        print(f"Expected: {expected_prev_hash}")
+                        print(f"Found:    {block.previous_hash}")
                         return False
 
                 # ✅ Validate each transaction
@@ -662,6 +679,7 @@ class Blockchain:
         except Exception as e:
             print(f"[Blockchain.validate_chain] ❌ ERROR: Blockchain validation failed: {e}")
             return False
+
 
 
     def _parse_difficulty(self, value) -> str:

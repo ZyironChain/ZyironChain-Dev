@@ -343,6 +343,31 @@ class Block:
             raise
 
 
+    def get(self, key: str, default=None):
+        """
+        Safely retrieve a value from the block's attributes or metadata.
+
+        Args:
+            key (str): The name of the field to retrieve.
+            default: Value to return if key is not found.
+
+        Returns:
+            Any: Value of the requested field or default if not found.
+        """
+        try:
+            # 1. Check if it's a direct attribute
+            if hasattr(self, key):
+                return getattr(self, key)
+
+            # 2. If not found, check metadata (if exists)
+            if hasattr(self, "metadata") and isinstance(self.metadata, dict):
+                return self.metadata.get(key, default)
+
+            # 3. Fallback to default
+            return default
+        except Exception as e:
+            print(f"[Block.get] ❌ ERROR: Failed to retrieve key '{key}': {e}")
+            return default
 
 
     @classmethod

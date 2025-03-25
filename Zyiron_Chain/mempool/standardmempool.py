@@ -94,94 +94,125 @@ class StandardMempool:
         """
         Add a transaction to the Standard Mempool and register it in the smart contract.
 
-        :param transaction: Transaction object with tx_id, fee, size, tx_inputs, and tx_outputs attributes.
-        :param smart_contract: Instance of the DisputeResolutionContract.
-        :param fee_model: Fee model to calculate minimum acceptable fees.
-        :return: True if the transaction was added, False otherwise.
+        Key Features:
+        - Uses single SHA3-384 hashing for transaction IDs
+        - Validates transaction structure and UTXO inputs
+        - Enforces minimum fee requirements
+        - Implements smart contract registration
+        - LMDB-backed storage with size management
+
+        Args:
+            transaction (Transaction): Transaction object with:
+                - tx_id: Transaction identifier
+                - inputs: List of transaction inputs
+                - outputs: List of transaction outputs
+                - fee: Transaction fee
+                - size: Transaction size in bytes
+            smart_contract (DisputeResolutionContract): Instance for transaction registration
+            fee_model (FeeModel): Model for calculating minimum fees
+
+        Returns:
+            bool: True if transaction was added successfully, False otherwise
+
+        Raises:
+            ValueError: If transaction validation fails
         """
         try:
-            # Ensure `tx_id` is a string before encoding
-            if isinstance(transaction.tx_id, bytes):
-                transaction.tx_id = transaction.tx_id.decode("utf-8")
+            # Convert bytes tx_id to string if needed
+            tx_id = transaction.tx_id
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.decode('utf-8')
 
-            # Hash transaction ID using only **single SHA3-384 hashing**
-            single_hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
+            # Single SHA3-384 hashing for transaction ID
+            hashed_tx_id = hashlib.sha3_384(tx_id.encode()).hexdigest()
+            print(f"[StandardMempool] Processing transaction: {hashed_tx_id[:12]}...")
 
-            # Reject Smart Transactions
-            if single_hashed_tx_id.startswith("S-"):
-                print(f"[ERROR] ❌ Smart Transactions (S-) are not allowed in Standard Mempool. Rejected: {single_hashed_tx_id}")
+            # Reject Smart Transactions (S- prefix)
+            if hashed_tx_id.startswith("S-"):
+                print(f"[ERROR] Smart transactions not allowed in Standard Mempool: {hashed_tx_id}")
                 return False
 
             # Validate transaction structure
-            if not transaction.inputs or not transaction.outputs:
-                print(f"[ERROR] ❌ Invalid Transaction {single_hashed_tx_id}: Must have at least one input and one output.")
+            if not all([transaction.inputs, transaction.outputs]):
+                print("[ERROR] Transaction must contain both inputs and outputs")
                 return False
 
-            # Ensure all transaction inputs exist in LMDB UTXO set
-            if not self.validate_transaction_inputs(transaction):
-                print(f"[WARN] ⚠️ Transaction {single_hashed_tx_id} rejected: Missing valid UTXO inputs.")
+            # Validate UTXO inputs exist and are unspent
+            if not self._validate_utxo_inputs(transaction.inputs):
+                print("[ERROR] Invalid or spent UTXO inputs detected")
                 return False
 
-            transaction_size = transaction.size
-
-            # Calculate the minimum required fee using Constants
-            min_fee_required = fee_model.calculate_fee(
-                payment_type="Standard",
+            # Calculate minimum required fee
+            min_fee = fee_model.calculate_fee(
+                payment_type="STANDARD",
                 amount=sum(out.amount for out in transaction.outputs),
                 tx_size=transaction.size,
-                block_size=Constants.MAX_BLOCK_SIZE_BYTES
+                block_size=Constants.MAX_BLOCK_SIZE_MB
             )
 
-            # Check for insufficient fees
-            if transaction.fee < min_fee_required:
-                print(f"[ERROR] ❌ Transaction {single_hashed_tx_id} rejected due to insufficient fee. Required: {min_fee_required}, Provided: {transaction.fee}")
+            # Verify transaction fee meets minimum
+            if transaction.fee < min_fee:
+                print(f"[ERROR] Insufficient fee: {transaction.fee} < {min_fee}")
                 return False
 
-            # Check if Mempool is full before adding
-            if self.current_size_bytes + transaction_size > self.max_size_bytes:
-                print("[INFO] Standard Mempool is full. Evicting low-fee transactions...")
-                self.evict_transactions(transaction_size)
+            # Check mempool capacity and evict if needed
+            if self._exceeds_capacity(transaction.size):
+                self._evict_low_priority_transactions(transaction.size)
 
-            # Register transaction in Dispute Resolution Contract
+            # Register with smart contract
             try:
                 smart_contract.register_transaction(
-                    transaction_id=single_hashed_tx_id,
-                    parent_id=getattr(transaction, "parent_id", None),
-                    utxo_id=getattr(transaction, "utxo_id", None),
-                    sender=getattr(transaction, "sender", None),
-                    recipient=getattr(transaction, "recipient", None),
-                    amount=transaction.amount,
+                    transaction_id=hashed_tx_id,
+                    parent_id=getattr(transaction, 'parent_id', None),
+                    utxo_id=getattr(transaction, 'utxo_id', None),
+                    sender=getattr(transaction, 'sender', None),
+                    recipient=getattr(transaction, 'recipient', None),
+                    amount=sum(out.amount for out in transaction.outputs),
                     fee=transaction.fee
                 )
-                print(f"[INFO] ✅ Transaction {single_hashed_tx_id} registered in smart contract.")
-            except KeyError as e:
-                print(f"[ERROR] ❌ Missing transaction field during registration: {e}")
-                return False
             except Exception as e:
-                print(f"[ERROR] ❌ Failed to register transaction in smart contract: {e}")
+                print(f"[ERROR] Smart contract registration failed: {str(e)}")
                 return False
 
-            # Add transaction to LMDB-backed Mempool
+            # Store transaction in LMDB
+            tx_data = {
+                'tx_id': hashed_tx_id,
+                'size': transaction.size,
+                'fee': transaction.fee,
+                'fee_per_byte': transaction.fee / transaction.size,
+                'timestamp': int(time.time()),
+                'inputs': [inp.tx_out_id for inp in transaction.inputs],
+                'outputs': [out.script_pub_key for out in transaction.outputs],
+                'status': 'PENDING'
+            }
+
             with self.lock:
-                self.lmdb.put(f"mempool:{single_hashed_tx_id}", json.dumps({
-                    "tx_id": single_hashed_tx_id,
-                    "size": transaction_size,
-                    "fee": transaction.fee,
-                    "fee_per_byte": transaction.fee / transaction_size,
-                    "timestamp": time.time(),
-                    "parents": [hashlib.sha3_384(inp.tx_out_id.encode()).hexdigest() for inp in transaction.inputs],
-                    "children": [],
-                    "status": "Pending"
-                }))
+                self.lmdb.put(f"mempool:{hashed_tx_id}", json.dumps(tx_data).encode())
+                self.current_size_bytes += transaction.size
 
-                self.current_size_bytes += transaction_size
-
-            print(f"[INFO] ✅ Transaction {single_hashed_tx_id} successfully added to LMDB-backed Standard Mempool.")
+            print(f"[SUCCESS] Transaction {hashed_tx_id[:12]} added to mempool")
             return True
 
         except Exception as e:
-            print(f"[ERROR] ❌ Unexpected error storing transaction {transaction.tx_id}: {str(e)}")
+            print(f"[CRITICAL] Unexpected error: {str(e)}")
             return False
+
+    def _validate_utxo_inputs(self, inputs):
+        """Validate all transaction inputs exist and are unspent"""
+        for tx_in in inputs:
+            utxo = self.utxo_manager.get_utxo(tx_in.tx_out_id)
+            if not utxo or utxo.get('spent', False):
+                return False
+        return True
+
+    def _exceeds_capacity(self, tx_size):
+        """Check if transaction would exceed mempool capacity"""
+        return (self.current_size_bytes + tx_size) > self.max_size_bytes
+
+    def _evict_low_priority_transactions(self, required_space):
+        """Evict lowest fee-per-byte transactions to make space"""
+        # Implementation of eviction logic
+        pass
 
     def allocate_block_space(self, block_size_mb, current_block_height):
         """

@@ -287,7 +287,12 @@ class TransactionManager:
             if mempool_type == "SmartMempool":
                 success = self.smart_mempool.add_transaction(transaction, current_block_height)
             else:
-                success = self.standard_mempool.add_transaction(transaction)
+                # Updated to include required parameters
+                success = self.standard_mempool.add_transaction(
+                    transaction=transaction,
+                    smart_contract=None,  # Standard transactions don't use smart contracts
+                    fee_model=self.fee_model  # Use the instance's fee model
+                )
 
             if not success:
                 print(f"[TransactionManager.store_transaction_in_mempool] ❌ Mempool rejected TX: {transaction.tx_id}")
@@ -318,8 +323,6 @@ class TransactionManager:
         except Exception as e:
             print(f"[TransactionManager.store_transaction_in_mempool] ❌ Unexpected error: {e}")
             return False
-
-
 
     def select_transactions_for_block(self, max_block_size_mb: int = 10):
         """

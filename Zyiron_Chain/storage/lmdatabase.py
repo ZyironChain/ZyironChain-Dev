@@ -126,6 +126,19 @@ class LMDBManager:
         except Exception as e:
             print(f"[LMDBManager] ⚠️ WARNING: Capacity check failed: {e}")
 
+    def reopen(self):
+        try:
+            if self.env and getattr(self.env, "_handle", None):
+                try:
+                    self.env.close()
+                    print(f"[LMDBManager.reopen] INFO: Closed LMDB env at {self.db_path}")
+                except Exception as close_err:
+                    print(f"[LMDBManager.reopen] ⚠️ WARNING: Failed to close LMDB env safely: {close_err}")
+
+            self._open_env()
+            print(f"[LMDBManager.reopen] ✅ Reopened LMDB at {self.db_path}")
+        except Exception as e:
+            print(f"[LMDBManager.reopen] ❌ ERROR: Failed to reopen LMDB: {e}")
 
     def _verify_capacity(self):
         """
@@ -502,6 +515,7 @@ class LMDBManager:
             return None
 
 
+
     def put(self, key: Union[str, bytes, bytearray, memoryview], value: dict, db=None) -> bool:
         """
         Store a JSON-serializable value in LMDB under the given key.
@@ -843,7 +857,12 @@ class LMDBManager:
         
         return self.env
 
-
+    def close(self):
+        """Close the LMDB environment and remove it from the singleton registry."""
+        if self.db_path in LMDBManager._environments:
+            self.env.close()
+            del LMDBManager._environments[self.db_path]
+            print(f"[LMDBManager] Closed LMDB environment at {self.db_path}")
 
     @contextmanager
     def safe_transaction(self, write=False, db=None):

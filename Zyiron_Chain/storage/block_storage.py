@@ -429,11 +429,11 @@ class BlockStorage:
             return None
 
 
-
     def store_block(self, block: Block) -> bool:
         """
         Store a block in the blockchain with robust fallback logic, transaction serialization,
         and total supply cache invalidation. Ensures UTXO updates are synchronized with block storage.
+        Also attempts to store metadata and recovers it from full block store if metadata fails.
         """
         try:
             print(f"[BlockStorage.store_block] INFO: Storing Block {block.index}...")
@@ -460,6 +460,7 @@ class BlockStorage:
                 block.metadata = {}
                 print(f"[BlockStorage.store_block] INFO: Added fallback metadata for Block {block.index}")
 
+            # 🔄 Prepare block data
             try:
                 block_data = block.to_dict()
                 diff_int = int(block.difficulty, 16) if isinstance(block.difficulty, str) else int(block.difficulty)
@@ -469,36 +470,62 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] INFO: Block size: {block_data['size']} bytes.")
             except Exception as e:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed block serialization: {e}")
+                block_data = {}
                 block_data["size"] = 0
 
+            # 🔁 Ensure block_height is attached to all txs
             for tx in block_data.get("transactions", []):
-                if not isinstance(tx, dict) or "tx_id" not in tx:
-                    continue
-                if "block_height" not in tx or tx["block_height"] != block.index:
-                    tx["block_height"] = block.index
+                if isinstance(tx, dict) and tx.get("tx_id"):
+                    if "block_height" not in tx or tx["block_height"] != block.index:
+                        tx["block_height"] = block.index
 
+            # 🔒 Encode for LMDB
             try:
                 block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
                 block_bytes = block_json.encode("utf-8")
             except Exception as e:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed to encode block JSON: {e}")
-                raise
+                return False
 
             block_key = f"block:{block.index}".encode("utf-8")
             block_hash_key = f"block_hash:{block.mined_hash}".encode("utf-8")
 
+            # ❗Prevent overwrite (now returns True if already exists)
             with self.full_block_store.env.begin() as txn:
                 if txn.get(block_key):
                     print(f"[BlockStorage.store_block] ⚠️ Block {block.index} already exists. Skipping.")
-                    return False
+                    return True  # ✅ CHANGED: Now returns True instead of False
 
+            # 🧾 Index transactions BEFORE UTXO update
+            for tx in block.transactions:
+                try:
+                    if isinstance(tx, dict):
+                        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+                        from Zyiron_Chain.transactions.tx import Transaction
+                        tx = CoinbaseTx.from_dict(tx) if tx.get("type") == "COINBASE" else Transaction.from_dict(tx)
+
+                    tx_dict = tx.to_dict()
+                    self.tx_storage.store_transaction(
+                        tx_id=tx_dict.get("tx_id"),
+                        block_hash=block.mined_hash,
+                        tx_data=tx_dict,
+                        outputs=tx_dict.get("outputs", []),
+                        timestamp=block.timestamp,
+                        tx_signature=getattr(tx, "tx_signature", b""),
+                        falcon_signature=getattr(tx, "falcon_signature", b"")
+                    )
+                    print(f"[BlockStorage.store_block] ✅ Indexed transaction {tx_dict.get('tx_id')}.")
+                except Exception as tx_err:
+                    print(f"[BlockStorage.store_block] ⚠️ TX indexing failed: {tx_err}")
+                    continue
+
+            # 💾 Store full block
             try:
                 with self.full_block_store.env.begin(write=True) as txn:
                     txn.put(block_key, block_bytes)
                     txn.put(block_hash_key, block_key)
                     txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
 
-                # ✅ Only update UTXOs if utxo_storage is set
                 if self.utxo_storage:
                     if not self.utxo_storage.update_utxos(block):
                         print(f"[BlockStorage.store_block] ❌ ERROR: Failed to update UTXOs for Block {block.index}.")
@@ -509,81 +536,29 @@ class BlockStorage:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block or update UTXOs: {e}")
                 return False
 
-            for tx in block.transactions:
-                try:
-                    if isinstance(tx, dict):
-                        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-                        from Zyiron_Chain.transactions.tx import Transaction
-
-                        if tx.get("type") == "COINBASE":
-                            tx = CoinbaseTx.from_dict(tx)
-                        else:
-                            tx = Transaction.from_dict(tx)
-
-                    tx_dict = tx.to_dict()
-                    tx_id = tx_dict.get("tx_id")
-                    outputs = tx_dict.get("outputs", [])
-
-                    if not tx_id or not isinstance(tx_id, str):
-                        print(f"[BlockStorage.store_block] ⚠️ WARNING: Invalid TX ID for transaction. Skipping.")
-                        continue
-
-                    self.tx_storage.store_transaction(
-                        tx_id=tx_id,
-                        block_hash=block.mined_hash,
-                        tx_data=tx_dict,
-                        outputs=outputs,
-                        timestamp=block.timestamp,
-                        tx_signature=getattr(tx, "tx_signature", b""),
-                        falcon_signature=getattr(tx, "falcon_signature", b"")
-                    )
-                    print(f"[BlockStorage.store_block] ✅ Indexed transaction {tx_id}.")
-                except Exception as tx_err:
-                    print(f"[BlockStorage.store_block] ⚠️ TX indexing failed for {tx_id}: {tx_err}")
-                    continue
-
+            # 🧠 Store block metadata
             if not self.store_block_metadata(block):
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Failed to store metadata for block {block.index} in block_metadata.lmdb.")
+                print(f"[BlockStorage.store_block] ⚠️ WARNING: Failed to store metadata for Block {block.index}.")
+                print("[BlockStorage.store_block] 🔁 Attempting fallback to rebuild metadata from full block store...")
+                try:
+                    fallback_block = self.get_block_by_height(block.index)
+                    if fallback_block and self.store_block_metadata(fallback_block):
+                        print(f"[BlockStorage.store_block] ✅ Fallback: Metadata restored for Block {block.index}")
+                    else:
+                        print(f"[BlockStorage.store_block] ❌ Fallback failed: Metadata not restored for Block {block.index}")
+                except Exception as rebuild_e:
+                    print(f"[BlockStorage.store_block] ❌ Fallback exception during metadata restore: {rebuild_e}")
 
+            # 🔁 Invalidate supply cache
             with self.block_metadata_db.env.begin(write=True) as txn:
                 txn.delete(b"total_mined_supply")
-            print(f"[BlockStorage.store_block] ✅ Cache invalidated for total supply.")
 
             print(f"[BlockStorage.store_block] ✅ SUCCESS: Block {block.index} stored with hash {block.hash}")
             return True
 
         except Exception as e:
-            print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store Block {block.index}: {e}")
-            try:
-                print(f"[BlockStorage.store_block] ⚠️ Attempting fallback...")
-                fallback_diff = int(block.difficulty, 16) if isinstance(block.difficulty, str) else int(block.difficulty)
-                fallback_block_data = {
-                    "index": block.index,
-                    "previous_hash": getattr(block, "previous_hash", Constants.ZERO_HASH),
-                    "hash": getattr(block, "hash", Constants.ZERO_HASH),
-                    "mined_hash": getattr(block, "mined_hash", Constants.ZERO_HASH),
-                    "transactions": [],
-                    "metadata": getattr(block, "metadata", {}),
-                    "size": 0,
-                    "difficulty": DifficultyConverter.to_hex(fallback_diff)
-                }
-
-                fallback_block_json = json.dumps(fallback_block_data, separators=(',', ':'), ensure_ascii=False)
-                fallback_block_bytes = fallback_block_json.encode("utf-8")
-
-                with self.full_block_store.env.begin(write=True) as txn:
-                    txn.put(f"block:{block.index}".encode("utf-8"), fallback_block_bytes)
-                    txn.put(f"block_hash:{fallback_block_data['hash']}".encode("utf-8"), f"block:{block.index}".encode("utf-8"))
-                    txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
-
-                if not self.store_block_metadata(block):
-                    print(f"[BlockStorage.store_block] ⚠️ Fallback metadata failed for Block {block.index}")
-                else:
-                    print(f"[BlockStorage.store_block] ✅ FALLBACK: Block {block.index} stored minimally.")
-                return True
-            except Exception as fallback_error:
-                print(f"[BlockStorage.store_block] ❌ FALLBACK ERROR: {fallback_error}")
-                return False
+            print(f"[BlockStorage.store_block] ❌ ERROR: Block store exception: {e}")
+            return False
 
 
     def initialize_txindex(self):
@@ -761,55 +736,68 @@ class BlockStorage:
             include_headers (bool): If True, returns all block headers along with the block.
 
         Returns:
-            - If `include_headers` is False: The block at the specified height (or None if not found).
-            - If `include_headers` is True: A tuple containing the block and a list of all block headers.
+            - Block object or (Block, Headers) if found.
+            - None if not found in either store.
         """
         try:
-            print(f"[BlockStorage.get_block_by_height] INFO: Searching for block at height {height}...")
+            print(f"[BlockStorage.get_block_by_height] 🔍 INFO: Attempting to retrieve block at height {height}...")
 
             block = None
+            found_source = None
 
-            # ✅ Try metadata store first
+            # Step 1: Try metadata LMDB first
             if self.block_metadata_db:
-                with self.block_metadata_db.env.begin() as txn:
-                    metadata_bytes = txn.get(f"block_meta:{height}".encode("utf-8"))
+                try:
+                    with self.block_metadata_db.env.begin() as txn:
+                        meta_key = f"block_meta:{height}".encode("utf-8")
+                        metadata_bytes = txn.get(meta_key)
 
-                if metadata_bytes:
-                    try:
-                        block_dict = json.loads(metadata_bytes.decode("utf-8"))
-                        block = Block.from_dict(block_dict)
-                        print(f"[BlockStorage.get_block_by_height] ✅ SUCCESS: Retrieved block {height} from block metadata.")
-                    except Exception as e:
-                        print(f"[BlockStorage.get_block_by_height] ⚠️ WARNING: Failed to parse block metadata for height {height}: {e}")
+                    if metadata_bytes:
+                        try:
+                            block_dict = json.loads(metadata_bytes.decode("utf-8"))
+                            block = Block.from_dict(block_dict)
+                            found_source = "block metadata"
+                            print(f"[BlockStorage.get_block_by_height] ✅ SUCCESS: Block {height} loaded from metadata.")
+                        except Exception as parse_err:
+                            print(f"[BlockStorage.get_block_by_height] ⚠️ WARNING: Failed to parse metadata for block {height}: {parse_err}")
+                except Exception as meta_err:
+                    print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Metadata retrieval failed for block {height}: {meta_err}")
 
-            # 🔁 Fallback to full block store if block is still None
+            # Step 2: Fallback to full block store
             if not block and self.full_block_store:
-                with self.full_block_store.env.begin() as txn:
-                    block_data_bytes = txn.get(f"block:{height}".encode("utf-8"))
+                try:
+                    with self.full_block_store.env.begin() as txn:
+                        block_key = f"block:{height}".encode("utf-8")
+                        block_bytes = txn.get(block_key)
 
-                if block_data_bytes:
-                    try:
-                        full_block_dict = json.loads(block_data_bytes.decode("utf-8"))
-                        block = Block.from_dict(full_block_dict)
-                        print(f"[BlockStorage.get_block_by_height] ✅ FALLBACK: Retrieved block {height} from full block store.")
-                    except Exception as e:
-                        print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to parse full block data for height {height}: {e}")
-                else:
-                    print(f"[BlockStorage.get_block_by_height] ❌ ERROR: No block found at height {height} in full block store.")
+                    if block_bytes:
+                        try:
+                            block_dict = json.loads(block_bytes.decode("utf-8"))
+                            block = Block.from_dict(block_dict)
+                            found_source = "full block store"
+                            print(f"[BlockStorage.get_block_by_height] ✅ FALLBACK SUCCESS: Block {height} loaded from full block store.")
+                        except Exception as fallback_parse_err:
+                            print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to parse full block data for block {height}: {fallback_parse_err}")
+                    else:
+                        print(f"[BlockStorage.get_block_by_height] ❌ INFO: Block {height} not present in full block store.")
+                except Exception as fullstore_err:
+                    print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Full block store access failed for block {height}: {fullstore_err}")
 
-            # ✅ Return result
+            # Step 3: Final return
             if block:
                 if include_headers:
                     headers = self._get_all_block_headers()
                     return block, headers
+                print(f"[BlockStorage.get_block_by_height] 🎯 FOUND: Block {height} retrieved from {found_source}.")
                 return block
 
-            print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Block {height} not found in either metadata or full store.")
+            print(f"[BlockStorage.get_block_by_height] ❌ NOT FOUND: Block {height} missing from both metadata and full store.")
             return None
 
         except Exception as e:
-            print(f"[BlockStorage.get_block_by_height] ❌ ERROR: Failed to retrieve block by height {height}: {e}")
+            print(f"[BlockStorage.get_block_by_height] ❌ CRITICAL ERROR: Unexpected failure retrieving block {height}: {e}")
             return None
+
 
 
     def _get_all_block_headers(self) -> List[Dict]:
@@ -1125,7 +1113,9 @@ class BlockStorage:
 
     def get_latest_block(self, retries: int = 5, delay: float = 0.5) -> Optional[Block]:
         """
-        Retrieve the latest block from `full_block_chain.lmdb` with fallback if metadata is missing.
+        Retrieve the latest block from full_block_chain.lmdb using metadata.
+        If metadata is missing, falls back to full block store and regenerates metadata.
+        Prevents re-mining by ensuring mined_hash is present.
         """
         try:
             print("[BlockStorage.get_latest_block] INFO: Retrieving latest block from LMDB...")
@@ -1134,7 +1124,7 @@ class BlockStorage:
                 print("[BlockStorage.get_latest_block] ❌ ERROR: Full block store not initialized.")
                 return None
 
-            # Step 1: Fetch latest block index
+            # ✅ Step 1: Fetch latest block index
             with self.full_block_store.env.begin() as txn:
                 latest_block_index_bytes = txn.get(b"latest_block_index")
 
@@ -1147,9 +1137,10 @@ class BlockStorage:
 
             blockmeta_key = f"blockmeta:{latest_block_index}".encode("utf-8")
 
-            # Step 2: Try to retrieve block metadata
+            # ✅ Step 2: Attempt to retrieve metadata from block_metadata.lmdb
+            metadata = None
             for attempt in range(retries):
-                with self.full_block_store.env.begin() as txn:
+                with self.block_metadata_db.env.begin() as txn:
                     metadata_bytes = txn.get(blockmeta_key)
 
                 if metadata_bytes:
@@ -1166,34 +1157,22 @@ class BlockStorage:
                 print(f"[BlockStorage.get_latest_block] ❌ ERROR: No metadata found for Block {latest_block_index} after {retries} attempts.")
                 print(f"[BlockStorage.get_latest_block] ⚠️ FALLBACK: Attempting to reconstruct block from full block store...")
 
-                # Step 3: Fallback – try to get block by height and rebuild metadata
                 fallback_block = self.get_block_by_height(latest_block_index)
                 if fallback_block:
                     print(f"[BlockStorage.get_latest_block] ✅ FALLBACK: Retrieved block {latest_block_index} from full block store.")
 
-                    # ✅ Regenerate metadata and store it
-                    block_meta = {
-                        "index": fallback_block.index,
-                        "hash": fallback_block.hash,
-                        "timestamp": fallback_block.timestamp,
-                        "difficulty": fallback_block.difficulty,
-                        "previous_hash": fallback_block.previous_hash,
-                        "merkle_root": fallback_block.merkle_root
-                    }
-
-                    try:
-                        with self.full_block_store.env.begin(write=True) as txn:
-                            txn.put(blockmeta_key, json.dumps(block_meta).encode("utf-8"))
+                    # 🔄 Regenerate metadata using the official store function
+                    if self.store_block_metadata(fallback_block):
                         print(f"[BlockStorage.get_latest_block] ✅ Metadata reconstructed and stored for Block {latest_block_index}")
-                    except Exception as e:
-                        print(f"[BlockStorage.get_latest_block] ❌ ERROR: Failed to store fallback metadata: {e}")
+                    else:
+                        print(f"[BlockStorage.get_latest_block] ❌ ERROR: Failed to store fallback metadata for Block {latest_block_index}")
 
                     return fallback_block
                 else:
                     print(f"[BlockStorage.get_latest_block] ❌ ERROR: Could not retrieve block {latest_block_index} from fallback.")
                     return None
 
-            # Step 4: Load block hash from metadata
+            # ✅ Step 3: Retrieve full block via block_hash
             block_hash = metadata.get("hash")
             if not block_hash or len(block_hash) != 96:
                 print(f"[BlockStorage.get_latest_block] ❌ ERROR: Invalid hash in metadata for Block {latest_block_index}")
@@ -1217,6 +1196,11 @@ class BlockStorage:
             try:
                 block_dict = json.loads(full_block_bytes.decode("utf-8"))
                 block = Block.from_dict(block_dict)
+
+                # ✅ Ensure `mined_hash` is set correctly to avoid re-mining
+                if not getattr(block, "mined_hash", None):
+                    block.mined_hash = block_dict.get("hash", Constants.ZERO_HASH)
+
                 print(f"[BlockStorage.get_latest_block] ✅ SUCCESS: Retrieved Block {block.index} (Hash: {block.hash})")
                 return block
             except Exception as e:
@@ -1230,21 +1214,15 @@ class BlockStorage:
 
     def store_block_metadata(self, block) -> bool:
         """
-        Store lightweight block metadata in the `block_metadata.lmdb` database.
-
-        Args:
-            block: The block object containing metadata to store.
-
-        Returns:
-            bool: True if metadata was stored successfully, False otherwise.
+        Store lightweight block metadata in `block_metadata.lmdb`.
+        If this fails, fallback to full block store to reconstruct the block and try again.
         """
         try:
             block_height = getattr(block, "height", None) or getattr(block, "index", None)
             block_hash = getattr(block, "hash", None) or getattr(block, "mined_hash", None)
 
-            # ✅ Validate block height and hash
             if block_height is None or block_hash is None:
-                print(f"[store_block_metadata] ❌ ERROR: Missing block height or hash (height={block_height}, hash={block_hash}).")
+                print(f"[store_block_metadata] ❌ ERROR: Missing block height or hash.")
                 return False
             if not isinstance(block_height, int) or block_height < 0:
                 print(f"[store_block_metadata] ❌ ERROR: Invalid block height: {block_height}")
@@ -1253,14 +1231,10 @@ class BlockStorage:
                 print(f"[store_block_metadata] ❌ ERROR: Invalid block hash format: {block_hash}")
                 return False
 
-            # ✅ Convert difficulty to hex
             difficulty = getattr(block, "difficulty", None)
-            if isinstance(difficulty, int):
-                difficulty_hex = DifficultyConverter.to_hex(difficulty)
-            elif isinstance(difficulty, str):
-                difficulty_hex = difficulty
-            else:
-                difficulty_hex = DifficultyConverter.to_hex(0)
+            difficulty_hex = DifficultyConverter.to_hex(
+                int(difficulty, 16) if isinstance(difficulty, str) else difficulty or 0
+            )
 
             metadata = {
                 "index": block_height,
@@ -1277,19 +1251,24 @@ class BlockStorage:
             key = f"blockmeta:{block_height}".encode("utf-8")
             value = json.dumps(metadata, sort_keys=True).encode("utf-8")
 
-            # ✅ Write using LMDB transaction
             with self.block_metadata_db.env.begin(write=True) as txn:
                 txn.put(key, value)
 
-            print(f"[store_block_metadata] ✅ SUCCESS: Stored metadata for Block #{block_height} (Hash: {block_hash})")
+            print(f"[store_block_metadata] ✅ SUCCESS: Stored metadata for Block #{block_height}")
             return True
 
-        except json.JSONEncodeError as e:
-            print(f"[store_block_metadata] ❌ ERROR: Failed to serialize block metadata: {e}")
-            return False
         except Exception as e:
-            print(f"[store_block_metadata] ❌ ERROR: Unexpected failure while storing metadata: {e}")
-            return False
+            print(f"[store_block_metadata] ❌ ERROR: Metadata storage failed: {e}")
+            print("[store_block_metadata] 🔁 Attempting fallback from full block store...")
+            try:
+                fallback_block = self.get_block_by_height(getattr(block, "index", 0))
+                if fallback_block:
+                    return self.store_block_metadata(fallback_block)
+                print("[store_block_metadata] ❌ Fallback failed: Block not found in full block store.")
+                return False
+            except Exception as fallback_e:
+                print(f"[store_block_metadata] ❌ Fallback exception: {fallback_e}")
+                return False
 
 
 
@@ -1397,17 +1376,19 @@ class BlockStorage:
                 print("[BlockStorage.get_block_by_tx_id] ❌ ERROR: Required LMDB instances are not set.")
                 return None
 
-            # ✅ Attempt to retrieve block hash from txindex
             block_hash_bytes = None
+            key = f"tx:{tx_id}".encode("utf-8")
+
+            # ✅ Step 1: Try accessing the txindex
             try:
                 with self.txindex_db.env.begin() as txn:
-                    block_hash_bytes = txn.get(f"tx:{tx_id}".encode("utf-8"))
+                    block_hash_bytes = txn.get(key)
             except Exception as e:
                 print(f"[BlockStorage.get_block_by_tx_id] ⚠️ ERROR: Failed to access txindex DB: {e}. Retrying with reopen...")
                 try:
                     self.txindex_db.reopen()
                     with self.txindex_db.env.begin() as txn:
-                        block_hash_bytes = txn.get(f"tx:{tx_id}".encode("utf-8"))
+                        block_hash_bytes = txn.get(key)
                 except Exception as e2:
                     print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Retry failed for txindex DB: {e2}")
                     return None
@@ -1419,25 +1400,7 @@ class BlockStorage:
             block_hash = block_hash_bytes.decode("utf-8", errors="ignore")
             print(f"[BlockStorage.get_block_by_tx_id] INFO: Transaction {tx_id} maps to block hash {block_hash}")
 
-            # ✅ Attempt to retrieve block metadata
-            metadata_bytes = None
-            try:
-                with self.block_metadata_db.env.begin() as txn:
-                    metadata_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
-            except Exception as e:
-                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ ERROR: Metadata DB read failed: {e}. Retrying...")
-                try:
-                    self.block_metadata_db.reopen()
-                    with self.block_metadata_db.env.begin() as txn:
-                        metadata_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
-                except Exception as e2:
-                    print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Metadata retry failed: {e2}")
-                    return None
-
-            if not metadata_bytes:
-                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ WARNING: Metadata not found for block hash {block_hash}. Trying full block fallback...")
-
-            # ✅ Try retrieving full block data using the hash
+            # ✅ Step 2: Retrieve block data from full block store
             block_data_bytes = None
             try:
                 with self.full_block_store.env.begin() as txn:
@@ -1456,7 +1419,7 @@ class BlockStorage:
                 print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Full block data not found for hash {block_hash}.")
                 return None
 
-            # ✅ Try parsing JSON block
+            # ✅ Step 3: Parse block JSON and construct Block instance
             try:
                 block_dict = json.loads(block_data_bytes.decode("utf-8"))
                 block = Block.from_dict(block_dict)
@@ -1469,6 +1432,7 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.get_block_by_tx_id] ❌ FATAL ERROR: Unexpected failure for TX ID {tx_id}: {e}")
             return None
+
 
     def get_transaction_id(self, tx_label: str) -> Optional[str]:
         """

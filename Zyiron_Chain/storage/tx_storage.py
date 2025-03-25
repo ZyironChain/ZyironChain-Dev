@@ -6,7 +6,7 @@ import struct
 import time
 import hashlib
 from decimal import Decimal
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 import lmdb
 
@@ -95,6 +95,42 @@ class TxStorage:
         except Exception as e:
             print(f"[TxStorage] ❌ Error counting transactions: {e}")
             return 0
+
+
+
+
+
+    def get_transactions_by_block(self, block_hash: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve all transactions associated with a specific block hash.
+
+        Args:
+            block_hash (str): The hash of the block to retrieve transactions for.
+
+        Returns:
+            List of transaction dictionaries.
+        """
+        transactions = []
+        try:
+            prefix = f"block_tx:{block_hash}:".encode("utf-8")
+
+            with self.txindex_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    if key.startswith(prefix):
+                        try:
+                            tx_data = json.loads(value.decode("utf-8"))
+                            transactions.append(tx_data)
+                        except Exception as e:
+                            print(f"[TxStorage.get_transactions_by_block] ⚠️ Failed to decode tx: {e}")
+            print(f"[TxStorage.get_transactions_by_block] ✅ Retrieved {len(transactions)} transactions for block {block_hash[:12]}...")
+            return transactions
+
+        except Exception as e:
+            print(f"[TxStorage.get_transactions_by_block] ❌ ERROR: Could not retrieve transactions for block {block_hash}: {e}")
+            return []
+
+
 
 
 
