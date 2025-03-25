@@ -69,6 +69,14 @@ class TxStorage:
             raise
 
 
+    def reopen(self):
+        if not self.env:
+            self._open_env()
+        else:
+            try:
+                self.env.stat()
+            except Exception:
+                self._open_env()
 
 
     def get_transaction_count(self) -> int:
@@ -77,17 +85,16 @@ class TxStorage:
         """
         try:
             count = 0
-            with self.env.begin(db=self.db, write=False) as txn:
+            with self.txindex_db.env.begin(write=False) as txn:
                 cursor = txn.cursor()
                 for key, _ in cursor:
-                    if key.startswith(b"tx:"):
+                    if key.startswith(b"block_tx:"):
                         count += 1
             print(f"[TxStorage] ✅ Transaction count: {count}")
             return count
         except Exception as e:
             print(f"[TxStorage] ❌ Error counting transactions: {e}")
             return 0
-
 
 
 
@@ -122,7 +129,7 @@ class TxStorage:
             tx_type = tx_type_enum.name if hasattr(tx_type_enum, "name") else str(tx_type_enum)
             print(f"[TxStorage.store_transaction] INFO: Detected transaction type: {tx_type}")
 
-            # Skip fee calculation for CoinbaseTx
+            # Fee calculation
             if tx_type == "COINBASE":
                 tax_fee = miner_fee = Decimal("0.00")
             else:
@@ -144,14 +151,17 @@ class TxStorage:
                     return
 
             # Store Falcon Signature Hash
-            txindex_path = Constants.get_db_path("txindex")
-            hashed_signature = store_transaction_signature(
-                tx_id=tx_id.encode(),
-                falcon_signature=falcon_signature,
-                txindex_path=txindex_path
-            )
+            try:
+                txindex_path = Constants.get_db_path("txindex")
+                hashed_signature = store_transaction_signature(
+                    tx_id=tx_id.encode(),
+                    falcon_signature=falcon_signature,
+                    txindex_path=txindex_path
+                )
+            except Exception as sig_error:
+                print(f"[TxStorage.store_transaction] WARNING: Failed to hash/store Falcon signature: {sig_error}")
+                hashed_signature = b"\x00" * 48  # Fallback empty hash
 
-            # Final transaction data to store
             transaction_data = {
                 "tx_id": tx_id,
                 "block_hash": block_hash,
@@ -164,14 +174,26 @@ class TxStorage:
                 "tx_signature_hash": hashed_signature.hex()
             }
 
-            # Store in LMDB
-            with self.txindex_db.env.begin(write=True) as txn:
-                txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
+            try:
+                with self.txindex_db.env.begin(write=True) as txn:
+                    txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
+                print(f"[TxStorage.store_transaction] ✅ SUCCESS: Stored transaction {tx_id}.")
+            except Exception as lmdb_error:
+                print(f"[TxStorage.store_transaction] ⚠️ LMDB write failed: {lmdb_error}")
+                print(f"[TxStorage.store_transaction] ⚠️ Attempting to reopen LMDB and retry...")
 
-            print(f"[TxStorage.store_transaction] ✅ SUCCESS: Stored transaction {tx_id}.")
+                # Reopen and retry once
+                try:
+                    if hasattr(self.txindex_db, "reopen"):
+                        self.txindex_db.reopen()
+                    with self.txindex_db.env.begin(write=True) as txn:
+                        txn.put(f"block_tx:{tx_id}".encode(), json.dumps(transaction_data).encode())
+                    print(f"[TxStorage.store_transaction] ✅ SUCCESS after retry: Stored transaction {tx_id}.")
+                except Exception as retry_error:
+                    print(f"[TxStorage.store_transaction] ❌ FINAL ERROR: Retry failed: {retry_error}")
 
         except Exception as e:
-            print(f"[TxStorage.store_transaction] EXCEPTION: {e}")
+            print(f"[TxStorage.store_transaction] ❌ EXCEPTION: {e}")
 
 
     def _detect_transaction_type(self, tx: Union[Transaction, dict]) -> TransactionType:

@@ -40,25 +40,29 @@ class BlockStorage:
       - Ensure thread safety with locks.
     """
 
-    def __init__(self, tx_storage: TxStorage, key_manager: KeyManager):
+
+
+    def __init__(self, tx_storage: TxStorage, key_manager: KeyManager, utxo_storage=None):
         """
         Initializes BlockStorage:
         - Uses shared LMDB instances for block metadata, transaction index, and full block storage.
-        - Manages transaction storage and key manager references.
+        - Manages transaction storage, UTXO storage, and key manager references.
         - Ensures thread safety with locks.
         - Initializes LMDB file rollover handling.
         """
         try:
             print("[BlockStorage.__init__] INFO: Initializing BlockStorage with LMDB full block storage...")
 
-            # ✅ Ensure `tx_storage` and `key_manager` are provided
+            # ✅ Validate required dependencies
             if not tx_storage:
                 raise ValueError("[BlockStorage.__init__] ❌ ERROR: `tx_storage` instance is required.")
             if not key_manager:
                 raise ValueError("[BlockStorage.__init__] ❌ ERROR: `key_manager` instance is required.")
 
+            # ✅ Store core dependencies
             self.tx_storage = tx_storage
             self.key_manager = key_manager
+            self.utxo_storage = utxo_storage  # ✅ Inject UTXO storage if provided
             self.write_lock = Lock()
 
             # ✅ Step 1: Initialize LMDB Databases
@@ -89,6 +93,7 @@ class BlockStorage:
         except Exception as e:
             print(f"[BlockStorage.__init__] ❌ ERROR: Initialization failed: {e}")
             raise
+
 
     def _set_latest_block_file(self):
         """
@@ -1379,68 +1384,90 @@ class BlockStorage:
     def get_block_by_tx_id(self, tx_id: str) -> Optional[Block]:
         """
         Retrieve a block using a transaction ID from the `txindex.lmdb` database.
-        - Uses shared LMDB instances for efficient retrieval.
-        - Ensures proper validation of block metadata and transaction ID.
+        Includes full fallback logic and auto-recovery from LMDB errors.
 
         :param tx_id: Transaction ID to look up.
-        :return: The block containing the transaction, or None if not found.
+        :return: The Block instance containing the transaction, or None.
         """
         try:
             print(f"[BlockStorage.get_block_by_tx_id] INFO: Searching for block containing transaction {tx_id}...")
 
-            # ✅ **Ensure Shared LMDB Instances Are Used**
+            # ✅ Ensure all LMDB instances are initialized
             if not self.txindex_db or not self.block_metadata_db or not self.full_block_store:
-                print("[BlockStorage.get_block_by_tx_id] ERROR: LMDB instances are not set. Cannot retrieve block.")
+                print("[BlockStorage.get_block_by_tx_id] ❌ ERROR: Required LMDB instances are not set.")
                 return None
 
-            # ✅ **Retrieve Block Hash Associated with Transaction ID**
-            with self.txindex_db.env.begin() as txn:
-                block_hash_bytes = txn.get(f"tx:{tx_id}".encode("utf-8"))
+            # ✅ Attempt to retrieve block hash from txindex
+            block_hash_bytes = None
+            try:
+                with self.txindex_db.env.begin() as txn:
+                    block_hash_bytes = txn.get(f"tx:{tx_id}".encode("utf-8"))
+            except Exception as e:
+                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ ERROR: Failed to access txindex DB: {e}. Retrying with reopen...")
+                try:
+                    self.txindex_db.reopen()
+                    with self.txindex_db.env.begin() as txn:
+                        block_hash_bytes = txn.get(f"tx:{tx_id}".encode("utf-8"))
+                except Exception as e2:
+                    print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Retry failed for txindex DB: {e2}")
+                    return None
 
             if not block_hash_bytes:
-                print(f"[BlockStorage.get_block_by_tx_id] WARNING: No block found for transaction {tx_id}.")
+                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ WARNING: No block found for transaction {tx_id}.")
                 return None
 
-            block_hash = block_hash_bytes.decode("utf-8")
-            print(f"[BlockStorage.get_block_by_tx_id] INFO: Transaction {tx_id} found in block {block_hash}.")
+            block_hash = block_hash_bytes.decode("utf-8", errors="ignore")
+            print(f"[BlockStorage.get_block_by_tx_id] INFO: Transaction {tx_id} maps to block hash {block_hash}")
 
-            # ✅ **Retrieve Block Metadata Using Shared `block_metadata_db`**
-            with self.block_metadata_db.env.begin() as txn:
-                block_metadata_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
-
-            if not block_metadata_bytes:
-                print(f"[BlockStorage.get_block_by_tx_id] WARNING: Block metadata missing for hash {block_hash}.")
-                return None
-
+            # ✅ Attempt to retrieve block metadata
+            metadata_bytes = None
             try:
-                block_metadata = json.loads(block_metadata_bytes.decode("utf-8"))
-            except json.JSONDecodeError:
-                print(f"[BlockStorage.get_block_by_tx_id] ERROR: Failed to decode block metadata for hash {block_hash}.")
-                return None
+                with self.block_metadata_db.env.begin() as txn:
+                    metadata_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
+            except Exception as e:
+                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ ERROR: Metadata DB read failed: {e}. Retrying...")
+                try:
+                    self.block_metadata_db.reopen()
+                    with self.block_metadata_db.env.begin() as txn:
+                        metadata_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
+                except Exception as e2:
+                    print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Metadata retry failed: {e2}")
+                    return None
 
-            # ✅ **Ensure Block Metadata Contains Required Fields**
-            required_keys = {"index", "previous_hash", "merkle_root", "timestamp", "nonce", "difficulty", "hash"}
-            block_header = block_metadata.get("block_header", {})
+            if not metadata_bytes:
+                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ WARNING: Metadata not found for block hash {block_hash}. Trying full block fallback...")
 
-            if not isinstance(block_header, dict) or not required_keys.issubset(block_header.keys()):
-                print(f"[BlockStorage.get_block_by_tx_id] ERROR: Block metadata missing required fields: {block_header}")
-                return None
-
-            # ✅ **Retrieve Full Block Data from `full_block_chain.lmdb`**
-            with self.full_block_store.env.begin() as txn:
-                block_data_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
+            # ✅ Try retrieving full block data using the hash
+            block_data_bytes = None
+            try:
+                with self.full_block_store.env.begin() as txn:
+                    block_data_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
+            except Exception as e:
+                print(f"[BlockStorage.get_block_by_tx_id] ⚠️ ERROR: Full block store access failed: {e}. Reopening and retrying...")
+                try:
+                    self.full_block_store.reopen()
+                    with self.full_block_store.env.begin() as txn:
+                        block_data_bytes = txn.get(f"block:{block_hash}".encode("utf-8"))
+                except Exception as e2:
+                    print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Full block retry failed: {e2}")
+                    return None
 
             if not block_data_bytes:
-                print(f"[BlockStorage.get_block_by_tx_id] ERROR: Block {block_hash} not found in full block storage (full_block_chain.lmdb).")
+                print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Full block data not found for hash {block_hash}.")
                 return None
 
-            # ✅ **Deserialize Block from LMDB**
-            block = Block.from_dict(json.loads(block_data_bytes.decode("utf-8")))
-            print(f"[BlockStorage.get_block_by_tx_id] ✅ SUCCESS: Retrieved Block {block.index} containing transaction {tx_id}.")
-            return block
+            # ✅ Try parsing JSON block
+            try:
+                block_dict = json.loads(block_data_bytes.decode("utf-8"))
+                block = Block.from_dict(block_dict)
+                print(f"[BlockStorage.get_block_by_tx_id] ✅ SUCCESS: Retrieved Block #{block.index} from full block storage.")
+                return block
+            except Exception as e:
+                print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Failed to deserialize block {block_hash}: {e}")
+                return None
 
         except Exception as e:
-            print(f"[BlockStorage.get_block_by_tx_id] ❌ ERROR: Failed to retrieve block by transaction ID {tx_id}: {e}")
+            print(f"[BlockStorage.get_block_by_tx_id] ❌ FATAL ERROR: Unexpected failure for TX ID {tx_id}: {e}")
             return None
 
     def get_transaction_id(self, tx_label: str) -> Optional[str]:

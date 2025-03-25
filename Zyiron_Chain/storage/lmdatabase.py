@@ -72,6 +72,7 @@ class LMDBManager:
         self.max_readers = max_readers
         self.max_dbs = max_dbs
         self.writemap = writemap
+        self.path = self.db_path  # Store for future reference
 
         parent_dir = os.path.dirname(self.db_path)
         if parent_dir and parent_dir != self.db_path:
@@ -79,28 +80,32 @@ class LMDBManager:
                 os.makedirs(parent_dir, exist_ok=True)
                 print(f"[LMDBManager] Created database directory: {parent_dir}")
             except OSError as e:
-                print(f"[LMDBManager] ERROR: Failed to create directory {parent_dir}: {str(e)}")
+                print(f"[LMDBManager] ❌ ERROR: Failed to create directory {parent_dir}: {str(e)}")
                 raise
 
         if os.name == "nt":
             os.environ["LMDB_USE_WINDOWS_MUTEX"] = "1"
 
-        # ✅ Check for already existing environment and reopen if closed
+        # ✅ Check for reused environment or open new one
         existing_env = LMDBManager._environments.get(self.db_path)
         if existing_env:
             try:
-                with existing_env.begin():  # Try to begin txn to check if open
+                with existing_env.begin():  # Try to open a read txn
                     self.env = existing_env
                     print(f"[LMDBManager] Reused existing LMDB environment at {self.db_path}")
-            except lmdb.Error:
-                print(f"[LMDBManager] WARNING: Existing LMDB environment at {self.db_path} is closed or invalid. Reopening...")
-                del LMDBManager._environments[self.db_path]
+            except lmdb.Error as reuse_error:
+                print(f"[LMDBManager] ⚠️ WARNING: Existing LMDB env at {self.db_path} is invalid. Reopening... ({reuse_error})")
+                try:
+                    del LMDBManager._environments[self.db_path]
+                except Exception:
+                    pass
                 self.env = self._open_env()
         else:
             self.env = self._open_env()
 
         LMDBManager._environments[self.db_path] = self.env
 
+        # ✅ Initialize DB handles with fallback
         try:
             with self.env.begin(write=True) as txn:
                 self.mempool_db = self.env.open_db(b"mempool", txn=txn)
@@ -108,30 +113,19 @@ class LMDBManager:
                 self.transactions_db = self.env.open_db(b"transactions", txn=txn)
                 self.metadata_db = self.env.open_db(b"metadata", txn=txn)
 
-            print("[LMDBManager] Database handles initialized successfully.")
+            print("[LMDBManager] ✅ Database handles initialized successfully.")
         except lmdb.Error as e:
-            print(f"[LMDBManager] ERROR: Database initialization failed: {str(e)}")
+            print(f"[LMDBManager] ❌ ERROR: Database handle initialization failed: {str(e)}")
             self.close()
             raise
 
-        self._verify_capacity()
+        # ✅ Perform capacity verification
+        try:
+            self._verify_capacity()
+            print("[LMDBManager] INFO: Capacity check completed.")
+        except Exception as e:
+            print(f"[LMDBManager] ⚠️ WARNING: Capacity check failed: {e}")
 
-
-    def reopen(self):
-        """Reopen the LMDB environment."""
-        self.close()
-        self.env = lmdb.open(
-            path=self.db_path,
-            map_size=Constants.LMDB_MAP_SIZE,
-            max_readers=self.max_readers,
-            max_dbs=self.max_dbs,
-            writemap=self.writemap,
-            create=True,
-            readahead=False,
-            meminit=False
-        )
-        LMDBManager._environments[self.db_path] = self.env
-        print(f"[LMDBManager] Reopened LMDB environment at {self.db_path}")
 
     def _verify_capacity(self):
         """
@@ -509,108 +503,159 @@ class LMDBManager:
 
 
     def put(self, key: Union[str, bytes, bytearray, memoryview], value: dict, db=None) -> bool:
-        db_handle = db or self.blocks_db
+        """
+        Store a JSON-serializable value in LMDB under the given key.
 
-        # Normalize key
-        if isinstance(key, str):
-            key_bytes = key.encode("utf-8")
-        elif isinstance(key, (bytes, bytearray)):
-            key_bytes = bytes(key)
-        elif isinstance(key, memoryview):
-            try:
-                key_bytes = key.tobytes()
-            except Exception as e:
-                print(f"[LMDBManager] ❌ ERROR: Failed to convert memoryview to bytes: {e}")
-                return False
-        else:
-            print(f"[LMDBManager] ❌ ERROR: Invalid key type: {type(key)}")
-            return False
+        Args:
+            key: Key to store the value under.
+            value: Dictionary to store.
+            db: Optional LMDB DB handle. Defaults to self.blocks_db.
 
+        Returns:
+            bool: True if successful, False otherwise.
+        """
+        db_handle = db or getattr(self, "blocks_db", None)
+
+        # ✅ Normalize key
         try:
-            value_json = json.dumps(value).encode("utf-8")
+            if isinstance(key, str):
+                key_bytes = key.encode("utf-8")
+            elif isinstance(key, (bytes, bytearray)):
+                key_bytes = bytes(key)
+            elif isinstance(key, memoryview):
+                key_bytes = key.tobytes()
+            else:
+                print(f"[LMDBManager.put] ❌ ERROR: Invalid key type: {type(key)}")
+                return False
         except Exception as e:
-            print(f"[LMDBManager] ❌ ERROR: Failed to serialize value: {e}")
+            print(f"[LMDBManager.put] ❌ ERROR: Failed to normalize key: {e}")
             return False
 
+        # ✅ Serialize value to JSON
+        try:
+            value_json = json.dumps(value, sort_keys=True).encode("utf-8")
+        except Exception as e:
+            print(f"[LMDBManager.put] ❌ ERROR: Failed to serialize value: {e}")
+            return False
+
+        # 🔁 Auto-reopen if env is stale
+        if not self.env or not getattr(self.env, "_handle", None):
+            print("[LMDBManager.put] ⚠️ LMDB environment appears closed. Reopening...")
+            try:
+                self.reopen()
+            except Exception as reopen_error:
+                print(f"[LMDBManager.put] ❌ ERROR: Failed to reopen LMDB before put: {reopen_error}")
+                return False
+
+        # 🚀 Attempt write transaction
         try:
             with self.env.begin(write=True, db=db_handle) as txn:
                 txn.put(key_bytes, value_json)
-            print(f"[LMDBManager] ✅ SUCCESS: Stored key: {key_bytes[:50]}")
+            print(f"[LMDBManager.put] ✅ SUCCESS: Stored key: {key_bytes[:50]}")
             return True
         except lmdb.Error as e:
-            print(f"[LMDBManager] ❌ ERROR: LMDB error during put(): {e}")
-            print("[LMDBManager] ⚠️ Attempting to reopen environment...")
-            self._open_env()
-            # Retry once
+            print(f"[LMDBManager.put] ❌ ERROR: LMDB write error: {e}")
+            print("[LMDBManager.put] ⚠️ Attempting to reopen environment and retry...")
+
             try:
+                self.reopen()
                 with self.env.begin(write=True, db=db_handle) as txn:
                     txn.put(key_bytes, value_json)
-                print(f"[LMDBManager] ✅ SUCCESS: Retried and stored key: {key_bytes[:50]}")
+                print(f"[LMDBManager.put] ✅ SUCCESS: Retried and stored key: {key_bytes[:50]}")
                 return True
             except Exception as retry_e:
-                print(f"[LMDBManager] ❌ Retried put failed: {retry_e}")
+                print(f"[LMDBManager.put] ❌ Retried put failed: {retry_e}")
                 return False
+
 
 
     def get(self, key: Union[str, bytes, bytearray, memoryview], db=None):
         """
-        Retrieve a JSON-serialized value from LMDB by key.
+        Retrieve a JSON-serialized value from LMDB by key, with maximum fallback logic.
 
         Args:
             key (Union[str, bytes, bytearray, memoryview]): The key to retrieve.
-            db: The database handle to use (defaults to self.blocks_db).
+            db: Optional LMDB database handle. Defaults to self.blocks_db.
 
         Returns:
-            dict | None: Deserialized JSON data, or None if the key is invalid or data is corrupted.
+            dict | None: Deserialized JSON object if found and valid; otherwise None.
         """
-        db_handle = db or self.blocks_db
+        db_handle = db or getattr(self, "blocks_db", None)
 
         # ✅ Normalize key to bytes
-        if isinstance(key, str):
-            key_bytes = key.encode("utf-8")
-        elif isinstance(key, (bytes, bytearray)):
-            key_bytes = bytes(key)
-        elif isinstance(key, memoryview):
-            try:
+        try:
+            if isinstance(key, str):
+                key_bytes = key.encode("utf-8")
+            elif isinstance(key, (bytes, bytearray)):
+                key_bytes = bytes(key)
+            elif isinstance(key, memoryview):
                 key_bytes = key.tobytes()
-            except Exception as e:
-                print(f"[LMDB ERROR] ❌ Failed to convert memoryview to bytes: {e}")
+            else:
+                print(f"[LMDB.get] ❌ ERROR: Invalid key type: {type(key)}. Must be str, bytes, bytearray, or memoryview.")
                 return None
-        else:
-            print(f"[LMDB ERROR] ❌ Invalid key type: {type(key)}. Expected str, bytes, bytearray, or memoryview.")
+        except Exception as e:
+            print(f"[LMDB.get] ❌ ERROR: Failed to normalize key: {e}")
             return None
 
-        # ✅ For logging and fallback decoding
-        try:
-            key_str = key_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            key_str = str(key_bytes)
+        key_str = key_bytes.decode("utf-8", errors="ignore")
 
+        # 🔄 Auto-reopen LMDB if env is closed or stale
+        if not self.env or not getattr(self.env, "_handle", None):
+            print(f"[LMDB.get] ⚠️ LMDB environment appears closed. Reopening before transaction...")
+            try:
+                self.reopen()
+            except Exception as reopen_error:
+                print(f"[LMDB.get] ❌ ERROR: Failed to reopen LMDB before read: {reopen_error}")
+                return None
+
+        # 🛡️ Attempt to read from LMDB
         try:
             with self.env.begin(db=db_handle) as txn:
                 value = txn.get(key_bytes)
 
                 if value is None:
-                    print(f"[LMDB WARNING] ⚠️ Key not found: {key_str}")
+                    print(f"[LMDB.get] ⚠️ WARNING: Key not found: {key_str}")
                     return None
 
-                # ✅ Try UTF-8 JSON decode
+                # ✅ Try decoding as UTF-8 JSON
                 try:
                     return json.loads(value.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
-                    print(f"[LMDB WARNING] ⚠️ Non-UTF-8 or corrupted JSON for key {key_str}. Trying fallback conversions...")
+                    print(f"[LMDB.get] ⚠️ WARNING: UTF-8 decode failed for key: {key_str}. Trying fallback decodes...")
 
-                    # 🛠️ Attempt to repair via fallback decoding
+                    # 🧪 Try Latin-1 decode
                     try:
-                        fallback_str = value.decode("latin1")
-                        return json.loads(fallback_str)
+                        return json.loads(value.decode("latin1"))
                     except Exception as e2:
-                        print(f"[LMDB ERROR] ❌ Final fallback decode failed for key {key_str}: {e2}")
+                        print(f"[LMDB.get] ⚠️ Fallback Latin-1 decode failed for key {key_str}: {e2}")
+
+                        # 🧱 Last-ditch fallback: show partial bytes
+                        print(f"[LMDB.get] ❌ ERROR: All decode attempts failed for key {key_str}. Raw bytes preview: {value[:30]}...")
                         return None
 
         except Exception as e:
-            print(f"[LMDB ERROR] ❌ Exception while retrieving key {key_str}: {e}")
-            return None
+            error_text = str(e)
+
+            if "MDB_BAD_RSLOT" in error_text or "closed" in error_text.lower():
+                print(f"[LMDB.get] ⚠️ LMDB reader error: {error_text}. Attempting to reopen environment...")
+
+                try:
+                    self.reopen()
+                    with self.env.begin(db=db_handle) as txn:
+                        value = txn.get(key_bytes)
+                        if value is None:
+                            print(f"[LMDB.get] ⚠️ Retried: Key not found: {key_str}")
+                            return None
+                        return json.loads(value.decode("utf-8"))
+                except Exception as re_e:
+                    print(f"[LMDB.get] ❌ ERROR: Retry after reopen failed for key {key_str}: {re_e}")
+                    return None
+            else:
+                print(f"[LMDB.get] ❌ ERROR: Unexpected LMDB exception for key {key_str}: {e}")
+                return None
+
+
+
 
         
     def get_all_blocks(self) -> List[dict]:

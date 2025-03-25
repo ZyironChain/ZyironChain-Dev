@@ -6,7 +6,7 @@ import struct
 import hashlib
 import threading
 from decimal import Decimal
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Tuple, Union
 
 import lmdb
 
@@ -339,7 +339,6 @@ class UTXOStorage:
 
 
 
-
     def get_utxo(self, tx_id: str, output_index: int) -> Optional[Dict]:
         """
         Retrieve a UTXO from LMDB.
@@ -353,33 +352,98 @@ class UTXOStorage:
             Optional[Dict]: UTXO data if found, otherwise None.
         """
         try:
+            # ✅ Validate tx_id and output_index types
+            if not isinstance(tx_id, str) or len(tx_id) != 96:
+                raise ValueError(f"[UTXOStorage.get_utxo] ❌ Invalid tx_id: {tx_id}")
+            if not isinstance(output_index, int) or output_index < 0:
+                raise ValueError(f"[UTXOStorage.get_utxo] ❌ Invalid output_index: {output_index}")
+
             utxo_key = f"utxo:{tx_id}:{output_index}"
 
-            # ✅ Check Cache First
+            # ✅ Check in-memory cache
             if utxo_key in self._cache:
-                print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {utxo_key} from cache.")
+                print(f"[UTXOStorage.get_utxo] ✅ Retrieved {utxo_key} from cache.")
                 return self._cache[utxo_key]
 
-            # ✅ Use Lock for Thread Safety
+            # ✅ Thread-safe access to LMDB
             with self._db_lock:
-                # ✅ Retrieve from LMDB
                 with self.utxo_db.env.begin(write=False) as txn:
-                    utxo_data = txn.get(utxo_key.encode("utf-8"))
-
-                    if not utxo_data:
-                        print(f"[UTXOStorage.get_utxo] WARNING: UTXO {utxo_key} not found.")
+                    raw_value = txn.get(utxo_key.encode("utf-8"))
+                    if not raw_value:
+                        print(f"[UTXOStorage.get_utxo] ⚠️ UTXO {utxo_key} not found in LMDB.")
                         return None
 
-                    # ✅ Parse JSON Data
-                    utxo_entry = json.loads(utxo_data.decode("utf-8"))
-                    self._cache[utxo_key] = utxo_entry  # Cache the retrieved UTXO
-
-                    print(f"[UTXOStorage.get_utxo] INFO: Retrieved UTXO {utxo_key} from storage and cached it.")
-                    return utxo_entry
+                    try:
+                        utxo_dict = json.loads(raw_value.decode("utf-8"))
+                        self._cache[utxo_key] = utxo_dict  # Cache it
+                        print(f"[UTXOStorage.get_utxo] ✅ Retrieved {utxo_key} from LMDB and cached.")
+                        return utxo_dict
+                    except json.JSONDecodeError as json_err:
+                        print(f"[UTXOStorage.get_utxo] ❌ JSON decode error for {utxo_key}: {json_err}")
+                        return None
 
         except Exception as e:
-            print(f"[UTXOStorage.get_utxo] ERROR: UTXO retrieval failed for {tx_id}:{output_index}: {e}")
+            print(f"[UTXOStorage.get_utxo] ❌ ERROR: Failed to retrieve {tx_id}:{output_index}: {e}")
             return None
+
+
+
+    def get(self, tx_out_id: str) -> Optional[Dict]:
+        """
+        Retrieve a UTXO from LMDB using the combined tx_out_id format: 'tx_id:output_index'.
+
+        :param tx_out_id: UTXO ID in the format 'tx_id:output_index'.
+        :return: Dictionary containing the UTXO data or None if not found.
+        """
+        try:
+            if not isinstance(tx_out_id, str) or ":" not in tx_out_id:
+                print(f"[UTXOStorage.get] ❌ ERROR: Invalid tx_out_id format: {tx_out_id}")
+                return None
+
+            tx_id, output_index_str = tx_out_id.split(":")
+            output_index = int(output_index_str)
+
+            print(f"[UTXOStorage.get] 🔍 Parsed tx_out_id: tx_id={tx_id}, output_index={output_index}")
+            return self.get_utxo(tx_id, output_index)
+
+        except ValueError:
+            print(f"[UTXOStorage.get] ❌ ERROR: output_index must be an integer in tx_out_id: {tx_out_id}")
+            return None
+
+        except Exception as e:
+            print(f"[UTXOStorage.get] ❌ ERROR: Failed to retrieve UTXO {tx_out_id}: {e}")
+            return None
+
+
+    def get_all_utxos(self) -> List[dict]:
+        """
+        Retrieve all UTXOs stored in LMDB.
+        Useful for dashboard visualization or indexing.
+        """
+        results = []
+        try:
+            with self.utxo_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key_bytes, value_bytes in cursor:
+                    key_str = key_bytes.decode("utf-8", errors="ignore")
+                    if not key_str.startswith("utxo:"):
+                        continue
+
+                    try:
+                        data = value_bytes.tobytes() if isinstance(value_bytes, memoryview) else value_bytes
+                        utxo_dict = json.loads(data.decode("utf-8"))
+                        results.append(utxo_dict)
+                    except Exception as decode_err:
+                        print(f"[get_all_utxos] ⚠️ Skipping invalid entry {key_str}: {decode_err}")
+                        continue
+
+            print(f"[get_all_utxos] ✅ Retrieved {len(results)} UTXOs from LMDB.")
+            return results
+
+        except Exception as e:
+            print(f"[get_all_utxos] ❌ ERROR: Failed to retrieve UTXOs: {e}")
+            return []
+
 
     def update_utxos(self, block) -> None:
         """
@@ -836,8 +900,10 @@ class UTXOStorage:
         self.block_storage = block_storage
         print("[UTXOStorage] ✅ Fallback block storage enabled.")
 
+
+
     @staticmethod
-    def parse_tx_out_id(tx_out_id: str) -> (str, int):
+    def parse_tx_out_id(tx_out_id: str) -> Tuple[str, int]:
         """
         Split tx_out_id (e.g., "abc123...:1") into tx_id and output_index
         """

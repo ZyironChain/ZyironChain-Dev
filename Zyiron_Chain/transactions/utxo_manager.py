@@ -45,34 +45,42 @@ class UTXOManager:
         """
         Retrieve a UTXO from the local cache or UTXOStorage.
         Converts raw dictionary data into a TransactionOut instance.
-        
-        :param tx_out_id: The UTXO ID to retrieve.
+
+        :param tx_out_id: The UTXO ID to retrieve (format: "<tx_id>:<output_index>").
         :return: A TransactionOut instance if found, else None.
         """
-        if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print("[UTXOManager ERROR] ❌ Invalid tx_out_id. Must be a non-empty string.")
+        if not isinstance(tx_out_id, str) or ":" not in tx_out_id:
+            print(f"[UTXOManager ERROR] ❌ Invalid tx_out_id format: {tx_out_id}. Expected 'tx_id:output_index'.")
             return None
 
-        # ✅ Check local cache first for quick lookup
+        try:
+            tx_id, output_index = tx_out_id.strip().split(":")
+            output_index = int(output_index)
+        except Exception as e:
+            print(f"[UTXOManager ERROR] ❌ Failed to parse tx_out_id '{tx_out_id}': {e}")
+            return None
+
+        # ✅ Check local cache first
         if tx_out_id in self._cache:
             print(f"[UTXOManager INFO] ✅ Found {tx_out_id} in cache for peer {self.peer_id}.")
             return TransactionOut.from_dict(self._cache[tx_out_id])
 
-        # ✅ Retrieve from UTXOStorage if not found in cache
-        utxo_data = self.utxo_storage.get(tx_out_id)
+        # ✅ Fetch from UTXOStorage using parsed tx_id and output_index
+        utxo_data = self.utxo_storage.get_utxo(tx_id, output_index)
         if not utxo_data:
             print(f"[UTXOManager WARN] ⚠️ UTXO {tx_out_id} not found in storage for peer {self.peer_id}.")
             return None
 
-        # ✅ Validate UTXO structure before caching
+        # ✅ Validate and cache
         try:
             utxo = TransactionOut.from_dict(utxo_data)
-            self._cache[tx_out_id] = utxo_data  # Cache validated UTXO
+            self._cache[tx_out_id] = utxo_data
             print(f"[UTXOManager INFO] ✅ Retrieved and cached UTXO {tx_out_id} for peer {self.peer_id}.")
             return utxo
         except Exception as e:
-            print(f"[UTXOManager ERROR] ❌ Failed to parse UTXO {tx_out_id}: {e}")
+            print(f"[UTXOManager ERROR] ❌ Failed to convert UTXO {tx_out_id}: {e}")
             return None
+
 
 
     def register_utxo(self, tx_out: TransactionOut):

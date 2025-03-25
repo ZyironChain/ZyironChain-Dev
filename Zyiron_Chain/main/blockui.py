@@ -117,8 +117,12 @@ class BlockchainUI:
             self.tx_storage = TxStorage(fee_model=self.fee_model)
 
             # 4. Initialize Block Storage
-            self.block_storage = BlockStorage(tx_storage=self.tx_storage, key_manager=self.key_manager)
-
+           # 4. Initialize Block Storage
+            self.block_storage = BlockStorage(
+                tx_storage=self.tx_storage,
+                key_manager=self.key_manager,
+                utxo_storage=None  # Will set this later after UTXOManager is ready
+            )
             # 5. Initialize UTXOStorage (with fallback support)
             self.utxo_storage = UTXOStorage(
                 utxo_manager=None,  # Placeholder for now
@@ -129,7 +133,7 @@ class BlockchainUI:
             self.utxo_manager = UTXOManager(self.utxo_storage)
 
             # 7. Inject the UTXOManager back into UTXOStorage
-            self.utxo_storage.utxo_manager = self.utxo_manager
+            self.block_storage.utxo_storage = self.utxo_storage
 
             # 8. Initialize Transaction Manager
             self.transaction_manager = TransactionManager(
@@ -976,30 +980,35 @@ class BlockchainUI:
             # Clear existing items
             for item in self.pending_tx_tree.get_children():
                 self.pending_tx_tree.delete(item)
-            
-            # Get pending transactions
-            pending_tx = self.mempool_storage.get_pending_transactions()
-            
-            if pending_tx:
-                for tx in pending_tx:
-                    if hasattr(tx, 'to_dict'):
-                        tx_data = tx.to_dict()
-                    else:
-                        tx_data = tx
-                    
-                    self.pending_tx_tree.insert('', 'end', values=(
-                        tx_data.get('tx_id', ''),
-                        tx_data.get('tx_type', ''),
-                        tx_data.get('amount', ''),
-                        tx_data.get('fee', '')
-                    ))
-                
-                self.log_message(f"[Pending TX] Loaded {len(pending_tx)} pending transactions")
-            else:
+
+            # Get pending transactions from MempoolStorage
+            pending_tx_list = self.mempool_storage.get_pending_transactions()
+
+            if not pending_tx_list:
                 self.log_message("[Pending TX] No pending transactions")
-                
+                return
+
+            count = 0
+            for tx in pending_tx_list:
+                try:
+                    # Convert to dict safely
+                    tx_data = tx.to_dict() if hasattr(tx, "to_dict") else tx
+                    tx_id = tx_data.get("tx_id", "")
+                    tx_type = tx_data.get("tx_type") or tx_data.get("type", "UNKNOWN")
+                    amount = str(tx_data.get("amount", "0"))
+                    fee = str(tx_data.get("fee", "0"))
+
+                    # Insert into tree
+                    self.pending_tx_tree.insert('', 'end', values=(tx_id, tx_type, f"{amount} ZYC", f"{fee} ZYC"))
+                    count += 1
+                except Exception as tx_error:
+                    self.log_message(f"[Pending TX] ⚠️ Skipped malformed transaction: {tx_error}")
+
+            self.log_message(f"[Pending TX] ✅ Loaded {count} pending transactions")
+
         except Exception as e:
             self.log_message(f"[ERROR] Failed to refresh pending transactions: {e}")
+
 
     def refresh_wallet(self):
         """Refresh the wallet balance and UTXOs"""
@@ -1372,17 +1381,42 @@ class PaymentProcessor:
         return selected, total
 
     def _route_to_mempool(self, tx):
-        """Route transaction to the correct mempool"""
+        """Route transaction to the correct mempool based on type and prefix."""
         try:
-            if tx.tx_type.upper().startswith("S"):
-                return self.smart_mempool.add_transaction(tx)
-            elif tx.tx_type.upper().startswith("I"):
-                return False  # Instant not handled yet
+            # ✅ Get current chain height from BlockStorage or fallback
+            current_height = 0
+            if hasattr(self.tx_storage, "block_storage") and self.tx_storage.block_storage:
+                current_height = self.tx_storage.block_storage.get_latest_block_height()
+            elif hasattr(self.standard_mempool, "block_storage") and self.standard_mempool.block_storage:
+                current_height = self.standard_mempool.block_storage.get_latest_block_height()
+
+            print(f"[PaymentProcessorUI] INFO: Routing TX {tx.tx_id} | Type: {tx.tx_type} | Chain Height: {current_height}")
+
+            # ✅ Determine the transaction type from its prefix
+            tx_type_detected = "STANDARD"  # default fallback
+            for tx_type, info in Constants.TRANSACTION_MEMPOOL_MAP.items():
+                for prefix in info["prefixes"]:
+                    if tx.tx_id.startswith(prefix):
+                        tx_type_detected = tx_type
+                        break
+                if tx_type_detected != "STANDARD":
+                    break
+
+            print(f"[PaymentProcessorUI] ✅ Detected TX Type: {tx_type_detected}")
+
+            # ✅ Route to appropriate mempool
+            if tx_type_detected == "SMART":
+                return self.smart_mempool.add_transaction(tx, current_block_height=current_height)
+            elif tx_type_detected == "INSTANT":
+                print("[PaymentProcessorUI] ⚠️ Instant payments not yet supported.")
+                return False
             else:
                 return self.standard_mempool.add_transaction(tx)
+
         except Exception as e:
             print(f"[PaymentProcessorUI] ❌ Error routing transaction to mempool: {e}")
             return False
+
 
 if __name__ == "__main__":
     root = tk.Tk()

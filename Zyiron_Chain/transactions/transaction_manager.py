@@ -229,100 +229,96 @@ class TransactionManager:
     def store_transaction_in_mempool(self, transaction: Transaction) -> bool:
         """
         Validates the transaction's type & network prefix, then adds it
-        to the appropriate mempool. Uses single SHA3-384 hashing for the tx_id check.
+        to the appropriate mempool using the defined mapping.
 
-        Additional Enhancements:
-        - ✅ Offloads full Falcon-512 signature to `txindex.lmdb` with SHA3-384 hashed storage.
-        - ✅ Stores only the hashed Falcon signature in `blockchain.lmdb`.
-        - ✅ Ensures proper transaction type handling and mempool allocation.
-        - ✅ Locks UTXOs to prevent double-spends.
+        Enhancements:
+        - ✅ Routes using Constants.TRANSACTION_MEMPOOL_MAP
+        - ✅ Verifies Falcon-512 signature before adding
+        - ✅ Stores signature hash and metadata
         """
         try:
-            print(f"[TransactionManager.store_transaction_in_mempool] INFO: Processing transaction {transaction.tx_id}...")
+            print(f"[TransactionManager.store_transaction_in_mempool] 🔄 Routing TX: {transaction.tx_id}...")
 
-            # ✅ **Ensure the transaction ID is correctly hashed using SHA3-384**
+            # ✅ Hash validation
             hashed_tx_id = hashlib.sha3_384(transaction.tx_id.encode()).hexdigest()
             if hashed_tx_id != transaction.tx_id:
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Transaction ID mismatch for {transaction.tx_id}.")
+                print(f"[TransactionManager.store_transaction_in_mempool] ❌ TXID hash mismatch.")
                 return False
 
-            # ✅ **Verify the transaction has a valid address prefix**
-            if not transaction.tx_id.startswith(Constants.ADDRESS_PREFIX):
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Invalid address prefix for {transaction.tx_id}. Expected: {Constants.ADDRESS_PREFIX}")
-                return False
+            # ✅ Verify prefix-based routing
+            matched_type = None
+            for tx_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+                if any(transaction.tx_id.startswith(prefix) for prefix in config["prefixes"]):
+                    matched_type = tx_type
+                    break
+            if not matched_type:
+                matched_type = "STANDARD"
 
-            # ✅ **Retrieve the correct transaction type**
-            tx_type = PaymentTypeManager().get_transaction_type(transaction.tx_id)
-            if not tx_type:
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Unable to determine transaction type for {transaction.tx_id}.")
-                return False
+            print(f"[TransactionManager.store_transaction_in_mempool] ✅ Mapped TX to type: {matched_type}")
 
-            # ✅ **Verify recipient's scriptPubKey is formatted correctly as bytes**
+            mempool_type = Constants.TRANSACTION_MEMPOOL_MAP[matched_type]["mempool"]
+
+            # ✅ Validate recipient output script types
             for output in transaction.outputs:
                 if isinstance(output.script_pub_key, str):
                     output.script_pub_key = output.script_pub_key.encode("utf-8")
                 elif not isinstance(output.script_pub_key, bytes):
-                    print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Invalid scriptPubKey format for {transaction.tx_id}.")
+                    print(f"[TransactionManager.store_transaction_in_mempool] ❌ Invalid script_pub_key format.")
                     return False
 
-            # ✅ **Check if the transaction's UTXOs are correctly locked**
+            # ✅ Check UTXO lock status
             for tx_in in transaction.inputs:
                 utxo = self.utxo_manager.get_utxo(tx_in.tx_out_id)
                 if not utxo:
-                    print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Missing UTXO {tx_in.tx_out_id}.")
+                    print(f"[TransactionManager.store_transaction_in_mempool] ❌ Missing UTXO {tx_in.tx_out_id}")
                     return False
-                if utxo["locked"]:
-                    print(f"[TransactionManager.store_transaction_in_mempool] ERROR: UTXO {tx_in.tx_out_id} is locked. Cannot process.")
+                if utxo.locked:
+                    print(f"[TransactionManager.store_transaction_in_mempool] ❌ UTXO {tx_in.tx_out_id} is locked.")
                     return False
 
-            # ✅ **Validate the transaction signature before broadcasting**
+            # ✅ Signature Verification
             if not transaction.verify_signature():
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Signature verification failed for transaction {transaction.tx_id}.")
+                print(f"[TransactionManager.store_transaction_in_mempool] ❌ Signature invalid for {transaction.tx_id}")
                 return False
 
-            # ✅ **Determine the correct mempool for the transaction type**
-            mempool_type = self.transaction_mempool_map.get(tx_type.name, {}).get("mempool", "StandardMempool")
-            chain_height = self._get_chain_height()
+            # ✅ Retrieve chain height for SmartMempool
+            current_block_height = self._get_chain_height()
 
-            # ✅ **Add the transaction to the correct mempool**
             if mempool_type == "SmartMempool":
-                success = self.smart_mempool.add_transaction(transaction, chain_height)
+                success = self.smart_mempool.add_transaction(transaction, current_block_height)
             else:
                 success = self.standard_mempool.add_transaction(transaction)
 
-            if success:
-                print(f"[TransactionManager.store_transaction_in_mempool] INFO: Transaction {hashed_tx_id} stored in {mempool_type}.")
-
-                # ✅ **Store Falcon-512 Signature in `txindex.lmdb`**
-                txindex_db_path = Constants.get_db_path("txindex")
-                falcon_signature_hash = store_transaction_signature(
-                    tx_id=transaction.tx_id.encode(),
-                    falcon_signature=transaction.falcon_signature,
-                    txindex_path=txindex_db_path
-                )
-
-                # ✅ **Store SHA3-384 hashed signature in `blockchain.lmdb`**
-                transaction.tx_signature_hash = falcon_signature_hash.hex()
-
-                # ✅ **Store transaction metadata offsets dynamically for efficient lookup**
-                metadata_offset = self.tx_storage.store_transaction(
-                    transaction.tx_id,
-                    json.dumps(transaction.to_dict(), sort_keys=True).encode("utf-8")
-                )
-
-                if metadata_offset is None:
-                    print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Failed to store metadata offsets for transaction {transaction.tx_id}.")
-                    return False
-
-                print(f"[TransactionManager.store_transaction_in_mempool] INFO: Transaction metadata stored at offset {metadata_offset}.")
-                return True
-            else:
-                print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Failed to store transaction {hashed_tx_id} in {mempool_type}.")
+            if not success:
+                print(f"[TransactionManager.store_transaction_in_mempool] ❌ Mempool rejected TX: {transaction.tx_id}")
                 return False
 
+            # ✅ Store Falcon-512 signature
+            txindex_db_path = Constants.get_db_path("txindex")
+            falcon_signature_hash = store_transaction_signature(
+                tx_id=transaction.tx_id.encode(),
+                falcon_signature=transaction.falcon_signature,
+                txindex_path=txindex_db_path
+            )
+            transaction.tx_signature_hash = falcon_signature_hash.hex()
+
+            # ✅ Store transaction metadata
+            metadata_offset = self.tx_storage.store_transaction(
+                transaction.tx_id,
+                json.dumps(transaction.to_dict(), sort_keys=True).encode("utf-8")
+            )
+
+            if metadata_offset is None:
+                print(f"[TransactionManager.store_transaction_in_mempool] ❌ Failed to index metadata.")
+                return False
+
+            print(f"[TransactionManager.store_transaction_in_mempool] ✅ Stored TX {transaction.tx_id} in {mempool_type} at offset {metadata_offset}")
+            return True
+
         except Exception as e:
-            print(f"[TransactionManager.store_transaction_in_mempool] ERROR: Unexpected error storing transaction {transaction.tx_id}: {e}")
+            print(f"[TransactionManager.store_transaction_in_mempool] ❌ Unexpected error: {e}")
             return False
+
 
 
     def select_transactions_for_block(self, max_block_size_mb: int = 10):

@@ -147,3 +147,33 @@ class OrphanBlocks:
         if not os.path.exists(path):
             os.makedirs(path)
             print(f"Created database directory: {path}")
+
+    def get_all_orphans(self) -> list:
+        """
+        Retrieve all orphaned blocks stored in orphan_blocks.lmdb.
+        Returns:
+            List[dict]: All orphan block headers or full blocks.
+        """
+        results = []
+        try:
+            with self.orphan_db.env.begin() as txn:
+                cursor = txn.cursor()
+                for key_bytes, value_bytes in cursor:
+                    key_str = key_bytes.decode("utf-8", errors="ignore")
+                    if not key_str.startswith("orphan:"):
+                        continue
+
+                    try:
+                        data = value_bytes.tobytes() if isinstance(value_bytes, memoryview) else value_bytes
+                        block = json.loads(data.decode("utf-8"))
+                        results.append(block)
+                    except Exception as decode_err:
+                        print(f"[OrphanBlocks.get_all_orphans] ⚠️ Failed to parse orphan block {key_str}: {decode_err}")
+                        continue
+
+            print(f"[OrphanBlocks.get_all_orphans] ✅ Retrieved {len(results)} orphan blocks.")
+            return results
+
+        except Exception as e:
+            print(f"[OrphanBlocks.get_all_orphans] ❌ ERROR: {e}")
+            return []

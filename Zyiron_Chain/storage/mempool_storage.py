@@ -178,3 +178,32 @@ class MempoolStorage:
         if not os.path.exists(path):
             os.makedirs(path)
             print(f"Created database directory: {path}")
+
+
+    def get_transaction_count(self) -> int:
+        try:
+            count = 0
+            with self.txindex_db.env.begin(write=False) as txn:
+                cursor = txn.cursor()
+                for key, _ in cursor:
+                    if key.startswith(b"tx:") or key.startswith(b"block_tx:"):
+                        count += 1
+            print(f"[TxStorage] ✅ Transaction count: {count}")
+            return count
+        except Exception as e:
+            print(f"[TxStorage] ❌ Error counting transactions: {e}")
+            return 0
+        
+    def get_pending_transaction_count(self) -> int:
+        """
+        Return the number of transactions currently in the mempool.
+        """
+        try:
+            with self.mempool_db.env.begin() as txn:
+                stat = txn.stat()
+                count = stat.get("entries", 0)
+                print(f"[MempoolStorage] ✅ Pending transaction count: {count}")
+                return count
+        except Exception as e:
+            print(f"[MempoolStorage] ERROR: Failed to get transaction count: {e}")
+            return 0
