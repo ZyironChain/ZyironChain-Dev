@@ -68,57 +68,69 @@ class SendZYC:
                 print(f"[SendZYC.prepare_tx_in] ERROR: No available UTXOs to fulfill {required_amount}.")
                 raise ValueError("Insufficient UTXOs for the transaction.")
 
-            for utxo_id, utxo_data in selected_utxos.items():
+            for utxo_key, utxo_data in selected_utxos.items():
                 try:
-                    # ✅ Ensure UTXO structure matches LMDB storage
-                    if not isinstance(utxo_id, str):
-                        print(f"[SendZYC.prepare_tx_in] ERROR: Invalid UTXO ID format for {utxo_id}. Expected a string.")
+                    # Parse utxo_key into tx_id and output_index
+                    if not utxo_key.startswith("utxo:"):
+                        print(f"[SendZYC.prepare_tx_in] ERROR: Invalid UTXO key format: {utxo_key}")
                         continue
+                        
+                    _, tx_id, output_index = utxo_key.split(':')
+                    tx_out_id = f"{tx_id}:{output_index}"
 
-                    # ✅ Convert stored amounts correctly
-                    utxo_amount = Decimal(str(utxo_data.get("amount", "0")))
+                    # Convert stored amounts correctly
+                    utxo_amount = Decimal(str(utxo_data.get("amount", "0"))) / Constants.COIN
 
-                    # ✅ Retrieve sender address securely
+                    # Retrieve sender address securely
                     sender_address = self.key_manager.get_default_public_key(self.network)
 
-                    # ✅ Ensure UTXO belongs to the sender
+                    # Ensure UTXO belongs to the sender
                     if utxo_data.get("script_pub_key") != sender_address:
-                        print(f"[SendZYC.prepare_tx_in] WARN: Skipping UTXO {utxo_id}: Does not belong to sender.")
+                        print(f"[SendZYC.prepare_tx_in] WARN: Skipping UTXO {utxo_key}: Does not belong to sender.")
                         continue
 
-                    # ✅ Ensure UTXO amount is valid
+                    # Ensure UTXO amount is valid
                     if utxo_amount <= 0:
-                        print(f"[SendZYC.prepare_tx_in] WARN: Skipping invalid UTXO {utxo_id} with amount {utxo_amount}.")
+                        print(f"[SendZYC.prepare_tx_in] WARN: Skipping invalid UTXO {utxo_key} with amount {utxo_amount}.")
                         continue
 
-                    # ✅ Retrieve private key securely
+                    # Retrieve private key securely
                     private_key = self.key_manager.get_private_key()
                     if not private_key:
-                        print(f"[SendZYC.prepare_tx_in] ERROR: Failed to retrieve private key for UTXO {utxo_id}.")
+                        print(f"[SendZYC.prepare_tx_in] ERROR: Failed to retrieve private key for UTXO {utxo_key}.")
                         raise ValueError("Private key retrieval failed.")
 
-                    # ✅ Generate script signature using SHA3-384
-                    signature_data = f"{utxo_id}{private_key}"
+                    # Generate script signature using SHA3-384
+                    signature_data = f"{tx_out_id}{private_key}"
                     script_sig = hashlib.sha3_384(signature_data.encode()).hexdigest()
 
-                    # ✅ Append valid transaction input
-                    inputs.append(TransactionIn(tx_out_id=utxo_id, script_sig=script_sig))
-
+                    # Append valid transaction input
+                    inputs.append(TransactionIn(tx_out_id=tx_out_id, script_sig=script_sig))
                     total_input += utxo_amount
 
                 except Exception as e:
-                    print(f"[SendZYC.prepare_tx_in] ERROR: Failed to process UTXO {utxo_id}: {e}")
+                    print(f"[SendZYC.prepare_tx_in] ERROR: Failed to process UTXO {utxo_key}: {e}")
 
-            # ✅ Ensure total input meets required amount
+            # Ensure total input meets required amount
             if total_input < required_amount:
                 print(f"[SendZYC.prepare_tx_in] ERROR: Insufficient funds. Required: {required_amount}, Available: {total_input}.")
                 raise ValueError("Insufficient funds for the transaction.")
 
-            # ✅ Lock UTXOs after selection
-            self.utxo_manager.lock_selected_utxos([tx.tx_out_id for tx in inputs])
+            # Lock UTXOs after selection
+            self.utxo_manager.lock_selected_utxos([f"utxo:{tx.tx_out_id.replace(':', ':')}" for tx in inputs])
 
             print(f"[SendZYC.prepare_tx_in] INFO: Prepared {len(inputs)} inputs with total amount {total_input}.")
             return inputs, total_input
+
+
+
+
+
+
+
+
+
+
 
 
     def prepare_tx_out(self, recipient, amount, change_address, change_amount):

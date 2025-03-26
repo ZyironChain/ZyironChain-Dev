@@ -1,9 +1,12 @@
+import json
 import sys
 import os
+
+from Zyiron_Chain.blockchain.block import Block
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 # Import your PeerConstants from the network folder
 from Zyiron_Chain. network.peerconstant import PeerConstants
@@ -41,120 +44,150 @@ class UTXOManager:
 
         print(f"[UTXOManager INIT] UTXOManager created for peer_id={self.peer_id} with provided UTXOStorage.")
 
+
+
     def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
         """
         Retrieve a UTXO from the local cache, LMDB, or full block storage via fallback.
         Converts raw dictionary data into a TransactionOut instance.
 
-        :param tx_out_id: The UTXO ID to retrieve (format: "<tx_id>:<output_index>" or raw tx_id for fallback).
-        :return: A TransactionOut instance if found, else None.
+        Args:
+            tx_out_id: The UTXO ID to retrieve (format: "<tx_id>:<output_index>" or raw tx_id)
+            
+        Returns:
+            TransactionOut: If UTXO is found and valid
+            None: If UTXO cannot be found or is invalid
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print(f"[UTXOManager ERROR] ❌ get_utxo: Invalid tx_out_id input: {tx_out_id}")
+            print(f"[UTXOManager.get_utxo] ❌ Invalid tx_out_id: {tx_out_id}")
             return None
 
         tx_out_id = tx_out_id.strip()
 
-        # 🔁 Handle fallback if format is invalid
-        if ":" not in tx_out_id:
-            print(f"[UTXOManager WARN] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
-            tx_id = tx_out_id
-            if len(tx_id) != 96:
-                print(f"[UTXOManager ERROR] ❌ Fallback failed: Invalid tx_id length for {tx_id}")
-                return None
-
-            try:
-                all_utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_id)
-                print(f"[get_all_utxos_by_tx_id] ✅ Found {len(all_utxos)} UTXOs for tx_id={tx_id}")
-
-                for utxo_dict in all_utxos:
-                    try:
-                        utxo = TransactionOut.from_dict(utxo_dict)
-                        recovered_id = utxo.tx_out_id
-                        self._cache[recovered_id] = utxo_dict
-                        if recovered_id == tx_out_id:
-                            print(f"[UTXOManager INFO] ✅ Fallback matched and cached UTXO {recovered_id}.")
-                            return utxo
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Failed to convert fallback UTXO: {e}")
-                print(f"[UTXOManager ERROR] ❌ No UTXOs matched fallback tx_id={tx_id}.")
-                return None
-            except Exception as e:
-                print(f"[UTXOManager ERROR] ❌ Fallback retrieval error for tx_id={tx_id}: {e}")
-                return None
-
-        # ✅ Normal path with tx_id:output_index format
-        try:
-            tx_id, output_index_str = tx_out_id.split(":")
-            output_index = int(output_index_str)
-        except Exception as e:
-            print(f"[UTXOManager ERROR] ❌ Failed to parse tx_out_id '{tx_out_id}': {e}")
-            return None
-
+        # ✅ Check local cache first
         if tx_out_id in self._cache:
-            print(f"[UTXOManager INFO] ✅ Found {tx_out_id} in cache for peer {self.peer_id}.")
-            return TransactionOut.from_dict(self._cache[tx_out_id])
+            cached = self._cache[tx_out_id]
+            if isinstance(cached, TransactionOut):
+                return cached
+            try:
+                utxo = TransactionOut.from_dict(cached)
+                self._cache[tx_out_id] = utxo
+                return utxo
+            except Exception as e:
+                print(f"[UTXOManager.get_utxo] ❌ Corrupted cache entry for {tx_out_id}: {e}")
+                del self._cache[tx_out_id]
 
-        utxo_data = self.utxo_storage.get_utxo(tx_id, output_index)
-        if not utxo_data:
-            print(f"[UTXOManager WARN] ⚠️ UTXO {tx_out_id} not found in LMDB. Attempting fallback to full block storage...")
-            return self.get_utxo(tx_id)  # Retry fallback
+        # 🔄 Parse tx_out_id
+        if ':' in tx_out_id:
+            try:
+                tx_id, output_index_str = tx_out_id.split(':')
+                output_index = int(output_index_str)
+            except Exception as e:
+                print(f"[UTXOManager.get_utxo] ❌ Malformed tx_out_id '{tx_out_id}': {e}")
+                return None
+        else:
+            tx_id = tx_out_id
+            output_index = 0  # Fallback default
+            print(f"[UTXOManager.get_utxo] ⚠️ Using fallback mode for raw tx_id: {tx_id}")
 
+        # ✅ Try LMDB lookup
+        utxo_key = f"utxo:{tx_id}:{output_index}"
         try:
-            utxo = TransactionOut.from_dict(utxo_data)
-            self._cache[tx_out_id] = utxo_data
-            print(f"[UTXOManager INFO] ✅ Retrieved and cached UTXO {tx_out_id} for peer {self.peer_id}.")
-            return utxo
+            with self.utxo_db.env.begin() as txn:
+                value_bytes = txn.get(utxo_key.encode('utf-8'))
+                if value_bytes:
+                    try:
+                        utxo_data = json.loads(value_bytes.decode('utf-8'))
+                        utxo = TransactionOut.from_dict(utxo_data)
+                        self._cache[tx_out_id] = utxo
+                        return utxo
+                    except Exception as parse_err:
+                        print(f"[UTXOManager.get_utxo] ❌ Failed to parse LMDB UTXO for {utxo_key}: {parse_err}")
         except Exception as e:
-            print(f"[UTXOManager ERROR] ❌ Failed to convert UTXO {tx_out_id}: {e}")
-            return None
+            print(f"[UTXOManager.get_utxo] ⚠️ LMDB lookup failed for {utxo_key}: {e}")
 
+        # 🔁 Fallback: Scan block storage
+        print(f"[UTXOManager.get_utxo] ⚠️ Falling back to block storage for {tx_out_id}")
+        try:
+            all_utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)    
+
+
+
+            for utxo_dict in all_utxos:
+                try:
+                    if isinstance(utxo_dict, TransactionOut):
+                        if utxo_dict.tx_out_id == tx_out_id:
+                            self._cache[tx_out_id] = utxo_dict
+                            return utxo_dict
+                    elif isinstance(utxo_dict, dict):
+                        if utxo_dict.get("output_index") == output_index:
+                            utxo = TransactionOut.from_dict(utxo_dict)
+                            self._cache[tx_out_id] = utxo
+                            return utxo
+                except Exception as match_err:
+                    print(f"[UTXOManager.get_utxo] ⚠️ UTXO match parse error: {match_err}")
+                    continue
+
+            print(f"[UTXOManager.get_utxo] ❌ No UTXO found for {tx_out_id} in block storage")
+            return None
+        except Exception as e:
+            print(f"[UTXOManager.get_utxo] ❌ Fallback failed for {tx_out_id}: {e}")
+            return None
 
     def register_utxo(self, tx_out: TransactionOut):
         """
         Register a new UTXO in both the local cache and UTXOStorage.
         Supports fallback when tx_out_id format is invalid.
-        
+
         :param tx_out: A TransactionOut object representing the UTXO.
         """
         if not isinstance(tx_out, TransactionOut):
-            print(f"[UTXOManager ERROR] ❌ Invalid UTXO type. Expected TransactionOut, got {type(tx_out)}.")
+            print(f"[UTXOManager.register_utxo] ❌ Invalid UTXO type. Expected TransactionOut, got {type(tx_out)}.")
             raise TypeError("Invalid UTXO type. Expected TransactionOut.")
 
         tx_out_id = tx_out.tx_out_id.strip()
         if not tx_out_id:
-            print("[UTXOManager ERROR] ❌ UTXO ID is empty. Cannot register an invalid UTXO.")
+            print("[UTXOManager.register_utxo] ❌ UTXO ID is empty. Cannot register an invalid UTXO.")
             raise ValueError("UTXO ID must be a non-empty string.")
 
-        # ✅ Check if UTXO already exists in cache or LMDB
+        # ✅ Check if already exists
         exists_in_cache = tx_out_id in self._cache
         exists_in_db = self.utxo_storage.get(tx_out_id)
 
         if exists_in_cache or exists_in_db:
-            print(f"[UTXOManager WARN] ⚠️ UTXO {tx_out_id} already exists for peer {self.peer_id}. Skipping registration.")
+            print(f"[UTXOManager.register_utxo] ⚠️ UTXO {tx_out_id} already exists for peer {self.peer_id}. Skipping.")
             return
 
-        # 🔁 Fallback: if tx_out_id is invalid (no ":"), check raw tx_id set
-        if ":" not in tx_out_id:
-            print(f"[UTXOManager WARN] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using tx_id...")
+        # 🔁 Fallback: If no ':' in tx_out_id, check raw tx_id fallback set
+        if ':' not in tx_out_id:
+            print(f"[UTXOManager.register_utxo] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback...")
             try:
-                fallback_utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
-                if any(utxo.get("tx_out_id") == tx_out_id for utxo in fallback_utxos):
-                    print(f"[UTXOManager WARN] ⚠️ UTXO with tx_id={tx_out_id} already exists in fallback. Skipping.")
-                    return
+                fallback_utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  # ✅ FIXED: removed tx_id=
+                for utxo in fallback_utxos:
+                    try:
+                        if isinstance(utxo, TransactionOut):
+                            if utxo.tx_out_id == tx_out_id:
+                                print(f"[UTXOManager.register_utxo] ⚠️ UTXO {tx_out_id} already exists in fallback (obj). Skipping.")
+                                return
+                        elif isinstance(utxo, dict):
+                            if utxo.get("tx_out_id") == tx_out_id:
+                                print(f"[UTXOManager.register_utxo] ⚠️ UTXO {tx_out_id} already exists in fallback (dict). Skipping.")
+                                return
+                    except Exception as inner_err:
+                        print(f"[UTXOManager.register_utxo] ⚠️ Error checking fallback UTXO: {inner_err}")
+                        continue
             except Exception as e:
-                print(f"[UTXOManager ERROR] ❌ Fallback UTXO check failed for tx_id={tx_out_id}: {e}")
+                print(f"[UTXOManager.register_utxo] ❌ Fallback check failed for tx_id={tx_out_id}: {e}")
                 return
 
-        # ✅ Proceed with storing new UTXO
+        # ✅ Store new UTXO
         try:
             utxo_data = tx_out.to_dict()
             self._cache[tx_out_id] = utxo_data
             self.utxo_storage.put(tx_out_id, utxo_data)
-            print(f"[UTXOManager INFO] ✅ Registered UTXO {tx_out_id} for peer {self.peer_id}.")
+            print(f"[UTXOManager.register_utxo] ✅ Registered UTXO {tx_out_id} for peer {self.peer_id}.")
         except Exception as e:
-            print(f"[UTXOManager ERROR] ❌ Failed to register UTXO {tx_out_id}: {e}")
-
+            print(f"[UTXOManager.register_utxo] ❌ Failed to register UTXO {tx_out_id}: {e}")
 
     def delete_utxo(self, tx_out_id: str):
         """
@@ -185,61 +218,95 @@ class UTXOManager:
             print(f"[UTXOManager ERROR] ❌ Failed to delete UTXO {tx_out_id}: {e}")
 
 
-    def update_from_block(self, block: dict):
+    def update_from_block(self, block: Union[Dict, Block]):
         """
-        Update UTXOs based on transactions in a block.
-        Expects block["transactions"] to be a list of transaction dictionaries,
-        with the first transaction as the coinbase transaction.
-
-        This method is thread-safe and ensures atomic updates using a lock.
-
-        :param block: Dictionary representing the block.
+        Update UTXOs from block with comprehensive fallback handling for:
+        - Different block formats (Dict vs Block object)
+        - Malformed transactions
+        - Invalid UTXO references
+        - Lock contention issues
         """
-        if not isinstance(block, dict) or "transactions" not in block:
-            print("[UTXOManager ERROR] ❌ update_from_block: Invalid block or missing 'transactions'.")
+        def safe_get_transactions(block_obj):
+            """Multi-format transaction extraction"""
+            if isinstance(block_obj, Block):
+                return block_obj.transactions
+            elif isinstance(block_obj, dict):
+                return block_obj.get("transactions", [])
+            return []
+
+        def safe_process_output(output):
+            """Safe output processing with validation"""
+            try:
+                if isinstance(output, dict):
+                    return TransactionOut.from_dict(output)
+                elif isinstance(output, TransactionOut):
+                    return output
+            except Exception as e:
+                print(f"[UTXOManager] ⚠️ Invalid output: {e}")
+            return None
+
+        if not block:
+            print("[UTXOManager] ❌ Empty block provided")
             return
 
-        print(f"[UTXOManager INFO] 🔄 update_from_block: Processing block UTXO updates for peer {self.peer_id}.")
+        print(f"[UTXOManager] 🔄 Processing block updates (type: {type(block)})")
 
-        with self.lock:
-            # ✅ Process coinbase transaction first (index 0)
-            coinbase_tx = block["transactions"][0]
-            if isinstance(coinbase_tx, dict) and "outputs" in coinbase_tx:
-                for output in coinbase_tx["outputs"]:
-                    try:
-                        tx_out = TransactionOut.from_dict(output)
-                        self.register_utxo(tx_out)
-                        print(f"[UTXOManager INFO] ✅ Processed Coinbase UTXO {tx_out.tx_out_id}.")
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Failed to process Coinbase UTXO: {e}")
+        # Fallback 1: Handle lock acquisition failures
+        lock_acquired = False
+        try:
+            lock_acquired = self.lock.acquire(timeout=10)
+            if not lock_acquired:
+                print("[UTXOManager] ⚠️ Failed to acquire lock after 10s")
+                return
+        except Exception as e:
+            print(f"[UTXOManager] ❌ Lock acquisition failed: {e}")
+            return
 
-            # ✅ Process subsequent transactions
-            for tx_data in block["transactions"][1:]:
-                if not isinstance(tx_data, dict) or "outputs" not in tx_data or "inputs" not in tx_data:
-                    print(f"[UTXOManager WARN] ⚠️ Skipping malformed transaction: {tx_data}")
-                    continue
+        try:
+            transactions = safe_get_transactions(block)
+            if not transactions:
+                print("[UTXOManager] ⚠️ No transactions in block")
+                return
 
-                # ✅ Register new outputs
-                for output in tx_data["outputs"]:
-                    try:
-                        tx_out = TransactionOut.from_dict(output)
-                        self.register_utxo(tx_out)
-                        print(f"[UTXOManager INFO] ✅ Registered UTXO {tx_out.tx_out_id}.")
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Failed to register UTXO: {e}")
+            # Fallback 2: Handle coinbase transaction
+            coinbase = transactions[0] if transactions else None
+            if coinbase:
+                try:
+                    outputs = coinbase.outputs if hasattr(coinbase, 'outputs') else coinbase.get('outputs', [])
+                    for output in outputs:
+                        tx_out = safe_process_output(output)
+                        if tx_out:
+                            self.register_utxo(tx_out)
+                except Exception as e:
+                    print(f"[UTXOManager] ❌ Coinbase processing failed: {e}")
 
-                # ✅ Consume spent inputs
-                for tx_in in tx_data["inputs"]:
-                    tx_out_id = tx_in.get("tx_out_id")
-                    if not tx_out_id or not isinstance(tx_out_id, str):
-                        print(f"[UTXOManager WARN] ⚠️ Skipping transaction input with missing 'tx_out_id': {tx_in}")
-                        continue
+            # Process regular transactions
+            for tx in transactions[1:]:
+                try:
+                    # Fallback 3: Handle transaction format variations
+                    inputs = tx.inputs if hasattr(tx, 'inputs') else tx.get('inputs', [])
+                    outputs = tx.outputs if hasattr(tx, 'outputs') else tx.get('outputs', [])
 
-                    try:
-                        self.consume_utxo(tx_out_id)
-                        print(f"[UTXOManager INFO] ✅ Consumed UTXO {tx_out_id}.")
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Failed to consume UTXO {tx_out_id}: {e}")
+                    # Process outputs
+                    for output in outputs:
+                        tx_out = safe_process_output(output)
+                        if tx_out:
+                            self.register_utxo(tx_out)
+
+                    # Process inputs
+                    for tx_in in inputs:
+                        tx_out_id = getattr(tx_in, 'tx_out_id', None) or tx_in.get('tx_out_id')
+                        if tx_out_id:
+                            try:
+                                self.consume_utxo(tx_out_id)
+                            except Exception as e:
+                                print(f"[UTXOManager] ⚠️ Failed to consume UTXO {tx_out_id}: {e}")
+                except Exception as e:
+                    print(f"[UTXOManager] ⚠️ Transaction processing failed: {e}")
+
+        finally:
+            if lock_acquired:
+                self.lock.release()
 
     def consume_utxo(self, tx_out_id: str):
         """
@@ -275,40 +342,47 @@ class UTXOManager:
         :param tx_out_id: The UTXO ID to lock. Format: '<tx_id>:<output_index>' or fallback to '<tx_id>'.
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print(f"[UTXOManager ERROR] ❌ lock_utxo: Invalid UTXO ID format: {tx_out_id}")
+            print(f"[UTXOManager.lock_utxo] ❌ Invalid UTXO ID format: {tx_out_id}")
             return
 
         with self.lock:
             if ":" in tx_out_id:
-                # Standard format
+                # ✅ Standard format
                 utxo = self.get_utxo(tx_out_id)
                 if not utxo:
-                    print(f"[UTXOManager WARN] ⚠️ lock_utxo: Cannot lock non-existent UTXO {tx_out_id}.")
+                    print(f"[UTXOManager.lock_utxo] ⚠️ Cannot lock non-existent UTXO {tx_out_id}.")
                     return
                 if utxo.locked:
-                    print(f"[UTXOManager WARN] ⚠️ lock_utxo: UTXO {tx_out_id} is already locked.")
+                    print(f"[UTXOManager.lock_utxo] ⚠️ UTXO {tx_out_id} is already locked.")
                     return
                 try:
                     utxo.locked = True
                     self.utxo_storage.put(tx_out_id, utxo.to_dict())
-                    print(f"[UTXOManager INFO] 🔒 lock_utxo: Successfully locked UTXO {tx_out_id}.")
+                    print(f"[UTXOManager.lock_utxo] 🔒 Successfully locked UTXO {tx_out_id}.")
                 except Exception as e:
-                    print(f"[UTXOManager ERROR] ❌ lock_utxo: Failed to update UTXO {tx_out_id}: {e}")
+                    print(f"[UTXOManager.lock_utxo] ❌ Failed to update UTXO {tx_out_id}: {e}")
             else:
-                # Fallback: Try to lock all UTXOs with this tx_id
-                print(f"[UTXOManager WARN] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
-                utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
-                if not utxos:
-                    print(f"[UTXOManager ERROR] ❌ No UTXOs found for tx_id={tx_out_id}.")
-                    return
-                for utxo_dict in utxos:
-                    try:
-                        utxo_obj = TransactionOut.from_dict(utxo_dict)
-                        utxo_obj.locked = True
-                        self.utxo_storage.put(utxo_obj.tx_out_id, utxo_obj.to_dict())
-                        print(f"[UTXOManager INFO] 🔒 Fallback locked UTXO {utxo_obj.tx_out_id}.")
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Fallback lock failed for {utxo_dict.get('tx_out_id', '?')}: {e}")
+                # 🔁 Fallback: Try to lock all UTXOs with this tx_id
+                print(f"[UTXOManager.lock_utxo] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
+                try:
+                    utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  
+                    if not utxos:
+                        print(f"[UTXOManager.lock_utxo] ❌ No UTXOs found for tx_id={tx_out_id}.")
+                        return
+                    for utxo_dict in utxos:
+                        try:
+                            if isinstance(utxo_dict, TransactionOut):
+                                utxo_obj = utxo_dict
+                            else:
+                                utxo_obj = TransactionOut.from_dict(utxo_dict)
+                            utxo_obj.locked = True
+                            self.utxo_storage.put(utxo_obj.tx_out_id, utxo_obj.to_dict())
+                            print(f"[UTXOManager.lock_utxo] 🔒 Fallback locked UTXO {utxo_obj.tx_out_id}.")
+                        except Exception as inner_err:
+                            print(f"[UTXOManager.lock_utxo] ❌ Fallback lock failed for {utxo_dict.get('tx_out_id', '?')}: {inner_err}")
+                except Exception as e:
+                    print(f"[UTXOManager.lock_utxo] ❌ Fallback failed while scanning UTXOs for tx_id={tx_out_id}: {e}")
+
 
     def unlock_utxo(self, tx_out_id: str):
         """
@@ -316,40 +390,43 @@ class UTXOManager:
         :param tx_out_id: The UTXO ID to unlock. Format: '<tx_id>:<output_index>' or fallback to '<tx_id>'.
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print(f"[UTXOManager ERROR] ❌ unlock_utxo: Invalid UTXO ID format: {tx_out_id}")
+            print(f"[UTXOManager.unlock_utxo] ❌ Invalid UTXO ID format: {tx_out_id}")
             return
 
         with self.lock:
             if ":" in tx_out_id:
-                # Standard format
+                # ✅ Standard format
                 utxo = self.get_utxo(tx_out_id)
                 if not utxo:
-                    print(f"[UTXOManager WARN] ⚠️ unlock_utxo: Cannot unlock non-existent UTXO {tx_out_id}.")
+                    print(f"[UTXOManager.unlock_utxo] ⚠️ Cannot unlock non-existent UTXO {tx_out_id}.")
                     return
                 if not utxo.locked:
-                    print(f"[UTXOManager WARN] ⚠️ unlock_utxo: UTXO {tx_out_id} is already unlocked.")
+                    print(f"[UTXOManager.unlock_utxo] ⚠️ UTXO {tx_out_id} is already unlocked.")
                     return
                 try:
                     utxo.locked = False
                     self.utxo_storage.put(tx_out_id, utxo.to_dict())
-                    print(f"[UTXOManager INFO] 🔓 unlock_utxo: Successfully unlocked UTXO {tx_out_id}.")
+                    print(f"[UTXOManager.unlock_utxo] 🔓 Successfully unlocked UTXO {tx_out_id}.")
                 except Exception as e:
-                    print(f"[UTXOManager ERROR] ❌ unlock_utxo: Failed to update UTXO {tx_out_id}: {e}")
+                    print(f"[UTXOManager.unlock_utxo] ❌ Failed to update UTXO {tx_out_id}: {e}")
             else:
-                # Fallback: Unlock all UTXOs for tx_id
-                print(f"[UTXOManager WARN] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
-                utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
-                if not utxos:
-                    print(f"[UTXOManager ERROR] ❌ No UTXOs found for tx_id={tx_out_id}.")
-                    return
-                for utxo_dict in utxos:
-                    try:
-                        utxo_obj = TransactionOut.from_dict(utxo_dict)
-                        utxo_obj.locked = False
-                        self.utxo_storage.put(utxo_obj.tx_out_id, utxo_obj.to_dict())
-                        print(f"[UTXOManager INFO] 🔓 Fallback unlocked UTXO {utxo_obj.tx_out_id}.")
-                    except Exception as e:
-                        print(f"[UTXOManager ERROR] ❌ Fallback unlock failed for {utxo_dict.get('tx_out_id', '?')}: {e}")
+                # 🔁 Fallback: Unlock all UTXOs for tx_id
+                print(f"[UTXOManager.unlock_utxo] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
+                try:
+                    utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  # ✅ FIXED call
+                    if not utxos:
+                        print(f"[UTXOManager.unlock_utxo] ❌ No UTXOs found for tx_id={tx_out_id}.")
+                        return
+                    for utxo_dict in utxos:
+                        try:
+                            utxo_obj = utxo_dict if isinstance(utxo_dict, TransactionOut) else TransactionOut.from_dict(utxo_dict)
+                            utxo_obj.locked = False
+                            self.utxo_storage.put(utxo_obj.tx_out_id, utxo_obj.to_dict())
+                            print(f"[UTXOManager.unlock_utxo] 🔓 Fallback unlocked UTXO {utxo_obj.tx_out_id}.")
+                        except Exception as inner_err:
+                            print(f"[UTXOManager.unlock_utxo] ❌ Fallback unlock failed for {utxo_dict.get('tx_out_id', '?')}: {inner_err}")
+                except Exception as e:
+                    print(f"[UTXOManager.unlock_utxo] ❌ Fallback failed while scanning UTXOs for tx_id={tx_out_id}: {e}")
 
 
 
@@ -387,39 +464,44 @@ class UTXOManager:
         Supports fallback using tx_id only.
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print(f"[UTXOManager ERROR] ❌ validate_utxo: Invalid UTXO ID format: {tx_out_id}")
+            print(f"[UTXOManager.validate_utxo] ❌ Invalid UTXO ID format: {tx_out_id}")
             return False
 
         if not isinstance(amount, Decimal) or amount <= 0:
-            print(f"[UTXOManager ERROR] ❌ validate_utxo: Invalid amount: {amount}")
+            print(f"[UTXOManager.validate_utxo] ❌ Invalid amount: {amount}")
             return False
 
-        # ✅ Handle valid format directly
+        # ✅ Handle full tx_out_id format directly
         if ":" in tx_out_id:
             utxo = self.get_utxo(tx_out_id)
             if not utxo:
-                print(f"[UTXOManager ERROR] ❌ validate_utxo: UTXO {tx_out_id} does not exist.")
+                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} does not exist.")
                 return False
             if utxo.locked:
-                print(f"[UTXOManager ERROR] ❌ validate_utxo: UTXO {tx_out_id} is locked.")
+                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} is locked.")
                 return False
             try:
                 utxo_balance = Decimal(str(utxo.amount))
             except Exception as e:
-                print(f"[UTXOManager ERROR] ❌ validate_utxo: Failed to parse UTXO balance: {e}")
+                print(f"[UTXOManager.validate_utxo] ❌ Failed to parse UTXO balance: {e}")
                 return False
             if utxo_balance < amount:
-                print(f"[UTXOManager ERROR] ❌ validate_utxo: UTXO {tx_out_id} insufficient balance. "
-                    f"Required: {amount}, Available: {utxo.amount}.")
+                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} has insufficient balance. "
+                    f"Required: {amount}, Available: {utxo.amount}")
                 return False
-            print(f"[UTXOManager INFO] ✅ validate_utxo: UTXO {tx_out_id} is valid. Required: {amount}, Available: {utxo.amount}.")
+            print(f"[UTXOManager.validate_utxo] ✅ UTXO {tx_out_id} is valid. Required: {amount}, Available: {utxo.amount}")
             return True
 
-        # 🔁 Fallback: Handle raw tx_id
-        print(f"[UTXOManager WARN] ⚠️ validate_utxo: Raw tx_id provided. Checking all UTXOs under tx_id={tx_out_id}")
-        utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
+        # 🔁 Fallback using raw tx_id (aggregate all matching UTXOs)
+        print(f"[UTXOManager.validate_utxo] ⚠️ Raw tx_id provided. Checking all UTXOs under tx_id={tx_out_id}")
+        try:
+            utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  # ✅ FIXED: removed invalid keyword arg
+        except Exception as e:
+            print(f"[UTXOManager.validate_utxo] ❌ Fallback retrieval failed for tx_id={tx_out_id}: {e}")
+            return False
+
         if not utxos:
-            print(f"[UTXOManager ERROR] ❌ validate_utxo: No UTXOs found for tx_id={tx_out_id}.")
+            print(f"[UTXOManager.validate_utxo] ❌ No UTXOs found for tx_id={tx_out_id}")
             return False
 
         total_available = Decimal("0")
@@ -429,13 +511,13 @@ class UTXOManager:
                 if not utxo.locked:
                     total_available += Decimal(str(utxo.amount))
             except Exception as e:
-                print(f"[UTXOManager ERROR] ❌ validate_utxo: Failed to process UTXO fallback: {e}")
+                print(f"[UTXOManager.validate_utxo] ⚠️ Skipping fallback UTXO due to parse error: {e}")
                 continue
 
         if total_available < amount:
-            print(f"[UTXOManager ERROR] ❌ validate_utxo: Insufficient combined UTXOs for tx_id={tx_out_id}. "
+            print(f"[UTXOManager.validate_utxo] ❌ Combined UTXOs under tx_id={tx_out_id} insufficient. "
                 f"Required: {amount}, Available: {total_available}")
             return False
 
-        print(f"[UTXOManager INFO] ✅ validate_utxo: Combined UTXOs under tx_id={tx_out_id} are valid. Available: {total_available}")
+        print(f"[UTXOManager.validate_utxo] ✅ Combined UTXOs under tx_id={tx_out_id} are valid. Available: {total_available}")
         return True

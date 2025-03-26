@@ -104,6 +104,9 @@ class BlockchainUI:
         # Register cleanup
         atexit.register(self.cleanup)
 
+        self.root.bind_class("Text", "<Button-3><ButtonRelease-3>", self.show_right_click_menu)
+
+
     def initialize_blockchain(self):
         """Initialize all blockchain components with proper error handling"""
         try:
@@ -314,6 +317,9 @@ class BlockchainUI:
         ttk.Button(buttons_frame, text="Refresh Data", command=self.update_dashboard).pack(side='left', padx=5)
         ttk.Button(buttons_frame, text="Validate Blockchain", command=self.validate_blockchain).pack(side='left', padx=5)
         
+        self.avg_mine_time_label = ttk.Label(info_frame, text="Avg Mining Time: Calculating...")
+        self.avg_mine_time_label.grid(row=5, column=0, sticky='w', padx=5, pady=2)
+                
         # Initial update
         self.update_dashboard()
 
@@ -734,28 +740,58 @@ class BlockchainUI:
                 self.block_height_label.config(text="Block Height: 0")
                 self.difficulty_label.config(text="Difficulty: 0")
             else:
-                self.block_height_label.config(text=f"Block Height: {latest_block.index}")
-                self.difficulty_label.config(text=f"Difficulty: {latest_block.difficulty}")
-            
+                index = latest_block.index if hasattr(latest_block, "index") else latest_block.get("index", "N/A")
+                difficulty = latest_block.difficulty if hasattr(latest_block, "difficulty") else latest_block.get("difficulty", "N/A")
+                self.block_height_label.config(text=f"Block Height: {index}")
+                self.difficulty_label.config(text=f"Difficulty: {difficulty}")
+
             # Transaction count
             tx_count = self.tx_storage.get_transaction_count()
             self.tx_count_label.config(text=f"Total Transactions: {tx_count}")
-            
+
             # Mempool info
             mempool_size = self.mempool_storage.get_pending_transaction_count()
             self.mempool_size_label.config(text=f"Pending Transactions: {mempool_size}")
-            
+
             # UTXO info
             utxo_count = len(self.utxo_storage.get_all_utxos())
             self.utxo_count_label.config(text=f"Total UTXOs: {utxo_count}")
-            
+
             # Orphan blocks
             orphan_count = len(self.orphan_blocks.get_all_orphans())
             self.orphan_blocks_label.config(text=f"Orphan Blocks: {orphan_count}")
-            
+
+            # ✅ Average mining time (last 10 blocks)
+            blocks = self.block_storage.get_all_blocks()[-10:]
+            if len(blocks) >= 2:
+                timestamps = [b.timestamp if hasattr(b, "timestamp") else b.get("timestamp", 0) for b in blocks]
+                intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
+                avg_mine_time = round(sum(intervals) / len(intervals), 2)
+                self.avg_mine_time_label.config(text=f"Avg Mining Time: {avg_mine_time} sec")
+            else:
+                self.avg_mine_time_label.config(text="Avg Mining Time: N/A")
+
             self.log_message("[Dashboard] Updated blockchain statistics")
+
         except Exception as e:
-            print(f"Error updating dashboard: {e}")  # Temporary fallback
+            print(f"[Dashboard ERROR] ❌ Failed to update: {e}")
+
+
+
+    def show_right_click_menu(self, event):
+        """Show a right-click menu to copy selected text."""
+        widget = event.widget
+        if not isinstance(widget, tk.Text):
+            return
+
+        try:
+            menu = tk.Menu(widget, tearoff=0)
+            menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+
 
     def load_recent_blocks(self):
         """Load recent blocks into the blockchain tab"""
@@ -1262,6 +1298,60 @@ class BlockchainUI:
         self.log_message("[System] Cleanup complete")
 
 
+    def auto_refresh_ui(self):
+        """Auto-refresh all dynamic UI sections every 3 seconds"""
+        while True:
+            try:
+                self.root.after(0, self.update_dashboard)
+                self.root.after(0, self.load_recent_blocks)
+                self.root.after(0, self.refresh_wallet)
+                self.root.after(0, self.update_mining_stats_display)  # ✅ NEW: full refresh
+                time.sleep(60)
+            except Exception as e:
+                self.log_message(f"[AutoRefresh] ❌ UI update error: {e}")
+                break
+
+    def update_mining_stats_display(self):
+        """Refresh hash rate and last mined block stats"""
+        try:
+            hashrate = self.calculate_hashrate()
+            self.hashrate_label.config(text=f"Hashrate: {hashrate:.2f} H/s")
+            # You could also refresh other miner-related data here if desired
+        except Exception as e:
+            self.log_message(f"[Mining Stats] ❌ Failed to update mining stats: {e}")
+
+
+    def calculate_hashrate(self):
+        """
+        Calculate approximate hash rate based on number of attempts per second.
+        This is just an estimate based on block mining timestamps.
+        """
+        try:
+            timestamps = []
+            blocks = self.block_storage.get_all_blocks()[-10:]  # last 10 blocks
+            for block in blocks:
+                if hasattr(block, 'timestamp'):
+                    timestamps.append(block.timestamp)
+                elif isinstance(block, dict) and 'timestamp' in block:
+                    timestamps.append(block['timestamp'])
+
+            if len(timestamps) < 2:
+                return 0.0
+
+            timestamps.sort()
+            time_deltas = [t2 - t1 for t1, t2 in zip(timestamps, timestamps[1:])]
+            avg_time = sum(time_deltas) / len(time_deltas)
+
+            # Simulated hash difficulty as a placeholder (real mining algorithm would provide this)
+            hashes_per_block = 1_000_000  # example: assume this many hash attempts per block
+            return hashes_per_block / avg_time if avg_time > 0 else 0.0
+
+        except Exception as e:
+            self.log_message(f"[HashrateCalc] ❌ Failed to calculate hashrate: {e}")
+            return 0.0
+
+
+
 class PaymentProcessor:
     def __init__(self, utxo_manager, tx_storage, standard_mempool, smart_mempool, key_manager, fee_model=None):
         self.utxo_manager = utxo_manager
@@ -1291,7 +1381,7 @@ class PaymentProcessor:
             return None
 
         # ✅ Step 1: Select UTXOs
-        utxos, total_input = self._select_utxos(sender_pub_key, amount + Decimal("0.0001"))
+        utxos, total_input = self._select_utxos(sender_pub_key, amount + Decimal("0.00000001"))
         if not utxos:
             print("[PaymentProcessorUI] ❌ No suitable UTXOs found.")
             return None
@@ -1419,6 +1509,17 @@ class PaymentProcessor:
 
 
 if __name__ == "__main__":
+    import tkinter as tk
+    from threading import Thread
+
+    # ✅ Initialize the root Tkinter window
     root = tk.Tk()
+
+    # ✅ Launch the Blockchain UI
     app = BlockchainUI(root)
+
+    # ✅ Start auto-refresh UI thread (updates dashboard, mining stats, wallet every 3s)
+    Thread(target=app.auto_refresh_ui, daemon=True).start()
+
+    # ✅ Run the Tkinter event loop
     root.mainloop()

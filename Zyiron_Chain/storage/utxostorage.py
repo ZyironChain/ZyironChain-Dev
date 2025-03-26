@@ -6,6 +6,7 @@ import struct
 import hashlib
 import threading
 from decimal import Decimal
+import traceback
 from typing import List, Optional, Dict, Tuple, Union
 
 import lmdb
@@ -26,6 +27,8 @@ from Zyiron_Chain.blockchain.block import Block
 
 from decimal import Decimal, InvalidOperation
 from typing import List, Dict
+import traceback
+import inspect
 
 
 from decimal import Decimal
@@ -592,108 +595,156 @@ class UTXOStorage:
 
 
 
+
+
+    def debug_constructor_args(cls, data: Dict):
+        print("🧠 [DEBUG] Checking constructor arguments...")
+        expected = list(inspect.signature(cls).parameters.keys())
+        provided = list(data.keys())
+
+        print("  ✅ Expected:", expected)
+        print("  📦 Provided:", provided)
+
+        for key in provided:
+            print(f"    → {key} = {data[key]}")
+
+        unrecognized = [k for k in provided if k not in expected]
+        if unrecognized:
+            print("  ❌ Unrecognized arguments:")
+            for key in unrecognized:
+                print(f"    ✘ {key} (value: {data[key]})")
+        else:
+            print("  ✅ All arguments recognized.")
+
+
     def get_all_utxos_by_tx_id(self, tx_id: str) -> List[Dict]:
-        """
-        Retrieve all UTXOs associated with a given transaction ID.
-        Supports fallback to full block storage if LMDB lookup fails.
+        import inspect
+        import traceback
+        from transactions.txout import TransactionOut  # Adjust if needed
 
-        Args:
-            tx_id (str): Transaction ID to search for.
+        print(f"[get_all_utxos_by_tx_id] ✅ Called from: {__file__}")
+        print("[get_all_utxos_by_tx_id] 🔍 Call Trace:")
+        traceback.print_stack(limit=3)
 
-        Returns:
-            List[Dict]: List of UTXO dictionaries associated with the given tx_id.
-        """
+        if not isinstance(tx_id, str) or len(tx_id) != 96:
+            print(f"[get_all_utxos_by_tx_id] ❌ Invalid tx_id format: {tx_id}")
+            return []
+
         results = []
         try:
-            # ✅ First, scan active UTXO LMDB
             with self.utxo_db.env.begin() as txn:
                 cursor = txn.cursor()
-                for key_bytes, value_bytes in cursor:
-                    key_str = key_bytes.decode("utf-8", errors="ignore")
-                    if not key_str.startswith(f"utxo:{tx_id}:"):
-                        continue
+                prefix = f"utxo:{tx_id}:".encode("utf-8")
 
+                for key_bytes, value_bytes in cursor.iternext(prefix=prefix):
                     try:
-                        value_raw = value_bytes.tobytes() if isinstance(value_bytes, memoryview) else value_bytes
-                        utxo_dict = json.loads(value_raw.decode("utf-8"))
-                        results.append(utxo_dict)
+                        key_str = key_bytes.decode("utf-8")
+                        parts = key_str.split(":")
+                        if len(parts) != 3 or parts[0] != "utxo":
+                            continue
+
+                        output_index = int(parts[2])
+                        value_str = value_bytes.decode("utf-8")
+                        utxo_data = json.loads(value_str)
+
+                        standardized = {
+                            "tx_id": tx_id,
+                            "output_index": output_index,
+                            "amount": str(Decimal(utxo_data.get("amount", "0"))),
+                            "script_pub_key": utxo_data.get("script_pub_key", ""),
+                            "is_locked": bool(utxo_data.get("locked", False)),
+                            "block_height": int(utxo_data.get("block_height", 0)),
+                            "spent_status": bool(utxo_data.get("spent_status", False))
+                        }
+                        results.append(standardized)
                     except Exception as e:
-                        print(f"[get_all_utxos_by_tx_id] ⚠️ Skipping corrupted entry {key_str}: {e}")
+                        print(f"[get_all_utxos_by_tx_id] ⚠️ Skipping corrupted UTXO entry {key_str}: {e}")
+                        continue
 
             if results:
                 print(f"[get_all_utxos_by_tx_id] ✅ Found {len(results)} UTXOs in LMDB for tx_id={tx_id}")
                 return results
 
-            # 🔁 Fallback: scan full block storage
-            if not hasattr(self, "block_storage") or not self.block_storage:
-                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not attached. Cannot perform fallback.")
-                return []
-
             print(f"[get_all_utxos_by_tx_id] ⚠️ No LMDB UTXOs found for tx_id={tx_id}. Scanning full block storage...")
 
-            from Zyiron_Chain.blockchain.block import Block
-            from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-            from Zyiron_Chain.transactions.tx import Transaction
-            from Zyiron_Chain.transactions.txout import TransactionOut
+            if not hasattr(self, "block_storage") or not self.block_storage:
+                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not available for fallback.")
+                return []
 
-            def safe_deserialize_block(blk):
+            expected_params = list(inspect.signature(TransactionOut.__init__).parameters.keys())
+            print(f"[get_all_utxos_by_tx_id] 🧠 TransactionOut expected parameters: {expected_params}")
+
+            for block in self.block_storage.get_all_blocks():
                 try:
-                    if isinstance(blk, dict):
-                        return Block.from_dict(blk)
-                    return blk
-                except Exception as e:
-                    print(f"[safe_deserialize_block] ❌ Failed to deserialize block: {e}")
-                    return None
-
-            all_blocks = self.block_storage.get_all_blocks()
-            print(f"[get_all_utxos_by_tx_id] ✅ Loaded {len(all_blocks)} blocks from block storage.")
-
-            for blk in all_blocks:
-                block_obj = safe_deserialize_block(blk)
-                if not block_obj:
-                    continue
-
-                for tx in getattr(block_obj, "transactions", []):
-                    try:
-                        tx_obj = (
-                            CoinbaseTx.from_dict(tx)
-                            if isinstance(tx, dict) and tx.get("type") == "COINBASE"
-                            else Transaction.from_dict(tx)
-                            if isinstance(tx, dict)
-                            else tx
-                        )
-                    except Exception as deser:
-                        print(f"[get_all_utxos_by_tx_id] ⚠️ Failed to parse tx: {deser}")
+                    transactions = []
+                    block_height = 0
+                    if isinstance(block, dict):
+                        transactions = block.get("transactions", [])
+                        block_height = block.get("index", 0)
+                    elif hasattr(block, "transactions"):
+                        transactions = block.transactions
+                        block_height = getattr(block, "index", 0)
+                    else:
+                        print("[get_all_utxos_by_tx_id] ⚠️ Unknown block format, skipping...")
                         continue
 
-                    if not hasattr(tx_obj, "tx_id") or tx_obj.tx_id != tx_id:
-                        continue
-
-                    for idx, output in enumerate(tx_obj.outputs):
+                    for tx in transactions:
                         try:
-                            output_obj = TransactionOut.from_dict(output) if isinstance(output, dict) else output
-                            utxo_entry = {
-                                "tx_id": tx_id,
-                                "output_index": idx,
-                                "amount": str(output_obj.amount),
-                                "script_pub_key": output_obj.script_pub_key,
-                                "is_locked": output_obj.locked,
-                                "block_height": getattr(block_obj, "index", 0),
-                                "spent_status": False
-                            }
-                            results.append(utxo_entry)
-                        except Exception as output_err:
-                            print(f"[get_all_utxos_by_tx_id] ⚠️ Output parse error: {output_err}")
+                            tx_dict = tx if isinstance(tx, dict) else tx.to_dict()
+                            if tx_dict.get("tx_id") != tx_id:
+                                continue
+
+                            outputs = tx_dict.get("outputs", [])
+                            for idx, output in enumerate(outputs):
+                                try:
+                                    output_dict = output if isinstance(output, dict) else output.to_dict()
+                                    print(f"\n[get_all_utxos_by_tx_id] 🔍 Processing output index {idx}")
+                                    print(f"[get_all_utxos_by_tx_id] 📦 Output dict keys: {list(output_dict.keys())}")
+                                    print(f"[get_all_utxos_by_tx_id] 📦 Output dict values: {output_dict}")
+
+                                    invalid_keys = [k for k in output_dict if k not in expected_params]
+                                    if invalid_keys:
+                                        print("\n[get_all_utxos_by_tx_id] ❌❌ TypeError: Unrecognized keyword(s) when constructing TransactionOut!")
+                                        print(f"[get_all_utxos_by_tx_id] ➤ Invalid keys: {invalid_keys}")
+                                        print(f"[get_all_utxos_by_tx_id] ➤ Expected keys: {expected_params}")
+                                        print(f"[get_all_utxos_by_tx_id] ➤ Received dict:")
+                                        for key, value in output_dict.items():
+                                            print(f"    • {key}: {value} (type: {type(value).__name__})")
+
+                                        raise TypeError(f"Unrecognized keyword argument(s): {invalid_keys}")
+
+                                    utxo_entry = {
+                                        "tx_id": tx_id,
+                                        "output_index": idx,
+                                        "amount": str(Decimal(output_dict.get("amount", "0"))),
+                                        "script_pub_key": output_dict.get("script_pub_key", ""),
+                                        "is_locked": bool(output_dict.get("locked", False)),
+                                        "block_height": block_height,
+                                        "spent_status": False
+                                    }
+                                    results.append(utxo_entry)
+                                except Exception as output_err:
+                                    print(f"[get_all_utxos_by_tx_id] ⚠️ Output parse error at index {idx}: {output_err}")
+                                    continue
+                        except Exception as tx_err:
+                            print(f"[get_all_utxos_by_tx_id] ⚠️ Transaction parse error: {tx_err}")
                             continue
 
-            print(f"[get_all_utxos_by_tx_id] ✅ Fallback result: {len(results)} UTXOs recovered from full block storage for tx_id={tx_id}")
+                except Exception as block_err:
+                    print(f"[get_all_utxos_by_tx_id] ⚠️ Block processing error: {block_err}")
+                    continue
+
+            print(f"[get_all_utxos_by_tx_id] ✅ Fallback result: {len(results)} UTXOs recovered from block storage")
             return results
 
+        except TypeError as e:
+            print(f"[get_all_utxos_by_tx_id] ❌ TypeError caught: {e}")
+            print("[get_all_utxos_by_tx_id] 📌 Hint: Double-check TransactionOut constructor and fallback data keys.")
+            raise
+
         except Exception as e:
-            print(f"[get_all_utxos_by_tx_id] ❌ ERROR: Failed to get UTXOs for tx_id={tx_id}: {e}")
-            return []
-
-
+            print(f"[get_all_utxos_by_tx_id] ❌ CRITICAL ERROR processing tx_id={tx_id}: {e}")
+            raise
 
 
 
@@ -882,6 +933,8 @@ class UTXOStorage:
 
 
 
+
+
     def get_utxos_by_address(self, address: str) -> List[dict]:
         """
         Retrieve all unspent UTXOs for a given address from LMDB safely.
@@ -907,39 +960,38 @@ class UTXOStorage:
 
                         if not isinstance(utxo, dict):
                             continue
-
                         if utxo.get("script_pub_key") != address:
                             continue
                         if utxo.get("spent_status", True):
                             continue
 
-                        # ✅ Convert back to TransactionOut to ensure to_dict() includes tx_out_id
                         from Zyiron_Chain.transactions.txout import TransactionOut
                         tx_out = TransactionOut.from_dict(utxo)
                         results.append(tx_out.to_dict())
                         found_in_lmdb = True
 
                     except Exception as e:
-                        print(f"[get_utxos_by_address] ⚠️ Skipping invalid UTXO: {e}")
+                        print(f"[UTXOStorage.get_utxos_by_address] ⚠️ Skipping invalid UTXO: {e}")
                         continue
 
             if found_in_lmdb:
-                print(f"[get_utxos_by_address] ✅ Found {len(results)} UTXOs from LMDB for address: {address}")
+                print(f"[UTXOStorage.get_utxos_by_address] ✅ Found {len(results)} UTXOs from LMDB for address: {address}")
                 return results
 
             # 🔁 Fallback: scan full block store if nothing found in LMDB
             if not hasattr(self, "block_storage"):
-                print(f"[get_utxos_by_address] ❌ ERROR: Block storage fallback not enabled.")
+                print(f"[UTXOStorage.get_utxos_by_address] ❌ ERROR: Block storage fallback not enabled.")
                 return []
 
-            print(f"[get_utxos_by_address] ⚠️ No valid UTXOs found in LMDB. Scanning full block storage...")
+            print(f"[UTXOStorage.get_utxos_by_address] ⚠️ No valid UTXOs in LMDB. Scanning block storage...")
             all_blocks = self.block_storage.get_all_blocks()
 
             for block in all_blocks:
-                transactions = block.transactions if isinstance(block.transactions, list) else []
+                block_index = getattr(block, "index", 0)
+                transactions = getattr(block, "transactions", [])
                 for tx in transactions:
-                    outputs = getattr(tx, "outputs", []) if not isinstance(tx, dict) else tx.get("outputs", [])
-                    tx_id = getattr(tx, "tx_id", None) if not isinstance(tx, dict) else tx.get("tx_id")
+                    tx_id = tx.get("tx_id") if isinstance(tx, dict) else getattr(tx, "tx_id", None)
+                    outputs = tx.get("outputs", []) if isinstance(tx, dict) else getattr(tx, "outputs", [])
 
                     for idx, output in enumerate(outputs):
                         try:
@@ -961,31 +1013,31 @@ class UTXOStorage:
                                 "script_pub_key": script,
                                 "locked": locked,
                                 "spent_status": False,
-                                "block_height": block.index
+                                "block_height": block_index
                             }
                             results.append(utxo_entry)
 
-                            # 🔁 Store in LMDB
+                            # 🧠 Store in LMDB for future use
                             self.store_utxo(
                                 tx_id=tx_id,
                                 output_index=idx,
                                 amount=amount,
                                 script_pub_key=script,
                                 is_locked=locked,
-                                block_height=block.index
+                                block_height=block_index
                             )
 
-                            print(f"[get_utxos_by_address] ✅ Recovered UTXO from block {block.index} for address: {address}")
+                            print(f"[UTXOStorage.get_utxos_by_address] ✅ Recovered UTXO from Block {block_index} for address: {address}")
 
                         except Exception as e:
-                            print(f"[get_utxos_by_address] ⚠️ Error while processing fallback output: {e}")
+                            print(f"[UTXOStorage.get_utxos_by_address] ⚠️ Error processing fallback output: {e}")
                             continue
 
-            print(f"[get_utxos_by_address] ✅ Total UTXOs found (LMDB + fallback): {len(results)}")
+            print(f"[UTXOStorage.get_utxos_by_address] ✅ Total UTXOs found (LMDB + fallback): {len(results)}")
             return results
 
         except Exception as general_error:
-            print(f"[get_utxos_by_address] ❌ General Error: {general_error}")
+            print(f"[UTXOStorage.get_utxos_by_address] ❌ General Error: {general_error}")
             return []
 
 
@@ -1050,52 +1102,6 @@ class UTXOStorage:
         self.block_storage = block_storage
         print("[UTXOStorage] ✅ Fallback block storage enabled.")
 
-
-
-
-
-
-
-    def get_all_utxos_by_tx_id(self, tx_id: str) -> List[dict]:
-        """
-        Retrieve all UTXOs associated with a given tx_id from full block storage.
-        """
-        results = []
-        try:
-            if not self.block_storage:
-                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not attached.")
-                return []
-
-            blocks = self.block_storage.get_all_blocks()
-            for block in blocks:
-                for tx in block.transactions:
-                    if isinstance(tx, dict):
-                        if tx.get("tx_id") != tx_id:
-                            continue
-                        outputs = tx.get("outputs", [])
-                    else:
-                        if getattr(tx, "tx_id", "") != tx_id:
-                            continue
-                        outputs = getattr(tx, "outputs", [])
-
-                    for idx, output in enumerate(outputs):
-                        utxo_entry = {
-                            "tx_id": tx_id,
-                            "output_index": idx,
-                            "amount": str(output.get("amount") if isinstance(output, dict) else output.amount),
-                            "script_pub_key": output.get("script_pub_key") if isinstance(output, dict) else output.script_pub_key,
-                            "is_locked": output.get("locked") if isinstance(output, dict) else output.locked,
-                            "block_height": block.index,
-                            "spent_status": False
-                        }
-                        results.append(utxo_entry)
-
-            print(f"[get_all_utxos_by_tx_id] ✅ Found {len(results)} UTXOs for tx_id={tx_id}")
-            return results
-
-        except Exception as e:
-            print(f"[get_all_utxos_by_tx_id] ❌ ERROR: Failed to get UTXOs for tx_id={tx_id}: {e}")
-            return []
 
 
 

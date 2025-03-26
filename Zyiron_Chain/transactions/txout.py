@@ -98,8 +98,6 @@ class TransactionOut:
             result["tx_out_index"] = self.tx_out_index
 
         return result
-
-
     @classmethod
     def from_dict(cls, data: Dict) -> "TransactionOut":
         """
@@ -110,46 +108,51 @@ class TransactionOut:
         """
         try:
             if not isinstance(data, dict):
-                print("[TransactionOut ERROR] ❌ Input data must be a dictionary.")
+                print("[TransactionOut.from_dict] ❌ Input data must be a dictionary.")
                 raise TypeError("Input data must be a dictionary.")
 
-            # ✅ Fix: Replace 'address' with 'script_pub_key' if present
+            # 🔁 Convert 'address' to 'script_pub_key' if needed
             if "address" in data:
-                print("[TransactionOut FIX] 🔄 Detected 'address'. Converting to 'script_pub_key'.")
+                print("[TransactionOut.from_dict] 🔄 Detected 'address'. Converting to 'script_pub_key'.")
                 data["script_pub_key"] = data.pop("address")
 
             if "script_pub_key" not in data or "amount" not in data:
-                print("[TransactionOut ERROR] ❌ Missing required fields: 'script_pub_key' or 'amount'.")
+                print("[TransactionOut.from_dict] ❌ Missing required fields: 'script_pub_key' or 'amount'.")
                 raise KeyError("Missing required fields: 'script_pub_key' or 'amount'.")
 
-            script_pub_key = data.get("script_pub_key", "").strip()
+            script_pub_key = str(data.get("script_pub_key", "")).strip()
 
-            # ✅ Ensure `amount` is a valid Decimal
+            # ✅ Parse amount safely
             try:
                 amount = Decimal(str(data.get("amount", "0")))
             except Exception as e:
-                print(f"[TransactionOut ERROR] ❌ Invalid amount format: {e}")
+                print(f"[TransactionOut.from_dict] ❌ Invalid amount format: {e}")
                 raise ValueError(f"Invalid amount format: {e}")
 
-            # ✅ Ensure `amount` is at least `Constants.COIN`
+            # ✅ Ensure minimum value
             if amount < Constants.COIN:
-                print(f"[TransactionOut WARN] ⚠️ Amount below minimum {Constants.COIN}. Adjusting to minimum.")
+                print(f"[TransactionOut.from_dict] ⚠️ Amount below minimum {Constants.COIN}. Adjusting to minimum.")
                 amount = Constants.COIN
 
-            locked = data.get("locked", False)
-            tx_out_id = data.get("tx_out_id")  # Optional
-            tx_out_index = data.get("tx_out_index")  # ✅ Optional fallback field
+            # ✅ Handle optional fields
+            locked = bool(data.get("locked", False))
+            if locked:
+                print(f"[TransactionOut.from_dict] 🔒 This UTXO is locked.")
+            tx_out_id = data.get("tx_out_id")
+            tx_out_index = data.get("tx_out_index")
 
-            print(f"[TransactionOut INFO] ✅ Parsed TransactionOut from dict with script_pub_key: {script_pub_key}")
-
-            obj = cls(script_pub_key=script_pub_key, amount=amount, locked=locked, tx_out_id=tx_out_id)
+            # ✅ Create instance safely
+            obj = cls(script_pub_key=script_pub_key, amount=amount, locked=locked)
+            if tx_out_id is not None:
+                obj.tx_out_id = tx_out_id
             if tx_out_index is not None:
-                obj.tx_out_index = tx_out_index  # ✅ Inject fallback field
+                obj.tx_out_index = tx_out_index
 
+            print(f"[TransactionOut.from_dict] ✅ Parsed TransactionOut for script: {script_pub_key}, Amount: {amount}")
             return obj
 
         except Exception as e:
-            print(f"[TransactionOut ERROR] ❌ Failed to parse TransactionOut: {e}")
+            print(f"[TransactionOut.from_dict] ❌ Failed to parse TransactionOut: {e}")
             raise
 
     @classmethod

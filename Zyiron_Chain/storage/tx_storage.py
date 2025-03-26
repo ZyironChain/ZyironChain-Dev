@@ -49,15 +49,27 @@ class TxStorage:
     """
 
     def __init__(self, fee_model: Optional["FeeModel"] = None):
+        """
+        Initialize the TxStorage with LMDB backend and fee model.
+        
+        Args:
+            fee_model (FeeModel): Instance of FeeModel for transaction fee calculations
+            
+        Raises:
+            ValueError: If database path is not defined or fee_model is missing
+        """
         try:
             print("[TxStorage.__init__] INFO: Initializing transaction storage...")
 
+            # Get transaction index database path from Constants
             txindex_path = Constants.DATABASES.get("txindex")
             if not txindex_path:
                 raise ValueError("[TxStorage.__init__] ERROR: Transaction index database path not defined in Constants.DATABASES.")
 
+            # Initialize LMDB manager for transaction index
             self.txindex_db = LMDBManager(txindex_path)
 
+            # Validate fee model is provided
             if not fee_model:
                 raise ValueError("[TxStorage.__init__] ERROR: FeeModel instance is required.")
             self.fee_model = fee_model

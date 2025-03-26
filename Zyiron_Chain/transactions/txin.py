@@ -56,33 +56,32 @@ class TransactionIn:
         """
         try:
             if not isinstance(data, dict):
-                print("[TransactionIn ERROR] ❌ Input data must be a dictionary.")
+                print("[TransactionIn.from_dict] ❌ Input data must be a dictionary.")
                 raise TypeError("Input data must be a dictionary.")
 
             required_fields = ["tx_out_id", "script_sig"]
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
-                print(f"[TransactionIn ERROR] ❌ Missing required fields: {', '.join(missing_fields)}")
+                print(f"[TransactionIn.from_dict] ❌ Missing required fields: {', '.join(missing_fields)}")
                 raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
 
-            tx_out_id = data.get("tx_out_id", "").strip()
-            script_sig = data.get("script_sig", "").strip()
+            tx_out_id = str(data.get("tx_out_id", "")).strip()
+            script_sig = str(data.get("script_sig", "")).strip()
 
-            # ✅ Handle missing tx_out_id
+            # ⚠️ Fallback to ZERO_HASH if tx_out_id is missing
             if not tx_out_id:
-                print("[TransactionIn WARN] ⚠️ tx_out_id missing, using ZERO_HASH as fallback.")
+                print("[TransactionIn.from_dict] ⚠️ tx_out_id is empty. Using Constants.ZERO_HASH.")
                 tx_out_id = Constants.ZERO_HASH
 
-            # ✅ Handle missing or invalid script_sig
             if not script_sig:
-                print("[TransactionIn ERROR] ❌ script_sig must be a non-empty string.")
+                print("[TransactionIn.from_dict] ❌ script_sig cannot be empty.")
                 raise ValueError("script_sig must be a non-empty string.")
 
-            print(f"[TransactionIn INFO] ✅ Parsed TransactionIn from dict: tx_out_id={tx_out_id}")
+            print(f"[TransactionIn.from_dict] ✅ Parsed TransactionIn: tx_out_id={tx_out_id}")
             return cls(tx_out_id=tx_out_id, script_sig=script_sig)
 
         except Exception as e:
-            print(f"[TransactionIn ERROR] ❌ Failed to parse TransactionIn: {e}")
+            print(f"[TransactionIn.from_dict] ❌ Failed to create TransactionIn: {e}")
             raise
 
     def validate(self) -> bool:

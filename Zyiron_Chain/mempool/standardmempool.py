@@ -197,6 +197,7 @@ class StandardMempool:
             print(f"[CRITICAL] Unexpected error: {str(e)}")
             return False
 
+
     def _validate_utxo_inputs(self, inputs):
         """Validate all transaction inputs exist and are unspent"""
         for tx_in in inputs:
