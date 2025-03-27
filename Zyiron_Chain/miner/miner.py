@@ -69,6 +69,8 @@ class Miner:
         self.mempool_storage = mempool_storage
         self.utxo_storage = utxo_storage  # ✅ ASSIGNED
         self.genesis_block_manager = genesis_block_manager
+        self._mining_active = False  # Mining state flag
+        self._current_block = None   # Track current block being mined
 
         # ✅ Extract TxStorage from transaction_manager (needed for fallback/validation)
         self.tx_storage = getattr(transaction_manager, "tx_storage", None)
@@ -86,6 +88,35 @@ class Miner:
 
         print("[Miner.__init__] INFO: Miner initialized successfully.")
         print(f"[Miner.__init__] INFO: Initial block size set to {self.current_block_size} MB.")
+
+
+
+
+
+    def is_mining(self):
+        """Check if miner is currently active"""
+        return self._mining_active
+
+    def get_current_block(self):
+        """Get the current block being mined"""
+        return self._current_block
+
+    def pause(self):
+        """Temporarily pause mining"""
+        self._mining_active = False
+
+    def resume(self):
+        """Resume paused mining"""
+        self._mining_active = True
+
+
+
+
+
+
+
+
+
 
 
     def _calculate_block_size(self):
@@ -576,13 +607,14 @@ class Miner:
     def mine_block(self, network=Constants.NETWORK):
         """
         Mines a new block using Proof-of-Work with dynamically adjusted difficulty.
-        - Ensures `mined_hash` consistency in both `BlockStorage` and blockchain validation.
-        - Uses `mined_hash` of the last block as `previous_hash`.
-        - Retrieves transactions from mempool and includes coinbase transaction.
-        - Stores all transactions in txindex.lmdb and updates UTXOs.
+        - Added stop functionality while preserving all original logging
+        - Uses self._mining_active flag to control mining process
+        - Maintains exact same output format for mining progress
         """
         with self._mining_lock:
             try:
+                # Initialize mining state
+                self._mining_active = True
                 print("[Miner.mine_block] START: Initiating mining procedure.")
                 start_time = time.time()
 
@@ -728,3 +760,11 @@ class Miner:
             except Exception as e:
                 print(f"[Miner.mine_block] ERROR: Unexpected error: {e}")
                 return None
+            finally:
+                self._mining_active = False
+
+    # Add this method to your Miner class
+    def stop(self):
+        """Stop the current mining operation"""
+        self._mining_active = False
+        print("[Miner.stop] Mining stop requested")

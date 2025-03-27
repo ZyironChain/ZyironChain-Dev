@@ -39,7 +39,7 @@ from Zyiron_Chain.utils.hashing import Hashing
 class TxStorage:
     """
     TxStorage manages the transaction index (txindex.lmdb) for the blockchain.
-    
+
     Responsibilities:
       - Store transaction metadata in LMDB.
       - Ensure transactions are linked to their block.
@@ -51,64 +51,128 @@ class TxStorage:
     def __init__(self, fee_model: Optional["FeeModel"] = None):
         """
         Initialize the TxStorage with LMDB backend and fee model.
-        
+
         Args:
             fee_model (FeeModel): Instance of FeeModel for transaction fee calculations
-            
+
         Raises:
             ValueError: If database path is not defined or fee_model is missing
         """
         try:
             print("[TxStorage.__init__] INFO: Initializing transaction storage...")
 
-            # Get transaction index database path from Constants
             txindex_path = Constants.DATABASES.get("txindex")
             if not txindex_path:
-                raise ValueError("[TxStorage.__init__] ERROR: Transaction index database path not defined in Constants.DATABASES.")
+                raise ValueError("[TxStorage.__init__] ERROR: Transaction index path not defined in Constants.DATABASES.")
 
-            # Initialize LMDB manager for transaction index
-            self.txindex_db = LMDBManager(txindex_path)
+            # Attempt to initialize LMDBManager safely
+            try:
+                self.txindex_db = LMDBManager(txindex_path)
+            except Exception as e:
+                print(f"[TxStorage.__init__] ⚠️ Initial LMDB init failed: {e}")
+                time.sleep(0.2)
+                self.txindex_db = LMDBManager(txindex_path)  # Final retry
+                print(f"[TxStorage.__init__] 🔁 Retried and reinitialized LMDB.")
 
-            # Validate fee model is provided
             if not fee_model:
                 raise ValueError("[TxStorage.__init__] ERROR: FeeModel instance is required.")
             self.fee_model = fee_model
 
-            print(f"[TxStorage.__init__] SUCCESS: Initialized TxStorage with LMDB path: {txindex_path}")
+            print(f"[TxStorage.__init__] ✅ SUCCESS: TxStorage initialized at: {txindex_path}")
 
         except Exception as e:
-            print(f"[TxStorage.__init__] ERROR: Failed to initialize TxStorage: {e}")
+            print(f"[TxStorage.__init__] ❌ ERROR: Failed to initialize TxStorage: {e}")
             raise
 
-
     def reopen(self):
-        if not self.env:
-            self._open_env()
-        else:
-            try:
-                self.env.stat()
-            except Exception:
-                self._open_env()
+        """
+        Attempt to reopen the LMDB environment if it becomes invalid.
+        """
+        try:
+            if not self.txindex_db.env:
+                self.txindex_db._open_env()
+            else:
+                self.txindex_db.env.stat()  # Check if it's alive
+        except Exception as e:
+            print(f"[TxStorage.reopen] ⚠️ Detected invalid LMDB state, reopening... Reason: {e}")
+            self.txindex_db._open_env()
+            print("[TxStorage.reopen] ✅ Reopened LMDB environment.")
 
+    def close(self):
+        """
+        Close the LMDB environment to prevent lock errors on shutdown.
+        """
+        try:
+            if self.txindex_db and hasattr(self.txindex_db, "env"):
+                self.txindex_db.env.close()
+                print("[TxStorage.close] ✅ LMDB environment closed successfully.")
+        except Exception as e:
+            print(f"[TxStorage.close] ❌ Failed to close LMDB: {e}")
+
+    def is_env_closed(self) -> bool:
+        """
+        Check if the LMDB environment is closed or invalid.
+        """
+        try:
+            self.txindex_db.env.stat()
+            return False
+        except Exception:
+            return True
 
     def get_transaction_count(self) -> int:
         """
-        Returns the number of stored transactions in txindex.lmdb.
+        Returns the total number of stored transactions in txindex.lmdb.
+        Falls back to full block storage if metadata is missing or is a dict.
         """
         try:
             count = 0
+            seen_blocks = set()
+
             with self.txindex_db.env.begin(write=False) as txn:
                 cursor = txn.cursor()
                 for key, _ in cursor:
                     if key.startswith(b"block_tx:"):
-                        count += 1
-            print(f"[TxStorage] ✅ Transaction count: {count}")
+                        block_hash = key.split(b":")[1]
+                        if block_hash in seen_blocks:
+                            continue
+                        seen_blocks.add(block_hash)
+
+                        # Try block metadata first
+                        block_metadata = self.block_metadata.get_block_by_hash(block_hash)
+
+                        if isinstance(block_metadata, dict):
+                            tx_count = block_metadata.get("transaction_count")
+                            block_index = block_metadata.get("index", "??")
+                            if tx_count is not None:
+                                count += int(tx_count)
+                                print(f"[TxStorage] 📘 Block {block_index} ({block_hash.hex()[:8]}...) from metadata (dict): {tx_count} txs")
+                                continue
+                        elif block_metadata and hasattr(block_metadata, "transaction_count"):
+                            count += int(block_metadata.transaction_count)
+                            block_index = getattr(block_metadata, "index", "??")
+                            print(f"[TxStorage] 📗 Block {block_index} ({block_hash.hex()[:8]}...) from metadata (obj): {block_metadata.transaction_count} txs")
+                            continue
+
+                        # Fallback to full block
+                        full_block = self.block_storage.get_block_by_hash(block_hash)
+                        if isinstance(full_block, dict):
+                            txs = full_block.get("transactions", [])
+                            index = full_block.get("index", "??")
+                            count += len(txs)
+                            print(f"[TxStorage] 📙 Block {index} ({block_hash.hex()[:8]}...) from full block (dict): {len(txs)} txs")
+                        elif full_block and hasattr(full_block, "transactions"):
+                            count += len(full_block.transactions)
+                            index = getattr(full_block, "index", "??")
+                            print(f"[TxStorage] 📕 Block {index} ({block_hash.hex()[:8]}...) from full block (obj): {len(full_block.transactions)} txs")
+                        else:
+                            print(f"[TxStorage] ⚠️ Block {block_hash.hex()[:8]} not found in metadata or full block storage.")
+
+            print(f"[TxStorage] ✅ Total transaction count: {count}")
             return count
+
         except Exception as e:
             print(f"[TxStorage] ❌ Error counting transactions: {e}")
             return 0
-
-
 
 
 

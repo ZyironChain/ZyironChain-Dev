@@ -340,7 +340,63 @@ class Transaction:
             }
         except Exception as e:
             print(f"[TRANSACTION to_dict ERROR] Failed to serialize transaction {self.tx_id}: {e}")
+      
+      
+      
+      
+      
             return {}
+        
+
+
+
+    @classmethod
+    def from_dict(cls, data: Dict, utxo_manager: Optional[UTXOManager] = None, fee_model: Optional[FeeModel] = None):
+        """
+        Reconstruct a Transaction object from a dictionary.
+        Dynamically determines the transaction type and rebuilds all components.
+
+        :param data: Dictionary with transaction fields.
+        :param utxo_manager: Optional UTXOManager instance.
+        :param fee_model: Optional FeeModel instance.
+        :return: Reconstructed Transaction instance or None.
+        """
+        try:
+            # ✅ Validate and rehydrate inputs/outputs
+            inputs = [TransactionIn.from_dict(i) for i in data.get("inputs", [])]
+            outputs = [TransactionOut.from_dict(o) for o in data.get("outputs", [])]
+
+            # ✅ Get transaction type and sanitize
+            raw_type = data.get("type", "STANDARD").upper().strip()
+            valid_types = ["STANDARD", "SMART", "INSTANT", "COINBASE"]
+            tx_type = raw_type if raw_type in valid_types else "STANDARD"
+
+            # ✅ Initialize Transaction with parsed values
+            tx = cls(
+                inputs=inputs,
+                outputs=outputs,
+                tx_id=data.get("tx_id"),
+                utxo_manager=utxo_manager,
+                tx_type=tx_type,
+                fee_model=fee_model,
+                block_height=data.get("block_height")
+            )
+
+            # ✅ Override optional fields from dict
+            tx.hash = data.get("hash", tx.calculate_hash())
+            tx.fee = Decimal(str(data.get("fee", Constants.MIN_TRANSACTION_FEE)))
+            tx.size = int(data.get("size", tx._calculate_size()))
+            tx.timestamp = int(data.get("timestamp", time.time()))
+            tx.tx_type = tx_type  # 🔁 Ensure alias is synced
+
+            return tx
+
+        except Exception as e:
+            print(f"[Transaction from_dict ERROR] Failed to load transaction from dict: {e}")
+            return None
+
+
+
 
     def store_transaction(self):
         """

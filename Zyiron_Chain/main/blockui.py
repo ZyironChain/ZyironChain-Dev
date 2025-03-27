@@ -1,5 +1,6 @@
 import sys
 import os
+import traceback
 from typing import List, Optional
 
 #!/usr/bin/env python3
@@ -50,95 +51,545 @@ from Zyiron_Chain.transactions.tx import Transaction
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
+from datetime import datetime
+import time
+import threading
+import json
+import os
+import atexit
+from decimal import Decimal
+import webbrowser
+from PIL import Image, ImageTk
+import sv_ttk
+import ttkbootstrap as ttkbs
+from ttkbootstrap.constants import *
+from ttkbootstrap.tooltip import ToolTip
+from ttkbootstrap.scrolled import ScrolledFrame
+import logging
+import queue
+
+import threading
+
 class BlockchainUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Zyiron Chain Explorer")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x900")
+        self.root.minsize(1200, 800)
+
+        # Setup colors FIRST before creating any UI elements
+        self.bg_color = "#121212"
+        self.card_bg = "#1E1E1E"
+        self.accent_color = "#7B2CBF"
+        self.secondary_accent = "#9D4EDD"
+        self.text_color = "#E0E0E0"
+        self.success_color = "#4CAF50"
+        self.warning_color = "#FFC107"
+        self.error_color = "#F44336"
+
+        # Set dark theme
+        sv_ttk.set_theme("dark")
+
+        # Track loading popup
+        self.loading_popup = None
+
+        # Show loading screen
+        self.create_loading_screen()
+        self.root.update()
+
+        # Setup basic state and threading
         self.mining_active = False
         self.mining_thread = None
-        
-        # Setup colors
-        self.bg_color = "#1e1e2e"  # Dark purple
-        self.fg_color = "#ffffff"  # White
-        self.accent_color = "#a162e8"  # Light purple
-        self.text_color = "#cdd6f4"  # Light gray
-        
-        # Configure root window
+        self.export_folder = os.path.expanduser("~/Downloads")
+        self.log_queue = queue.Queue()
         self.root.configure(bg=self.bg_color)
-        
-        # Initialize core attributes to None first
-        self.key_manager = None
-        self.blockchain = None
-        self.block_storage = None
-        self.tx_storage = None
-        self.utxo_manager = None
-        self.utxo_storage = None
-        self.transaction_manager = None
-        self.mempool_storage = None
-        self.block_manager = None
-        self.genesis_block_manager = None
-        self.miner = None
-        self.standard_mempool = None
-        self.smart_mempool = None
-        self.payment_processor = None
-        self.orphan_blocks = None
-        self.wallet_address = None
-        
-        # Create basic UI elements first (without dependencies)
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill='both')
-        self.log_output = scrolledtext.ScrolledText(self.notebook, height=20, wrap=tk.WORD)
-        self.log_output.pack(expand=True, fill='both', padx=5, pady=5)
-        self.log_output.configure(state='disabled')
-        
-        # Now initialize blockchain components
-        self.initialize_blockchain()
-        
-        # Then setup the full UI
-        self.setup_ui()
-        
-        # Start mining monitor
-        self.start_mining_monitor()
-        
+
+        # Start the main UI load after short delay (prevent freeze)
+        self.root.after(100, self.initialize_ui_async)
+
         # Register cleanup
         atexit.register(self.cleanup)
 
+        # Bind right-click menu
         self.root.bind_class("Text", "<Button-3><ButtonRelease-3>", self.show_right_click_menu)
 
 
-    def initialize_blockchain(self):
-        """Initialize all blockchain components with proper error handling"""
+
+
+
+    def initialize_ui_async(self):
+        """Safely initialize UI components in background with proper error handling"""
         try:
-            # 1. Initialize KeyManager
+            # Ensure we're in the main thread for Tkinter operations
+            if not self.is_main_thread():
+                self.root.after(0, self.initialize_ui_async)
+                return
+
+            # Setup loading screen first
+            if not hasattr(self, "loading_screen") or not self.loading_screen.winfo_exists():
+                self.create_loading_screen()
+            self.update_loading_screen(5, "Starting initialization...")
+
+            # Start background thread with proper error propagation
+            self._loading_thread = threading.Thread(
+                target=self._load_ui_background,
+                daemon=True,
+                name="UI_Initializer"
+            )
+            self._loading_thread.start()
+
+            # Start monitoring progress
+            self._monitor_loading_progress()
+
+        except Exception as e:
+            self._handle_loading_failure(f"Initialization failed: {str(e)}")
+
+
+    def _monitor_loading_progress(self):
+        """Monitor loading progress and handle completion/failure"""
+        if not hasattr(self, '_loading_thread'):
+            return
+
+        if self._loading_thread.is_alive():
+            self.root.after(500, self._monitor_loading_progress)
+        else:
+            if hasattr(self, '_loading_complete') and self._loading_complete:
+                self.root.after(0, self.finalize_ui_loading)
+            elif hasattr(self, '_loading_failed') and self._loading_failed:
+                self.root.after(0, lambda: self._handle_loading_failure("Background thread failed"))
+
+
+    def _on_tab_change(self, event):
+        selected_tab = event.widget.select()
+        tab_text = event.widget.tab(selected_tab, option="text")
+
+        print(f"Tab switched to: {tab_text}")  # Debug output
+
+        if "wallet" in tab_text.lower():
+            print("Refreshing Wallet tab...")
+            if hasattr(self, "refresh_wallet"):
+                self.refresh_wallet()
+            else:
+                print("⚠️ Warning: refresh_wallet method is missing.")
+
+
+    def destroy_loading_screen(self):
+        """Destroy the loading screen popup once initialization is complete"""
+        if hasattr(self, "loading_popup") and self.loading_popup:
+            try:
+                self.loading_popup.destroy()
+                self.loading_popup = None
+                print("[UI] Loading screen destroyed.")
+            except Exception as e:
+                print(f"[UI] Failed to destroy loading screen: {e}")
+
+
+
+    def _safe_load_wallet(self):
+        """Wrapper for wallet loading with validation and error handling"""
+        try:
+            if not hasattr(self, 'wallet_address') or not self.wallet_address:
+                # Initialize wallet if not exists
+                self.wallet_address = self.key_manager.get_default_public_key()
+                if not self.wallet_address:
+                    raise ValueError("Failed to generate wallet address")
+            
+            # Verify wallet components
+            if not all(hasattr(self, attr) for attr in ['key_manager', 'utxo_storage']):
+                raise RuntimeError("Missing required wallet components")
+                
+            # Load wallet data
+            self.view_wallet()
+            self.refresh_wallet()
+            
+            return True
+        except Exception as e:
+            error_msg = f"Wallet loading failed: {str(e)}"
+            self.log_message(error_msg, "ERROR")
+            raise RuntimeError(error_msg) from e
+
+
+
+    def _load_ui_background(self):
+        """Background thread for loading components with proper resource management"""
+        try:
+            # Track initialization stages with weights
+            stages = [
+                ("Initializing Blockchain", 30, self._safe_initialize_blockchain),
+                ("Setting Up UI", 40, self._safe_setup_ui),
+                ("Loading Wallet", 20, self._safe_load_wallet),
+                ("Starting Services", 10, self._start_background_services)
+            ]
+
+            total_weight = sum(weight for _, weight, _ in stages)
+            progress = 0
+
+            for name, weight, func in stages:
+                self.update_loading_screen(progress, name)
+                func()
+                progress += (weight / total_weight) * 100
+                self.update_loading_screen(min(100, progress), name)
+
+            # Final completion
+            self._loading_complete = True
+
+            # Ensure loading screen closes on success
+            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
+                self.root.after(0, self.loading_screen.destroy)
+
+        except Exception as e:
+            self._loading_failed = True
+            error_msg = f"Background loading failed: {str(e)}\n{traceback.format_exc()}"
+            self.log_queue.put((error_msg, "ERROR"))
+            print(error_msg)
+
+
+    def _start_background_services(self):
+        """Start all required background services"""
+        services = [
+            ("Mining Monitor", self.start_mining_monitor),
+            ("Log Handler", self.start_log_handler),
+            ("Auto-Refresh", self.auto_refresh_ui)
+        ]
+        
+        for name, service in services:
+            try:
+                service()
+                self.update_loading_screen(
+                    self.loading_progress['value'],
+                    f"Started {name}"
+                )
+            except Exception as e:
+                self.log_output(f"Failed to start {name}: {str(e)}", "WARNING")
+
+
+
+
+
+    def finalize_ui_loading(self):
+        """Finalize UI with proper cleanup and validation"""
+        try:
+            # Verify critical components
+            required_components = [
+                'blockchain', 'miner', 'wallet_address',
+                'notebook', 'status_bar'
+            ]
+            missing = [comp for comp in required_components if not hasattr(self, comp)]
+            if missing:
+                raise RuntimeError(f"Missing critical components: {', '.join(missing)}")
+
+            # Update UI elements
+            self.remove_loading_screen()
+            self.animate_loading_complete()
+            
+            # Initial data load
+            self.update_dashboard()
+            self.load_recent_blocks()
+            self.refresh_wallet()
+            
+            self.log_output("UI initialization completed successfully", "SUCCESS")
+
+        except Exception as e:
+            self._handle_loading_failure(f"Finalization failed: {str(e)}")
+
+    def _handle_loading_failure(self, error_msg):
+        """Handle loading failures with proper cleanup"""
+        try:
+            # Attempt to remove loading screen if it exists
+            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
+                self.loading_screen.destroy()
+
+            # Show error message
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                messagebox.showerror(
+                    "Initialization Error",
+                    f"Failed to initialize application:\n\n{error_msg}",
+                    parent=self.root
+                )
+                self.root.destroy()
+            else:
+                print(f"Critical error: {error_msg}")
+                sys.exit(1)
+
+        except Exception as e:
+            print(f"Error during failure handling: {str(e)}")
+            sys.exit(1)
+
+    def log_output(self, message, level="INFO"):
+        """Enhanced thread-safe logging with UI updates"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        level_icon = {
+            "INFO": "ℹ️",
+            "WARNING": "⚠️",
+            "ERROR": "❌",
+            "SUCCESS": "✅"
+        }.get(level, "•")
+        
+        formatted = f"[{timestamp}] {level_icon} [{level}] {message}"
+        
+        # Always print to console
+        print(formatted)
+        
+        # Queue for UI update if available
+        if hasattr(self, 'log_queue'):
+            try:
+                color = {
+                    "INFO": self.text_color,
+                    "WARNING": self.warning_color,
+                    "ERROR": self.error_color,
+                    "SUCCESS": self.success_color
+                }.get(level, self.text_color)
+                
+                self.log_queue.put((formatted, color))
+            except Exception as e:
+                print(f"Failed to queue log message: {str(e)}")
+
+        # Immediate UI update if in main thread
+        if self.is_main_thread() and hasattr(self, 'log_output_widget'):
+            try:
+                self.log_output_widget.configure(state='normal')
+                self.log_output_widget.insert(tk.END, formatted + "\n")
+                self.log_output_widget.configure(state='disabled')
+                self.log_output_widget.see(tk.END)
+            except Exception as e:
+                print(f"Failed direct log update: {str(e)}")
+
+    def is_main_thread(self):
+        """Check if current thread is the main thread"""
+        return isinstance(threading.current_thread(), threading._MainThread)
+
+    def create_loading_screen(self):
+        """Create a modern loading screen with enhanced functionality"""
+        # Create loading screen window
+        self.loading_screen = tk.Toplevel(self.root)
+        self.loading_screen.overrideredirect(True)
+        self._center_loading_screen()
+        self.loading_screen.configure(bg=self.bg_color)
+        
+        # Configure window close behavior
+        self.loading_screen.protocol("WM_DELETE_WINDOW", self._confirm_close_loading)
+        
+        # Create loading screen content
+        self._setup_loading_content()
+        
+        # Make sure it stays on top
+        self.loading_screen.lift()
+        self.loading_screen.attributes('-topmost', True)
+        self.root.update()
+
+    def _center_loading_screen(self):
+        """Center the loading screen on the display"""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = 400
+        window_height = 300
+        position_x = (screen_width // 2) - (window_width // 2)
+        position_y = (screen_height // 2) - (window_height // 2)
+        self.loading_screen.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+
+    def _setup_loading_content(self):
+        """Create all loading screen UI elements"""
+        # Logo and title
+        logo_label = ttk.Label(
+            self.loading_screen,
+            text="⚡ Zyiron Chain",
+            font=('Helvetica', 24, 'bold'),
+            foreground=self.accent_color,
+            background=self.bg_color
+        )
+        logo_label.pack(pady=40)
+
+        # Progress bar
+        self.loading_progress = ttkbs.Progressbar(
+            self.loading_screen,
+            bootstyle="striped",
+            maximum=100,
+            mode='determinate',
+            length=300
+        )
+        self.loading_progress.pack(pady=20)
+
+        # Status label
+        self.loading_label = ttk.Label(
+            self.loading_screen,
+            text="Initializing blockchain components...",
+            font=('Helvetica', 10),
+            foreground=self.text_color,
+            background=self.bg_color
+        )
+        self.loading_label.pack(pady=10)
+
+        # Percentage indicator
+        self.loading_percent = ttk.Label(
+            self.loading_screen,
+            text="0%",
+            font=('Helvetica', 10, 'bold'),
+            foreground=self.accent_color,
+            background=self.bg_color
+        )
+        self.loading_percent.pack()
+
+        # Close button (styled to match theme)
+        close_btn = ttkbs.Button(
+            self.loading_screen,
+            text="✕",
+            command=self._confirm_close_loading,
+            bootstyle="danger-link",
+            width=2
+        )
+        close_btn.place(relx=0.95, rely=0.05, anchor='ne')
+
+    def _confirm_close_loading(self):
+        """Handle confirmation when trying to close loading screen"""
+        if messagebox.askokcancel(
+            "Cancel Initialization", 
+            "Are you sure you want to cancel the initialization process?",
+            parent=self.loading_screen
+        ):
+            self._safe_close_loading()
+            self.root.destroy()
+
+
+    def _safe_initialize_blockchain(self):
+        """Wrapper for blockchain initialization with error handling"""
+        try:
+            self.initialize_blockchain()
+        except Exception as e:
+            raise RuntimeError(f"Blockchain initialization failed: {str(e)}")
+
+    def _safe_setup_ui(self):
+        """Wrapper for UI setup with thread safety checks"""
+        if not self.is_main_thread():
+            self.root.after(0, self._safe_setup_ui)
+            return
+            
+        try:
+            self.setup_ui()
+        except Exception as e:
+            raise RuntimeError(f"UI setup failed: {str(e)}")
+        
+
+
+
+
+    def _safe_close_loading(self):
+        """Safely close the loading screen without animation"""
+        try:
+            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
+                self.loading_screen.destroy()
+        except Exception as e:
+            print(f"Error closing loading screen: {e}")
+
+    def update_loading_screen(self, progress, message):
+        """Update loading screen progress and message"""
+        try:
+            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
+                progress = max(0, min(100, progress))  # Clamp between 0-100
+                self.loading_progress['value'] = progress
+                self.loading_label.config(text=message)
+                self.loading_percent.config(text=f"{progress}%")
+                self.loading_screen.update()
+        except Exception as e:
+            print(f"Error updating loading screen: {e}")
+
+    def remove_loading_screen(self):
+        """Remove loading screen with animation"""
+        self._update_loading_screen(100, "Initialization complete!")
+        time.sleep(0.5)  # Brief pause at 100%
+        self._safe_close_loading()
+
+    def is_mainloop_running(self):
+        """Check if the main Tkinter loop is running"""
+        try:
+            return self.root and self.root.winfo_exists()
+        except (tk.TclError, RuntimeError):
+            return False
+
+
+
+
+    def animate_loading_complete(self):
+        """Show completion animation"""
+        completion_label = ttk.Label(
+            self.root,
+            text="Ready",
+            font=('Helvetica', 12, 'bold'),
+            foreground=self.success_color,
+            background=self.bg_color
+        )
+        completion_label.place(relx=0.5, rely=0.5, anchor='center')
+        
+        # Animate fade out and grow
+        for i in range(1, 21):
+            size = 12 + i
+            completion_label.config(font=('Helvetica', size, 'bold'))
+            completion_label.place(relx=0.5, rely=0.5, anchor='center')
+            self.root.update()
+            time.sleep(0.02)
+
+        # Handle fade out by using Toplevel transparency
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.geometry(f"+{self.root.winfo_rootx()}+{self.root.winfo_rooty()}")
+        top.configure(bg=self.bg_color)
+        
+        temp_label = tk.Label(
+            top,
+            text="Ready",
+            font=('Helvetica', 32, 'bold'),
+            fg=self.success_color,
+            bg=self.bg_color
+        )
+        temp_label.pack(expand=True, fill='both')
+        top.lift()
+        top.attributes('-topmost', True)
+        top.update()
+
+        for alpha in range(100, -1, -5):
+            top.attributes('-alpha', alpha / 100)
+            top.update()
+            time.sleep(0.02)
+
+        top.destroy()
+        completion_label.destroy()
+
+
+    def initialize_blockchain(self):
+        """Run blockchain initialization in background thread to avoid UI freeze"""
+        threading.Thread(target=self._initialize_blockchain_thread, daemon=True).start()
+
+
+    def _initialize_blockchain_thread(self):
+        try:
+            self.root.after(0, lambda: self.update_loading_screen(5, "🔑 Initializing Key Manager..."))
             self.key_manager = KeyManager()
 
-            # 2. Initialize FeeModel
+            self.root.after(0, lambda: self.update_loading_screen(12, "💸 Setting up Fee Model..."))
             self.fee_model = FeeModel(Constants.MAX_SUPPLY)
 
-            # 3. Initialize TxStorage
+            self.root.after(0, lambda: self.update_loading_screen(20, "📦 Preparing Transaction Storage..."))
             self.tx_storage = TxStorage(fee_model=self.fee_model)
 
-            # 4. Initialize Block Storage
-           # 4. Initialize Block Storage
+            self.root.after(0, lambda: self.update_loading_screen(30, "📚 Configuring Block Storage..."))
             self.block_storage = BlockStorage(
                 tx_storage=self.tx_storage,
                 key_manager=self.key_manager,
-                utxo_storage=None  # Will set this later after UTXOManager is ready
+                utxo_storage=None
             )
-            # 5. Initialize UTXOStorage (with fallback support)
+
+            self.root.after(0, lambda: self.update_loading_screen(40, "💾 Setting up UTXO Storage..."))
             self.utxo_storage = UTXOStorage(
-                utxo_manager=None,  # Placeholder for now
+                utxo_manager=None,
                 block_storage=self.block_storage
             )
 
-            # 6. Initialize UTXOManager with injected UTXOStorage
+            self.root.after(0, lambda: self.update_loading_screen(50, "🔗 Initializing UTXO Manager..."))
             self.utxo_manager = UTXOManager(self.utxo_storage)
-
-            # 7. Inject the UTXOManager back into UTXOStorage
             self.block_storage.utxo_storage = self.utxo_storage
 
-            # 8. Initialize Transaction Manager
+            self.root.after(0, lambda: self.update_loading_screen(60, "📤 Creating Transaction Manager..."))
             self.transaction_manager = TransactionManager(
                 block_storage=self.block_storage,
                 tx_storage=self.tx_storage,
@@ -146,10 +597,10 @@ class BlockchainUI:
                 key_manager=self.key_manager
             )
 
-            # 9. Initialize Mempool Storage
+            self.root.after(0, lambda: self.update_loading_screen(68, "📥 Preparing Mempool Storage..."))
             self.mempool_storage = MempoolStorage(self.transaction_manager)
 
-            # 10. Initialize Blockchain
+            self.root.after(0, lambda: self.update_loading_screen(75, "⛓️ Building Blockchain Core..."))
             self.blockchain = Blockchain(
                 tx_storage=self.tx_storage,
                 utxo_storage=self.utxo_storage,
@@ -158,7 +609,7 @@ class BlockchainUI:
                 full_block_store=self.block_storage
             )
 
-            # 11. Initialize BlockManager
+            self.root.after(0, lambda: self.update_loading_screen(82, "🧱 Creating Block Manager..."))
             self.block_manager = BlockManager(
                 blockchain=self.blockchain,
                 block_storage=self.block_storage,
@@ -167,7 +618,7 @@ class BlockchainUI:
                 transaction_manager=self.transaction_manager
             )
 
-            # 12. Initialize Genesis Block Manager
+            self.root.after(0, lambda: self.update_loading_screen(88, "🌱 Setting up Genesis Block Manager..."))
             self.genesis_block_manager = GenesisBlockManager(
                 block_storage=self.block_storage,
                 key_manager=self.key_manager,
@@ -175,7 +626,7 @@ class BlockchainUI:
                 block_manager=self.block_manager
             )
 
-            # 13. Initialize Miner
+            self.root.after(0, lambda: self.update_loading_screen(93, "⚒️ Launching Miner..."))
             self.miner = Miner(
                 blockchain=self.blockchain,
                 block_manager=self.block_manager,
@@ -187,40 +638,74 @@ class BlockchainUI:
                 genesis_block_manager=self.genesis_block_manager
             )
 
-            # 14. Initialize Mempools
+            self.root.after(0, lambda: self.update_loading_screen(96, "💡 Initializing Mempools..."))
             self.standard_mempool = StandardMempool(utxo_storage=self.utxo_storage)
             self.smart_mempool = SmartMempool(utxo_storage=self.utxo_storage)
 
-            # 15. Initialize Payment Processor with fee_model passed in
+            self.root.after(0, lambda: self.update_loading_screen(98, "🧮 Starting Payment Processor..."))
             self.payment_processor = PaymentProcessor(
                 utxo_manager=self.utxo_manager,
                 tx_storage=self.tx_storage,
                 standard_mempool=self.standard_mempool,
                 smart_mempool=self.smart_mempool,
                 key_manager=self.key_manager,
-                fee_model=self.fee_model  # ✅ Inject fee_model
             )
 
-            # 16. Initialize Orphan Block Store
             self.orphan_blocks = OrphanBlocks()
-
-            # 17. Set wallet address
             self.wallet_address = self.key_manager.get_default_public_key()
 
-            self.log_message("[System] Blockchain components initialized successfully")
+            self.root.after(0, lambda: self.update_loading_screen(100, "✅ Finalizing Setup..."))
+            self.log_message("[System] Blockchain components initialized successfully", "INFO")
 
         except Exception as e:
             error_msg = f"[ERROR] Failed to initialize blockchain: {str(e)}"
-            self.log_message(error_msg)
+            self.log_message(error_msg, "ERROR")
             messagebox.showerror("Initialization Error", "Failed to initialize blockchain components")
             raise RuntimeError("Blockchain initialization failed") from e
 
 
+
+
+
+
+    def close_loading_popup(self):
+        try:
+            if hasattr(self, "loading_popup") and self.loading_popup:
+                self.loading_popup.destroy()
+                print("[UI] ✅ Loading popup closed.")
+        except Exception as e:
+            print(f"[UI] ⚠️ Failed to close loading popup: {e}")
+
+    def show_wallet_tab(self):
+        print("[UI] Switching to Wallet tab")
+        self.wallet_tab_frame.tkraise()
+
+        # Clear existing widgets in wallet tab frame
+        for widget in self.wallet_tab_frame.winfo_children():
+            widget.destroy()
+
+        # Add wallet balance label (rebuild UI)
+        balance = self.utxo_manager.get_balance(self.key_manager.get_address())
+        balance_label = tk.Label(self.wallet_tab_frame, text=f"Balance: {balance} ZYC", font=("Arial", 14))
+        balance_label.pack(pady=10)
+
+        # Add a refresh button
+        refresh_button = tk.Button(self.wallet_tab_frame, text="Refresh", command=self.show_wallet_tab)
+        refresh_button.pack()
+
+
     def setup_ui(self):
-        """Setup the main UI components"""
+        """Setup the main UI components with modern styling"""
+        # Create main container
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill='both', expand=True)
+        
+        # Create header
+        self.create_header()
+        
         # Create notebook for tabs
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill='both')
+        self.notebook = ttkbs.Notebook(self.main_container, bootstyle="dark")
+        self.notebook.pack(fill='both', expand=True, padx=10, pady=(0, 10))
         
         # Create tabs
         self.create_dashboard_tab()
@@ -231,144 +716,285 @@ class BlockchainUI:
         self.create_explorer_tab()
         self.create_log_tab()
         
-        # Apply styling
-        self.apply_styles()
+        # Create status bar
+        self.create_status_bar()
+        
+        # Apply initial updates
+        self.update_dashboard()
 
-    def apply_styles(self):
-        """Apply custom styling to widgets"""
-        style = ttk.Style()
-        style.theme_use('clam')
+    def create_header(self):
+        """Create a modern header with logo and quick stats"""
+        header_frame = ttk.Frame(self.main_container, style='dark.TFrame')
+        header_frame.pack(fill='x', padx=10, pady=10)
         
-        # Configure colors
-        style.configure('.', background=self.bg_color, foreground=self.fg_color)
-        style.configure('TNotebook', background=self.bg_color, borderwidth=0)
-        style.configure('TNotebook.Tab', background=self.bg_color, foreground=self.fg_color, 
-                       padding=[10, 5], font=('Arial', 10, 'bold'))
-        style.map('TNotebook.Tab', background=[('selected', self.accent_color)])
+        # Logo and title
+        logo_frame = ttk.Frame(header_frame, style='dark.TFrame')
+        logo_frame.pack(side='left', padx=10)
         
-        style.configure('TFrame', background=self.bg_color)
-        style.configure('TLabel', background=self.bg_color, foreground=self.fg_color)
-        style.configure('TButton', background=self.accent_color, foreground='black', 
-                       font=('Arial', 10), padding=5)
-        style.map('TButton', background=[('active', '#b583e8')])
+        # Replace with your logo
+        ttk.Label(logo_frame, text="⚡", font=('Helvetica', 24), 
+                 style='primary.TLabel').pack(side='left')
+        ttk.Label(logo_frame, text="Zyiron Chain Explorer", font=('Helvetica', 16, 'bold'), 
+                 style='primary.TLabel').pack(side='left', padx=5)
         
-        style.configure('Treeview', background='#2e2e3e', foreground=self.fg_color, 
-                       fieldbackground='#2e2e3e')
-        style.map('Treeview', background=[('selected', self.accent_color)])
-        style.configure('Treeview.Heading', background='#3e3e4e', foreground=self.fg_color)
+        # Quick stats
+        stats_frame = ttk.Frame(header_frame, style='dark.TFrame')
+        stats_frame.pack(side='right', padx=10)
         
-        style.configure('TEntry', fieldbackground='#2e2e3e', foreground=self.fg_color)
-        style.configure('TCombobox', fieldbackground='#2e2e3e', foreground=self.fg_color)
+        # Network status
+        self.network_status = ttk.Label(
+            stats_frame, 
+            text=f"Network: {Constants.NETWORK}", 
+            font=('Helvetica', 10),
+            style='info.TLabel'
+        )
+        self.network_status.pack(side='right', padx=10)
+        
+        # Block height
+        self.header_block_height = ttk.Label(
+            stats_frame, 
+            text="Height: 0", 
+            font=('Helvetica', 10),
+            style='info.TLabel'
+        )
+        self.header_block_height.pack(side='right', padx=10)
+        
+        # Sync status
+        self.sync_status = ttk.Label(
+            stats_frame, 
+            text="🟢 Synced", 
+            font=('Helvetica', 10),
+            style='success.TLabel'
+        )
+        self.sync_status.pack(side='right', padx=10)
+
+    def create_status_bar(self):
+        """Create a modern status bar"""
+        self.status_bar = ttk.Frame(self.main_container, height=25, style='secondary.TFrame')
+        self.status_bar.pack(fill='x', side='bottom', padx=10, pady=(0, 10))
+        
+        # Left status
+        self.status_left = ttk.Label(
+            self.status_bar, 
+            text="Ready", 
+            style='secondary.Inverse.TLabel'
+        )
+        self.status_left.pack(side='left', padx=10)
+        
+        # Right status
+        self.status_right = ttk.Label(
+            self.status_bar, 
+            text=f"v{Constants.VERSION}", 
+            style='secondary.Inverse.TLabel'
+        )
+        self.status_right.pack(side='right', padx=10)
+        
+        # Middle status
+        self.status_middle = ttk.Label(
+            self.status_bar, 
+            text="", 
+            style='secondary.Inverse.TLabel'
+        )
+        self.status_middle.pack(side='right', padx=10)
 
     def create_dashboard_tab(self):
-        """Create the dashboard tab with overview information"""
+        """Create the dashboard tab with modern cards"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Dashboard")
         
-        # Main frame
-        main_frame = ttk.Frame(tab)
-        main_frame.pack(expand=True, fill='both', padx=10, pady=10)
+        # Main container with scrollbar
+        container = ScrolledFrame(tab, autohide=True)
+        container.pack(fill='both', expand=True)
         
-        # Blockchain info frame
-        info_frame = ttk.LabelFrame(main_frame, text="Blockchain Information")
-        info_frame.pack(fill='x', padx=5, pady=5)
+        # Blockchain Info Card
+        blockchain_card = ttkbs.Labelframe(
+            container, 
+            text="Blockchain Information", 
+            bootstyle="info"
+        )
+        blockchain_card.pack(fill='x', padx=10, pady=5)
         
-        # Network info
-        ttk.Label(info_frame, text=f"Network: {Constants.NETWORK}").grid(row=0, column=0, sticky='w', padx=5, pady=2)
-        ttk.Label(info_frame, text=f"Version: {Constants.VERSION}").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        # Grid layout for stats
+        ttk.Label(blockchain_card, text="Network:", style='primary.TLabel').grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        ttk.Label(blockchain_card, text=f"{Constants.NETWORK}", style='light.TLabel').grid(row=0, column=1, sticky='w', padx=5, pady=2)
         
-        # Blockchain stats
-        self.block_height_label = ttk.Label(info_frame, text="Block Height: Loading...")
-        self.block_height_label.grid(row=2, column=0, sticky='w', padx=5, pady=2)
+        ttk.Label(blockchain_card, text="Version:", style='primary.TLabel').grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Label(blockchain_card, text=f"{Constants.VERSION}", style='light.TLabel').grid(row=1, column=1, sticky='w', padx=5, pady=2)
         
-        self.difficulty_label = ttk.Label(info_frame, text="Difficulty: Loading...")
-        self.difficulty_label.grid(row=3, column=0, sticky='w', padx=5, pady=2)
+        self.block_height_label = ttk.Label(blockchain_card, text="Block Height: Loading...", style='primary.TLabel')
+        self.block_height_label.grid(row=2, column=0, columnspan=2, sticky='w', padx=5, pady=2)
         
-        self.tx_count_label = ttk.Label(info_frame, text="Total Transactions: Loading...")
-        self.tx_count_label.grid(row=4, column=0, sticky='w', padx=5, pady=2)
+        self.difficulty_label = ttk.Label(blockchain_card, text="Difficulty: Loading...", style='primary.TLabel')
+        self.difficulty_label.grid(row=3, column=0, columnspan=2, sticky='w', padx=5, pady=2)
         
-        # Mempool info frame
-        mempool_frame = ttk.LabelFrame(main_frame, text="Mempool Information")
-        mempool_frame.pack(fill='x', padx=5, pady=5)
+        self.tx_count_label = ttk.Label(blockchain_card, text="Total Transactions: Loading...", style='primary.TLabel')
+        self.tx_count_label.grid(row=4, column=0, columnspan=2, sticky='w', padx=5, pady=2)
         
-        self.mempool_size_label = ttk.Label(mempool_frame, text="Pending Transactions: Loading...")
+        self.avg_mine_time_label = ttk.Label(blockchain_card, text="Avg Mining Time: Calculating...", style='primary.TLabel')
+        self.avg_mine_time_label.grid(row=5, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+        
+        # Mempool Info Card
+        mempool_card = ttkbs.Labelframe(
+            container, 
+            text="Mempool Information", 
+            bootstyle="warning"
+        )
+        mempool_card.pack(fill='x', padx=10, pady=5)
+        
+        self.mempool_size_label = ttk.Label(mempool_card, text="Pending Transactions: Loading...", style='primary.TLabel')
         self.mempool_size_label.pack(anchor='w', padx=5, pady=2)
         
-        self.mempool_size_standard_label = ttk.Label(mempool_frame, text="Standard TX: Loading...")
+        self.mempool_size_standard_label = ttk.Label(mempool_card, text="Standard TX: Loading...", style='primary.TLabel')
         self.mempool_size_standard_label.pack(anchor='w', padx=5, pady=2)
         
-        self.mempool_size_smart_label = ttk.Label(mempool_frame, text="Smart TX: Loading...")
+        self.mempool_size_smart_label = ttk.Label(mempool_card, text="Smart TX: Loading...", style='primary.TLabel')
         self.mempool_size_smart_label.pack(anchor='w', padx=5, pady=2)
         
-        # UTXO info frame
-        utxo_frame = ttk.LabelFrame(main_frame, text="UTXO Information")
-        utxo_frame.pack(fill='x', padx=5, pady=5)
+        # UTXO Info Card
+        utxo_card = ttkbs.Labelframe(
+            container, 
+            text="UTXO Information", 
+            bootstyle="danger"
+        )
+        utxo_card.pack(fill='x', padx=10, pady=5)
         
-        self.utxo_count_label = ttk.Label(utxo_frame, text="Total UTXOs: Loading...")
+        self.utxo_count_label = ttk.Label(utxo_card, text="Total UTXOs: Loading...", style='primary.TLabel')
         self.utxo_count_label.pack(anchor='w', padx=5, pady=2)
         
-        self.orphan_blocks_label = ttk.Label(utxo_frame, text="Orphan Blocks: Loading...")
+        self.orphan_blocks_label = ttk.Label(utxo_card, text="Orphan Blocks: Loading...", style='primary.TLabel')
         self.orphan_blocks_label.pack(anchor='w', padx=5, pady=2)
         
-        # Buttons frame
-        buttons_frame = ttk.Frame(main_frame)
-        buttons_frame.pack(fill='x', padx=5, pady=10)
+        # Buttons Card
+        buttons_card = ttkbs.Labelframe(
+            container, 
+            text="Actions", 
+            bootstyle="success"
+        )
+        buttons_card.pack(fill='x', padx=10, pady=5)
         
-        ttk.Button(buttons_frame, text="Refresh Data", command=self.update_dashboard).pack(side='left', padx=5)
-        ttk.Button(buttons_frame, text="Validate Blockchain", command=self.validate_blockchain).pack(side='left', padx=5)
+        btn_frame = ttk.Frame(buttons_card)
+        btn_frame.pack(fill='x', pady=5)
         
-        self.avg_mine_time_label = ttk.Label(info_frame, text="Avg Mining Time: Calculating...")
-        self.avg_mine_time_label.grid(row=5, column=0, sticky='w', padx=5, pady=2)
-                
-        # Initial update
-        self.update_dashboard()
+        ttkbs.Button(
+            btn_frame, 
+            text="🔄 Refresh Data", 
+            command=self.update_dashboard,
+            bootstyle="outline"
+        ).pack(side='left', padx=5)
+        
+        ttkbs.Button(
+            btn_frame, 
+            text="🔍 Validate Blockchain", 
+            command=self.validate_blockchain,
+            bootstyle="outline"
+        ).pack(side='left', padx=5)
+        
+        ttkbs.Button(
+            btn_frame, 
+            text="📊 View Stats", 
+            command=self.show_stats,
+            bootstyle="outline"
+        ).pack(side='left', padx=5)
 
     def create_blockchain_tab(self):
-        """Create the blockchain tab with block explorer"""
+        """Create the blockchain tab with modern explorer"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Blockchain")
         
-        # Search frame
-        search_frame = ttk.LabelFrame(tab, text="Block Search")
-        search_frame.pack(fill='x', padx=5, pady=5)
+        # Search Card
+        search_card = ttkbs.Labelframe(
+            tab, 
+            text="Block Search", 
+            bootstyle="info"
+        )
+        search_card.pack(fill='x', padx=10, pady=5)
         
         # Search type
-        ttk.Label(search_frame, text="Search By:").grid(row=0, column=0, padx=5, sticky='w')
+        ttk.Label(search_card, text="Search By:").grid(row=0, column=0, padx=5, sticky='w')
         self.block_search_type = tk.StringVar(value="height")
-        ttk.Radiobutton(search_frame, text="Height", variable=self.block_search_type, value="height").grid(row=0, column=1, sticky='w')
-        ttk.Radiobutton(search_frame, text="Hash", variable=self.block_search_type, value="hash").grid(row=0, column=2, sticky='w')
+        
+        ttkbs.Radiobutton(
+            search_card, 
+            text="Height", 
+            variable=self.block_search_type, 
+            value="height",
+            bootstyle="info-toolbutton"
+        ).grid(row=0, column=1, sticky='w')
+        
+        ttkbs.Radiobutton(
+            search_card, 
+            text="Hash", 
+            variable=self.block_search_type, 
+            value="hash",
+            bootstyle="info-toolbutton"
+        ).grid(row=0, column=2, sticky='w')
         
         # Search input
-        ttk.Label(search_frame, text="Value:").grid(row=1, column=0, padx=5, sticky='w')
-        self.block_search_entry = ttk.Entry(search_frame, width=50)
-        self.block_search_entry.grid(row=1, column=1, columnspan=2, sticky='we')
+        ttk.Label(search_card, text="Value:").grid(row=1, column=0, padx=5, sticky='w')
+        self.block_search_entry = ttkbs.Entry(search_card, width=50)
+        self.block_search_entry.grid(row=1, column=1, columnspan=2, sticky='we', pady=5)
         
         # Search button
-        search_btn = ttk.Button(search_frame, text="Search Block", command=self.search_block)
+        search_btn = ttkbs.Button(
+            search_card, 
+            text="🔍 Search Block", 
+            command=self.search_block,
+            bootstyle="info-outline"
+        )
         search_btn.grid(row=2, column=0, columnspan=3, pady=5)
+        ToolTip(search_btn, text="Search for a block by height or hash")
         
         # Results display
-        self.block_results = scrolledtext.ScrolledText(tab, height=15, wrap=tk.WORD)
-        self.block_results.pack(expand=True, fill='both', padx=5, pady=5)
+        results_card = ttkbs.Labelframe(
+            tab, 
+            text="Block Details", 
+            bootstyle="secondary"
+        )
+        results_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.block_results = ttkbs.ScrolledText(
+            results_card, 
+            height=15, 
+            wrap=tk.WORD
+        )
+
+        self.block_results.pack(fill='both', expand=True, padx=5, pady=5)
         self.block_results.configure(state='disabled')
         
-        # Recent blocks frame
-        recent_frame = ttk.LabelFrame(tab, text="Recent Blocks")
-        recent_frame.pack(fill='both', padx=5, pady=5)
+        # Recent blocks card
+        recent_card = ttkbs.Labelframe(
+            tab, 
+            text="Recent Blocks", 
+            bootstyle="primary"
+        )
+        recent_card.pack(fill='both', padx=10, pady=5)
         
         # Treeview for recent blocks
-        self.recent_blocks_tree = ttk.Treeview(recent_frame, columns=('height', 'hash', 'timestamp', 'tx_count'), show='headings')
+        self.recent_blocks_tree = ttkbs.Treeview(
+            recent_card, 
+            columns=('height', 'hash', 'timestamp', 'tx_count'), 
+            show='headings',
+            bootstyle="dark"
+        )
+        
+        # Configure columns
         self.recent_blocks_tree.heading('height', text='Height')
         self.recent_blocks_tree.heading('hash', text='Hash')
         self.recent_blocks_tree.heading('timestamp', text='Timestamp')
         self.recent_blocks_tree.heading('tx_count', text='TX Count')
+        
         self.recent_blocks_tree.column('height', width=80, anchor='center')
         self.recent_blocks_tree.column('hash', width=250)
         self.recent_blocks_tree.column('timestamp', width=150)
         self.recent_blocks_tree.column('tx_count', width=80, anchor='center')
         
         # Add scrollbar
-        scrollbar = ttk.Scrollbar(recent_frame, orient="vertical", command=self.recent_blocks_tree.yview)
+        scrollbar = ttkbs.Scrollbar(
+            recent_card, 
+            orient="vertical", 
+            command=self.recent_blocks_tree.yview,
+            bootstyle="round"
+        )
         self.recent_blocks_tree.configure(yscrollcommand=scrollbar.set)
         
         # Pack widgets
@@ -379,56 +1005,103 @@ class BlockchainUI:
         self.load_recent_blocks()
 
     def create_mining_tab(self):
-        """Create the mining tab with mining controls"""
+        """Create the mining tab with modern controls"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Mining")
         
-        # Mining controls frame
-        controls_frame = ttk.LabelFrame(tab, text="Mining Controls")
-        controls_frame.pack(fill='x', padx=5, pady=5)
+        # Controls Card
+        controls_card = ttkbs.Labelframe(
+            tab, 
+            text="Mining Controls", 
+            bootstyle="warning"
+        )
+        controls_card.pack(fill='x', padx=10, pady=5)
         
         # Mining status
-        self.mining_status = ttk.Label(controls_frame, text="Mining: Stopped", font=('Arial', 12))
+        self.mining_status = ttkbs.Label(
+            controls_card, 
+            text="⛏️ Mining: Stopped", 
+            font=('Helvetica', 12),
+            bootstyle="inverse-warning"
+        )
         self.mining_status.pack(pady=5)
         
         # Buttons
-        btn_frame = ttk.Frame(controls_frame)
+        btn_frame = ttk.Frame(controls_card)
         btn_frame.pack(pady=5)
         
-        self.start_mining_btn = ttk.Button(btn_frame, text="Start Mining", command=self.start_mining)
+        self.start_mining_btn = ttkbs.Button(
+            btn_frame, 
+            text="▶ Start Mining", 
+            command=self.start_mining,
+            bootstyle="success"
+        )
         self.start_mining_btn.pack(side='left', padx=5)
+        ToolTip(self.start_mining_btn, text="Start mining new blocks")
         
-        self.stop_mining_btn = ttk.Button(btn_frame, text="Stop Mining", command=self.stop_mining, state='disabled')
+        self.stop_mining_btn = ttkbs.Button(
+            btn_frame, 
+            text="⏹ Stop Mining", 
+            command=self.stop_mining,
+            state='disabled',
+            bootstyle="danger"
+        )
         self.stop_mining_btn.pack(side='left', padx=5)
+        ToolTip(self.stop_mining_btn, text="Stop mining process")
         
-        # Mining stats frame
-        stats_frame = ttk.LabelFrame(tab, text="Mining Statistics")
-        stats_frame.pack(fill='x', padx=5, pady=5)
+        # Stats Card
+        stats_card = ttkbs.Labelframe(
+            tab, 
+            text="Mining Statistics", 
+            bootstyle="info"
+        )
+        stats_card.pack(fill='x', padx=10, pady=5)
         
-        self.hashrate_label = ttk.Label(stats_frame, text="Hashrate: 0 H/s")
+        self.hashrate_label = ttk.Label(
+            stats_card, 
+            text="⚡ Hashrate: 0 H/s", 
+            style='primary.TLabel'
+        )
         self.hashrate_label.pack(anchor='w', padx=5, pady=2)
         
-        self.blocks_mined_label = ttk.Label(stats_frame, text="Blocks Mined: 0")
+        self.blocks_mined_label = ttk.Label(
+            stats_card, 
+            text="📦 Blocks Mined: 0", 
+            style='primary.TLabel'
+        )
         self.blocks_mined_label.pack(anchor='w', padx=5, pady=2)
         
-        self.last_block_time_label = ttk.Label(stats_frame, text="Last Block Time: Never")
+        self.last_block_time_label = ttk.Label(
+            stats_card, 
+            text="🕒 Last Block Time: Never", 
+            style='primary.TLabel'
+        )
         self.last_block_time_label.pack(anchor='w', padx=5, pady=2)
         
-        # Mining log frame
-        log_frame = ttk.LabelFrame(tab, text="Mining Log")
-        log_frame.pack(expand=True, fill='both', padx=5, pady=5)
+        # Log Card
+        log_card = ttkbs.Labelframe(
+            tab, 
+            text="Mining Log", 
+            bootstyle="secondary"
+        )
+        log_card.pack(fill='both', expand=True, padx=10, pady=5)
         
-        self.mining_log = scrolledtext.ScrolledText(log_frame, height=10, wrap=tk.WORD)
-        self.mining_log.pack(expand=True, fill='both')
+        self.mining_log = ttkbs.ScrolledText(
+            log_card, 
+            height=10, 
+            wrap=tk.WORD
+        )
+
+        self.mining_log.pack(fill='both', expand=True, padx=5, pady=5)
         self.mining_log.configure(state='disabled')
 
     def create_transactions_tab(self):
-        """Create the transactions tab for sending and viewing transactions"""
+        """Create the transactions tab with modern layout"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Transactions")
         
         # Notebook for transaction sub-tabs
-        tx_notebook = ttk.Notebook(tab)
+        tx_notebook = ttkbs.Notebook(tab, bootstyle="dark")
         tx_notebook.pack(expand=True, fill='both')
         
         # Send transaction tab
@@ -441,85 +1114,168 @@ class BlockchainUI:
         self.create_pending_tx_tab(tx_notebook)
 
     def create_send_tx_tab(self, notebook):
-        """Create the send transaction tab"""
+        """Create the send transaction tab with modern form"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Send")
+        notebook.add(tab, text="💸 Send")
+        
+        form_card = ttkbs.Labelframe(
+            tab, 
+            text="Send Payment", 
+            bootstyle="info"
+        )
+        form_card.pack(fill='both', expand=True, padx=10, pady=5)
         
         # Recipient
-        ttk.Label(tab, text="Recipient Address:").grid(row=0, column=0, padx=5, pady=5, sticky='w')
-        self.recipient_entry = ttk.Entry(tab, width=50)
-        self.recipient_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(form_card, text="Recipient Address:").grid(row=0, column=0, padx=5, pady=5, sticky='w')
+        self.recipient_entry = ttkbs.Entry(form_card, width=50)
+        self.recipient_entry.grid(row=0, column=1, padx=5, pady=5, sticky='we')
+        ToolTip(self.recipient_entry, text="Enter recipient's wallet address")
         
         # Amount
-        ttk.Label(tab, text="Amount (ZYC):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
-        self.amount_entry = ttk.Entry(tab)
+        ttk.Label(form_card, text="Amount (ZYC):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
+        self.amount_entry = ttkbs.Entry(form_card)
         self.amount_entry.grid(row=1, column=1, padx=5, pady=5, sticky='w')
+        ToolTip(self.amount_entry, text="Enter amount to send")
         
         # Transaction Type
-        ttk.Label(tab, text="Transaction Type:").grid(row=2, column=0, padx=5, pady=5, sticky='w')
+        ttk.Label(form_card, text="Transaction Type:").grid(row=2, column=0, padx=5, pady=5, sticky='w')
         self.tx_type_var = tk.StringVar(value="STANDARD")
-        ttk.Radiobutton(tab, text="Standard", variable=self.tx_type_var, value="STANDARD").grid(row=2, column=1, padx=5, pady=5, sticky='w')
-        ttk.Radiobutton(tab, text="Smart", variable=self.tx_type_var, value="SMART").grid(row=2, column=2, padx=5, pady=5, sticky='w')
+        
+        type_frame = ttk.Frame(form_card)
+        type_frame.grid(row=2, column=1, sticky='w')
+        
+        ttkbs.Radiobutton(
+            type_frame, 
+            text="Standard", 
+            variable=self.tx_type_var, 
+            value="STANDARD",
+            bootstyle="info-toolbutton"
+        ).pack(side='left')
+        
+        ttkbs.Radiobutton(
+            type_frame, 
+            text="Smart", 
+            variable=self.tx_type_var, 
+            value="SMART",
+            bootstyle="info-toolbutton"
+        ).pack(side='left', padx=5)
         
         # Fee display
-        self.fee_label = ttk.Label(tab, text="Estimated Fee: 0 ZYC")
-        self.fee_label.grid(row=3, column=0, columnspan=3, pady=2)
+        self.fee_label = ttk.Label(
+            form_card, 
+            text="💰 Estimated Fee: 0 ZYC", 
+            style='primary.TLabel'
+        )
+        self.fee_label.grid(row=3, column=0, columnspan=2, pady=2, sticky='w')
         
         # Send Button
-        send_btn = ttk.Button(tab, text="Send Payment", command=self.send_payment)
-        send_btn.grid(row=4, column=0, columnspan=3, pady=10)
+        send_btn = ttkbs.Button(
+            form_card, 
+            text="🚀 Send Payment", 
+            command=self.send_payment,
+            bootstyle="success"
+        )
+        send_btn.grid(row=4, column=0, columnspan=2, pady=10)
+        ToolTip(send_btn, text="Send transaction to the network")
         
         # Status
-        self.send_status = ttk.Label(tab, text="", foreground="green")
-        self.send_status.grid(row=5, column=0, columnspan=3)
+        self.send_status = ttk.Label(
+            form_card, 
+            text="", 
+            style='primary.TLabel'
+        )
+        self.send_status.grid(row=5, column=0, columnspan=2)
 
-    def get_latest_block(self):
-        """Get the latest block in the chain"""
-        if not self.chain:
-            return None
-        return self.chain[-1]
-    
     def create_view_tx_tab(self, notebook):
-        """Create the view transaction tab"""
+        """Create the view transaction tab with modern layout"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Details")
+        notebook.add(tab, text="🔍 Details")
+        
+        search_card = ttkbs.Labelframe(
+            tab, 
+            text="Transaction Lookup", 
+            bootstyle="info"
+        )
+        search_card.pack(fill='x', padx=10, pady=5)
         
         # TX ID input
-        ttk.Label(tab, text="Transaction ID:").pack(pady=5)
-        self.tx_id_entry = ttk.Entry(tab, width=70)
+        ttk.Label(search_card, text="Transaction ID:").pack(pady=5)
+        self.tx_id_entry = ttkbs.Entry(search_card, width=70)
         self.tx_id_entry.pack(pady=5)
         
         # View button
-        view_btn = ttk.Button(tab, text="View Details", command=self.view_transaction_details)
+        view_btn = ttkbs.Button(
+            search_card, 
+            text="🔎 View Details", 
+            command=self.view_transaction_details,
+            bootstyle="info-outline"
+        )
         view_btn.pack(pady=5)
         
         # Details display
-        self.tx_details_text = scrolledtext.ScrolledText(tab, height=15, wrap=tk.WORD)
-        self.tx_details_text.pack(expand=True, fill='both', padx=5, pady=5)
+        details_card = ttkbs.Labelframe(
+            tab, 
+            text="Transaction Details", 
+            bootstyle="secondary"
+        )
+        details_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.tx_details_text = ttkbs.ScrolledText(
+            details_card, 
+            height=15, 
+            wrap=tk.WORD
+        )
+
+        self.tx_details_text.pack(fill='both', expand=True, padx=5, pady=5)
         self.tx_details_text.configure(state='disabled')
 
     def create_pending_tx_tab(self, notebook):
-        """Create the pending transactions tab"""
+        """Create the pending transactions tab with modern table"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Pending")
+        notebook.add(tab, text="⏳ Pending")
         
         # Refresh button
-        refresh_btn = ttk.Button(tab, text="Refresh Pending Transactions", command=self.refresh_pending_tx)
-        refresh_btn.pack(pady=5)
+        refresh_btn = ttkbs.Button(
+            tab, 
+            text="🔄 Refresh Pending Transactions", 
+            command=self.refresh_pending_tx,
+            bootstyle="info-outline"
+        )
+        refresh_btn.pack(pady=10)
         
         # Treeview for pending transactions
-        self.pending_tx_tree = ttk.Treeview(tab, columns=('txid', 'type', 'amount', 'fee'), show='headings')
+        tree_card = ttkbs.Labelframe(
+            tab, 
+            text="Pending Transactions", 
+            bootstyle="primary"
+        )
+        tree_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.pending_tx_tree = ttkbs.Treeview(
+            tree_card, 
+            columns=('txid', 'type', 'amount', 'fee'), 
+            show='headings',
+            bootstyle="dark"
+        )
+        
+        # Configure columns
         self.pending_tx_tree.heading('txid', text='Transaction ID')
         self.pending_tx_tree.heading('type', text='Type')
         self.pending_tx_tree.heading('amount', text='Amount')
         self.pending_tx_tree.heading('fee', text='Fee')
+        
         self.pending_tx_tree.column('txid', width=250)
         self.pending_tx_tree.column('type', width=80)
         self.pending_tx_tree.column('amount', width=100)
         self.pending_tx_tree.column('fee', width=80)
         
         # Add scrollbar
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=self.pending_tx_tree.yview)
+        scrollbar = ttkbs.Scrollbar(
+            tree_card, 
+            orient="vertical", 
+            command=self.pending_tx_tree.yview,
+            bootstyle="round"
+        )
         self.pending_tx_tree.configure(yscrollcommand=scrollbar.set)
         
         # Pack widgets
@@ -530,28 +1286,118 @@ class BlockchainUI:
         self.refresh_pending_tx()
 
     def create_wallet_tab(self):
-        """Create the wallet tab with balance and UTXO information"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Wallet")
-        
+        """Create the wallet tab with modern layout and contact management"""
+        self.wallet_tab_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.wallet_tab_frame, text="💳 Wallet")      
+
+        # Main container with scrollbar
+        container = ScrolledFrame(self.wallet_tab_frame, autohide=True)
+
+        container.pack(fill='both', expand=True)
+
         # Address display
-        self.wallet_address = self.key_manager.get_default_public_key()
-        ttk.Label(tab, text=f"Your Address: {self.wallet_address}", font=('Arial', 10)).pack(pady=5)
-        
+        address_card = ttkbs.Labelframe(
+            container, 
+            text="Wallet Address", 
+            bootstyle="info"
+        )
+        address_card.pack(fill='x', padx=10, pady=5)
+
+        self.wallet_address_label = ttk.Label(
+            address_card, 
+            text=f"Your Address: {self.wallet_address}", 
+            font=('Helvetica', 10),
+            style='primary.TLabel'
+        )
+        self.wallet_address_label.pack(pady=5)
+
         # Balance display
-        balance_frame = ttk.Frame(tab)
+        balance_card = ttkbs.Labelframe(
+            container, 
+            text="Balance", 
+            bootstyle="success"
+        )
+        balance_card.pack(fill='x', padx=10, pady=5)
+
+        balance_frame = ttk.Frame(balance_card)
         balance_frame.pack(fill='x', padx=5, pady=5)
-        
-        ttk.Label(balance_frame, text="Balance:", font=('Arial', 12)).pack(side='left', padx=5)
-        self.balance_label = ttk.Label(balance_frame, text="0 ZYC", font=('Arial', 12, 'bold'))
+
+        ttk.Label(balance_frame, text="Balance:", font=('Helvetica', 12)).pack(side='left', padx=5)
+        self.balance_label = ttk.Label(
+            balance_frame, 
+            text="0 ZYC", 
+            font=('Helvetica', 12, 'bold'),
+            style='success.TLabel'
+        )
         self.balance_label.pack(side='left', padx=5)
-        
+
+        # Contact Management Section
+        contacts_card = ttkbs.Labelframe(
+            container,
+            text="Address Book",
+            bootstyle="info"
+        )
+        contacts_card.pack(fill='x', padx=10, pady=5)
+
+        # Contact Treeview
+        self.contacts_tree = ttkbs.Treeview(
+            contacts_card,
+            columns=('name', 'address'),
+            show='headings',
+            bootstyle="dark",
+            height=5
+        )
+        self.contacts_tree.heading('name', text='Contact Name')
+        self.contacts_tree.heading('address', text='Wallet Address')
+        self.contacts_tree.column('name', width=150)
+        self.contacts_tree.column('address', width=300)
+        self.contacts_tree.pack(fill='x', padx=5, pady=5)
+
+        # Contact controls
+        contact_controls = ttk.Frame(contacts_card)
+        contact_controls.pack(fill='x', pady=5)
+
+        ttk.Label(contact_controls, text="Name:").pack(side='left', padx=5)
+        self.contact_name_entry = ttkbs.Entry(contact_controls, width=20)
+        self.contact_name_entry.pack(side='left', padx=5)
+
+        ttk.Label(contact_controls, text="Address:").pack(side='left', padx=5)
+        self.contact_address_entry = ttkbs.Entry(contact_controls, width=40)
+        self.contact_address_entry.pack(side='left', padx=5)
+
+        btn_frame = ttk.Frame(contact_controls)
+        btn_frame.pack(side='right', padx=5)
+
+        ttkbs.Button(
+            btn_frame,
+            text="➕ Add",
+            command=self.add_contact,
+            bootstyle="success-outline",
+            width=8
+        ).pack(side='left', padx=2)
+
+        ttkbs.Button(
+            btn_frame,
+            text="➖ Remove",
+            command=self.remove_contact,
+            bootstyle="danger-outline",
+            width=8
+        ).pack(side='left', padx=2)
+
         # UTXO frame
-        utxo_frame = ttk.LabelFrame(tab, text="UTXOs")
-        utxo_frame.pack(expand=True, fill='both', padx=5, pady=5)
-        
-        # Treeview for UTXOs
-        self.utxo_tree = ttk.Treeview(utxo_frame, columns=('txid', 'index', 'amount', 'locked'), show='headings')
+        utxo_card = ttkbs.Labelframe(
+            container, 
+            text="UTXOs", 
+            bootstyle="primary"
+        )
+        utxo_card.pack(fill='both', expand=True, padx=10, pady=5)
+
+        self.utxo_tree = ttkbs.Treeview(
+            utxo_card, 
+            columns=('txid', 'index', 'amount', 'locked'), 
+            show='headings',
+            bootstyle="dark"
+        )
         self.utxo_tree.heading('txid', text='Transaction ID')
         self.utxo_tree.heading('index', text='Output Index')
         self.utxo_tree.heading('amount', text='Amount (ZYC)')
@@ -560,32 +1406,144 @@ class BlockchainUI:
         self.utxo_tree.column('index', width=80)
         self.utxo_tree.column('amount', width=100)
         self.utxo_tree.column('locked', width=80)
-        
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(utxo_frame, orient="vertical", command=self.utxo_tree.yview)
+
+        scrollbar = ttkbs.Scrollbar(
+            utxo_card, 
+            orient="vertical", 
+            command=self.utxo_tree.yview,
+            bootstyle="round"
+        )
         self.utxo_tree.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack widgets
         self.utxo_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
-        
+
         # Buttons frame
-        btn_frame = ttk.Frame(tab)
+        btn_card = ttkbs.Labelframe(
+            container, 
+            text="Actions", 
+            bootstyle="secondary"
+        )
+        btn_card.pack(fill='x', padx=10, pady=5)
+
+        btn_frame = ttk.Frame(btn_card)
         btn_frame.pack(fill='x', padx=5, pady=5)
-        
-        ttk.Button(btn_frame, text="Refresh Balance", command=self.refresh_wallet).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Generate New Address", command=self.generate_new_address).pack(side='left', padx=5)
-        
-        # Initial refresh
+
+        ttkbs.Button(
+            btn_frame, 
+            text="🔄 Refresh Balance", 
+            command=self.refresh_wallet,
+            bootstyle="info-outline"
+        ).pack(side='left', padx=5)
+
+        ttkbs.Button(
+            btn_frame, 
+            text="🆕 Generate New Address", 
+            command=self.generate_new_address,
+            bootstyle="info-outline"
+        ).pack(side='left', padx=5)
+
+        # Load initial data
+        self.load_contacts()
         self.refresh_wallet()
+        self.contacts_tree.bind("<Double-1>", self.on_contact_double_click)
+
+
+
+    def add_contact(self):
+        """Add a new contact to the address book"""
+        name = self.contact_name_entry.get().strip()
+        address = self.contact_address_entry.get().strip()
+        
+        if not name or not address:
+            messagebox.showerror("Error", "Both name and address are required")
+            return
+        
+        try:
+            # Validate address format
+            if not self.key_manager.validate_address(address):
+                messagebox.showerror("Error", "Invalid wallet address format")
+                return
+                
+            # Load existing contacts
+            contacts = self.load_contacts_from_file()
+            
+            # Check for duplicate name or address
+            if name in contacts:
+                messagebox.showerror("Error", "Contact name already exists")
+                return
+            if address in contacts.values():
+                messagebox.showerror("Error", "Address already exists in contacts")
+                return
+                
+            # Add new contact
+            contacts[name] = address
+            with open('contacts.json', 'w') as f:
+                json.dump(contacts, f, indent=4)
+                
+            # Refresh UI
+            self.load_contacts()
+            self.contact_name_entry.delete(0, 'end')
+            self.contact_address_entry.delete(0, 'end')
+            self.log_message(f"Added contact: {name}", "SUCCESS")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add contact: {str(e)}")
+            self.log_message(f"Failed to add contact: {str(e)}", "ERROR")
+
+    def remove_contact(self):
+        """Remove selected contact from address book"""
+        selected = self.contacts_tree.selection()
+        if not selected:
+            messagebox.showerror("Error", "No contact selected")
+            return
+            
+        try:
+            name = self.contacts_tree.item(selected[0])['values'][0]
+            contacts = self.load_contacts_from_file()
+            
+            if name in contacts:
+                del contacts[name]
+                with open('contacts.json', 'w') as f:
+                    json.dump(contacts, f, indent=4)
+                    
+                self.load_contacts()
+                self.log_message(f"Removed contact: {name}", "SUCCESS")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to remove contact: {str(e)}")
+            self.log_message(f"Failed to remove contact: {str(e)}", "ERROR")
+
+    def load_contacts(self):
+        """Load contacts into the treeview"""
+        for item in self.contacts_tree.get_children():
+            self.contacts_tree.delete(item)
+            
+        contacts = self.load_contacts_from_file()
+        for name, address in contacts.items():
+            self.contacts_tree.insert('', 'end', values=(name, address))
+
+    def load_contacts_from_file(self):
+        """Load contacts from JSON file"""
+        try:
+            if os.path.exists('contacts.json'):
+                with open('contacts.json', 'r') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            self.log_message(f"Error loading contacts: {str(e)}", "ERROR")
+            return {}
+
+
+
+
 
     def create_explorer_tab(self):
-        """Create the explorer tab with advanced search options"""
+        """Create the explorer tab with modern layout"""
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Explorer")
+        self.notebook.add(tab, text="🔎 Explorer")
         
         # Notebook for explorer sub-tabs
-        explorer_notebook = ttk.Notebook(tab)
+        explorer_notebook = ttkbs.Notebook(tab, bootstyle="dark")
         explorer_notebook.pack(expand=True, fill='both')
         
         # Transaction explorer
@@ -600,135 +1558,397 @@ class BlockchainUI:
         # Export tools
         self.create_export_tools_tab(explorer_notebook)
 
+
+
+
+
+
+    def exit_cleanly(self):
+        try:
+            # Stop mining, threads, mempool processing
+            if hasattr(self, "miner"):
+                self.miner.stop()
+
+            # Close LMDB safely
+            if hasattr(self, "tx_storage"):
+                self.tx_storage.close()
+
+            # Properly destroy root window
+            self.root.destroy()
+        except Exception as e:
+            print(f"[EXIT ERROR] ❌ {e}")
+            self.root.destroy()
+
+
+
+
+
+
+
     def create_tx_explorer_tab(self, notebook):
         """Create transaction explorer sub-tab"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Transaction Explorer")
+        notebook.add(tab, text="📜 Transactions")
         
         # Search frame
-        search_frame = ttk.LabelFrame(tab, text="Transaction Search")
-        search_frame.pack(fill='x', padx=5, pady=5)
+        search_card = ttkbs.Labelframe(
+            tab, 
+            text="Transaction Search", 
+            bootstyle="info"
+        )
+        search_card.pack(fill='x', padx=10, pady=5)
         
         # Search type
-        ttk.Label(search_frame, text="Search By:").grid(row=0, column=0, padx=5, sticky='w')
+        ttk.Label(search_card, text="Search By:").grid(row=0, column=0, padx=5, sticky='w')
         self.tx_search_type = tk.StringVar(value="txid")
-        ttk.Radiobutton(search_frame, text="TXID", variable=self.tx_search_type, value="txid").grid(row=0, column=1, sticky='w')
-        ttk.Radiobutton(search_frame, text="Block Height", variable=self.tx_search_type, value="height").grid(row=0, column=2, sticky='w')
+        
+        ttkbs.Radiobutton(
+            search_card, 
+            text="TXID", 
+            variable=self.tx_search_type, 
+            value="txid",
+            bootstyle="info-toolbutton"
+        ).grid(row=0, column=1, sticky='w')
+        
+        ttkbs.Radiobutton(
+            search_card, 
+            text="Block Height", 
+            variable=self.tx_search_type, 
+            value="height",
+            bootstyle="info-toolbutton"
+        ).grid(row=0, column=2, sticky='w')
         
         # Search input
-        ttk.Label(search_frame, text="Value:").grid(row=1, column=0, padx=5, sticky='w')
-        self.tx_search_entry = ttk.Entry(search_frame, width=50)
-        self.tx_search_entry.grid(row=1, column=1, columnspan=2, sticky='we')
+        ttk.Label(search_card, text="Value:").grid(row=1, column=0, padx=5, sticky='w')
+        self.tx_search_entry = ttkbs.Entry(search_card, width=50)
+        self.tx_search_entry.grid(row=1, column=1, columnspan=2, sticky='we', pady=5)
         
         # Search button
-        search_btn = ttk.Button(search_frame, text="Search Transaction", command=self.search_transaction)
+        search_btn = ttkbs.Button(
+            search_card, 
+            text="🔍 Search Transaction", 
+            command=self.search_transaction,
+            bootstyle="info-outline"
+        )
         search_btn.grid(row=2, column=0, columnspan=3, pady=5)
         
         # Results display
-        self.tx_results = scrolledtext.ScrolledText(tab, height=15, wrap=tk.WORD)
-        self.tx_results.pack(expand=True, fill='both', padx=5, pady=5)
+        results_card = ttkbs.Labelframe(
+            tab, 
+            text="Transaction Details", 
+            bootstyle="secondary"
+        )
+        results_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.tx_results = ttkbs.ScrolledText(
+            results_card, 
+            height=15, 
+            wrap=tk.WORD
+        )
+
+        self.tx_results.pack(fill='both', expand=True, padx=5, pady=5)
         self.tx_results.configure(state='disabled')
 
     def create_utxo_explorer_tab(self, notebook):
         """Create UTXO explorer sub-tab"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="UTXO Explorer")
+        notebook.add(tab, text="💰 UTXOs")
         
         # Address search
-        ttk.Label(tab, text="Wallet Address:").pack(pady=5)
-        self.utxo_address_entry = ttk.Entry(tab, width=50)
+        search_card = ttkbs.Labelframe(
+            tab, 
+            text="UTXO Search", 
+            bootstyle="info"
+        )
+        search_card.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Label(search_card, text="Wallet Address:").pack(pady=5)
+        self.utxo_address_entry = ttkbs.Entry(search_card, width=50)
         self.utxo_address_entry.pack(pady=5)
         
         # Buttons frame
-        btn_frame = ttk.Frame(tab)
+        btn_frame = ttk.Frame(search_card)
         btn_frame.pack(pady=5)
         
-        ttk.Button(btn_frame, text="Find UTXOs", command=self.find_utxos).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Calculate Balance", command=self.calculate_utxo_balance).pack(side='left', padx=5)
+        ttkbs.Button(
+            btn_frame, 
+            text="🔍 Find UTXOs", 
+            command=self.find_utxos,
+            bootstyle="info-outline"
+        ).pack(side='left', padx=5)
+        
+        ttkbs.Button(
+            btn_frame, 
+            text="🧮 Calculate Balance", 
+            command=self.calculate_utxo_balance,
+            bootstyle="info-outline"
+        ).pack(side='left', padx=5)
         
         # UTXO Treeview
-        self.utxo_explorer_tree = ttk.Treeview(tab, columns=('txid', 'index', 'amount', 'locked'), show='headings')
+        tree_card = ttkbs.Labelframe(
+            tab, 
+            text="UTXOs", 
+            bootstyle="primary"
+        )
+        tree_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.utxo_explorer_tree = ttkbs.Treeview(
+            tree_card, 
+            columns=('txid', 'index', 'amount', 'locked'), 
+            show='headings',
+            bootstyle="dark"
+        )
+        
+        # Configure columns
         self.utxo_explorer_tree.heading('txid', text='Transaction ID')
         self.utxo_explorer_tree.heading('index', text='Output Index')
         self.utxo_explorer_tree.heading('amount', text='Amount (ZYC)')
         self.utxo_explorer_tree.heading('locked', text='Locked')
+        
         self.utxo_explorer_tree.column('txid', width=250)
         self.utxo_explorer_tree.column('index', width=80)
         self.utxo_explorer_tree.column('amount', width=100)
         self.utxo_explorer_tree.column('locked', width=80)
-        self.utxo_explorer_tree.pack(expand=True, fill='both', padx=5, pady=5)
+        
+        self.utxo_explorer_tree.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Balance label
-        self.utxo_balance_label = ttk.Label(tab, text="Balance: ", font=('Arial', 12))
+        self.utxo_balance_label = ttk.Label(
+            tab, 
+            text="💵 Balance: 0 ZYC", 
+            font=('Helvetica', 12),
+            style='success.TLabel'
+        )
         self.utxo_balance_label.pack(pady=5)
 
     def create_orphan_blocks_tab(self, notebook):
         """Create orphan blocks explorer sub-tab"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Orphan Blocks")
+        notebook.add(tab, text="👻 Orphan Blocks")
         
         # Refresh button
-        refresh_btn = ttk.Button(tab, text="Refresh Orphan Blocks", command=self.refresh_orphan_blocks)
+        refresh_btn = ttkbs.Button(
+            tab, 
+            text="🔄 Refresh Orphan Blocks", 
+            command=self.refresh_orphan_blocks,
+            bootstyle="info-outline"
+        )
         refresh_btn.pack(pady=10)
         
         # Orphan blocks treeview
-        self.orphan_tree = ttk.Treeview(tab, columns=('hash', 'height', 'tx_count'), show='headings')
+        tree_card = ttkbs.Labelframe(
+            tab, 
+            text="Orphan Blocks", 
+            bootstyle="primary"
+        )
+        tree_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.orphan_tree = ttkbs.Treeview(
+            tree_card, 
+            columns=('hash', 'height', 'tx_count'), 
+            show='headings',
+            bootstyle="dark"
+        )
+        
+        # Configure columns
         self.orphan_tree.heading('hash', text='Block Hash')
         self.orphan_tree.heading('height', text='Height')
         self.orphan_tree.heading('tx_count', text='TX Count')
+        
         self.orphan_tree.column('hash', width=300)
         self.orphan_tree.column('height', width=80)
         self.orphan_tree.column('tx_count', width=80)
-        self.orphan_tree.pack(expand=True, fill='both', padx=5, pady=5)
+        
+        self.orphan_tree.pack(fill='both', expand=True, padx=5, pady=5)
 
     def create_export_tools_tab(self, notebook):
         """Create export tools sub-tab"""
         tab = ttk.Frame(notebook)
-        notebook.add(tab, text="Export Tools")
+        notebook.add(tab, text="📤 Export")
         
         # Export buttons
-        ttk.Button(tab, text="Export Last 500 Blocks", command=self.export_last_500_blocks).pack(pady=10)
-        ttk.Button(tab, text="Select Custom Export Folder", command=self.select_export_folder).pack(pady=5)
+        export_card = ttkbs.Labelframe(
+            tab, 
+            text="Export Tools", 
+            bootstyle="info"
+        )
+        export_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        ttkbs.Button(
+            export_card, 
+            text="💾 Export Last 500 Blocks", 
+            command=self.export_last_500_blocks,
+            bootstyle="info-outline"
+        ).pack(pady=10)
+        
+        ttkbs.Button(
+            export_card, 
+            text="📂 Select Custom Export Folder", 
+            command=self.select_export_folder,
+            bootstyle="info-outline"
+        ).pack(pady=5)
         
         # Status label
-        self.export_status = ttk.Label(tab, text="")
+        self.export_status = ttk.Label(
+            export_card, 
+            text="", 
+            style='primary.TLabel'
+        )
         self.export_status.pack(pady=5)
 
     def create_log_tab(self):
-        """Create the log tab for system messages"""
+        """Create the log tab with modern styling"""
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="System Log")
+        self.notebook.add(tab, text="📋 System Log")
         
         # Log display
-        self.log_output = scrolledtext.ScrolledText(tab, height=20, wrap=tk.WORD)
-        self.log_output.pack(expand=True, fill='both', padx=5, pady=5)
+        log_card = ttkbs.Labelframe(
+            tab, 
+            text="System Log", 
+            bootstyle="secondary"
+        )
+        log_card.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.log_output = ttkbs.ScrolledText(
+            log_card, 
+            height=20, 
+            wrap=tk.WORD
+        )
+
+        self.log_output.pack(fill='both', expand=True, padx=5, pady=5)
         self.log_output.configure(state='disabled')
         
         # Clear button
-        ttk.Button(tab, text="Clear Log", command=self.clear_log).pack(pady=5)
+        btn_frame = ttk.Frame(log_card)
+        btn_frame.pack(fill='x', pady=5)
+        
+        ttkbs.Button(
+            btn_frame, 
+            text="🧹 Clear Log", 
+            command=self.clear_log,
+            bootstyle="danger-outline"
+        ).pack(side='left', padx=5)
+        
+        ttkbs.Button(
+            btn_frame, 
+            text="📋 Copy Log", 
+            command=self.copy_log,
+            bootstyle="info-outline"
+        ).pack(side='left', padx=5)
 
-    def log_message(self, message):
-        """Log a message to the system log"""
-        try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            formatted_message = f"[{timestamp}] {message}"
-            
-            if hasattr(self, 'log_output'):
-                self.log_output.configure(state='normal')
-                self.log_output.insert(tk.END, formatted_message + "\n")
-                self.log_output.configure(state='disabled')
-                self.log_output.see(tk.END)
-            
-            # Always print to console for debugging
-            print(formatted_message)
-        except Exception as e:
-            print(f"Error logging message: {e} - Original message: {message}")
+
+
+    def log_message(self, message, level="INFO"):
+        """Log a message to the system log with different levels"""
+
+        def update_log():
+            try:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # Color coding based on level
+                if level == "ERROR":
+                    prefix = f"[{timestamp}] [ERROR] ❌ "
+                    color = self.error_color
+                elif level == "WARNING":
+                    prefix = f"[{timestamp}] [WARN] ⚠️ "
+                    color = self.warning_color
+                elif level == "SUCCESS":
+                    prefix = f"[{timestamp}] [SUCCESS] ✅ "
+                    color = self.success_color
+                else:
+                    prefix = f"[{timestamp}] [INFO] ℹ️ "
+                    color = self.text_color
+
+                formatted_message = prefix + message
+
+                # Only update GUI if log_output is ready
+                if hasattr(self, "log_output") and hasattr(self.log_output, "insert"):
+                    # Ensure tag exists
+                    if not self.log_output.tag_names().__contains__(color):
+                        self.log_output.tag_configure(color, foreground=color)
+
+                    self.log_output.configure(state='normal')
+                    self.log_output.insert(tk.END, formatted_message + "\n", color)
+                    self.log_output.configure(state='disabled')
+                    self.log_output.see(tk.END)
+
+                # Update status bar if available
+                if hasattr(self, "status_left") and hasattr(self.status_left, "config"):
+                    self.status_left.config(
+                        text=formatted_message[:50] + "..." if len(formatted_message) > 50 else formatted_message
+                    )
+
+                # Always print to console
+                print(formatted_message)
+
+            except Exception as e:
+                print(f"Error logging message: {e} - Original message: {message}")
+
+        # Queue log update safely
+        if hasattr(self, "root") and callable(getattr(self.root, "after", None)):
+            self.root.after(0, update_log)
+        else:
+            print(f"[LogHandler] Main loop not running, skipping message: {message}")
+
+
+    def start_log_handler(self):
+        """Start a thread to handle log messages safely with main-thread scheduling"""
+        def log_handler():
+            while True:
+                try:
+                    message, color = self.log_queue.get()
+
+                    # ✅ This function will run on the main thread
+                    def update_log_ui():
+                        try:
+                            self.log_output.configure(state='normal')
+                            self.log_output.insert(tk.END, message + "\n", color)
+                            self.log_output.configure(state='disabled')
+                            self.log_output.see(tk.END)
+
+                            # Update status bar
+                            self.status_left.config(
+                                text=message[:50] + "..." if len(message) > 50 else message
+                            )
+                        except Exception as ui_error:
+                            print(f"[UI Update Error] ❌ {ui_error}")
+
+                    # ✅ Schedule on main thread
+                    self.root.after(0, update_log_ui)  # <-- This is the problematic part
+
+                    self.log_queue.task_done()
+                except Exception as thread_error:
+                    print(f"[LogHandler Error] ❌ {thread_error}")
+                time.sleep(0.1)
+
+        threading.Thread(target=log_handler, daemon=True).start()
+
 
     def clear_log(self):
         """Clear the system log"""
         self.log_output.configure(state='normal')
         self.log_output.delete(1.0, tk.END)
         self.log_output.configure(state='disabled')
+        self.log_message("Log cleared", "INFO")
+
+    def copy_log(self):
+        """Copy log contents to clipboard"""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.log_output.get(1.0, tk.END))
+        self.log_message("Log copied to clipboard", "INFO")
+
+    def show_right_click_menu(self, event):
+        """Show a right-click menu to copy selected text."""
+        widget = event.widget
+        if not isinstance(widget, tk.Text):
+            return
+
+        try:
+            menu = tk.Menu(widget, tearoff=0)
+            menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def update_dashboard(self):
         """Update the dashboard with current blockchain information"""
@@ -739,11 +1959,14 @@ class BlockchainUI:
             if latest_block is None:
                 self.block_height_label.config(text="Block Height: 0")
                 self.difficulty_label.config(text="Difficulty: 0")
+                self.header_block_height.config(text="Height: 0")
             else:
                 index = latest_block.index if hasattr(latest_block, "index") else latest_block.get("index", "N/A")
                 difficulty = latest_block.difficulty if hasattr(latest_block, "difficulty") else latest_block.get("difficulty", "N/A")
+                
                 self.block_height_label.config(text=f"Block Height: {index}")
                 self.difficulty_label.config(text=f"Difficulty: {difficulty}")
+                self.header_block_height.config(text=f"Height: {index}")
 
             # Transaction count
             tx_count = self.tx_storage.get_transaction_count()
@@ -761,7 +1984,7 @@ class BlockchainUI:
             orphan_count = len(self.orphan_blocks.get_all_orphans())
             self.orphan_blocks_label.config(text=f"Orphan Blocks: {orphan_count}")
 
-            # ✅ Average mining time (last 10 blocks)
+            # Average mining time (last 10 blocks)
             blocks = self.block_storage.get_all_blocks()[-10:]
             if len(blocks) >= 2:
                 timestamps = [b.timestamp if hasattr(b, "timestamp") else b.get("timestamp", 0) for b in blocks]
@@ -771,27 +1994,10 @@ class BlockchainUI:
             else:
                 self.avg_mine_time_label.config(text="Avg Mining Time: N/A")
 
-            self.log_message("[Dashboard] Updated blockchain statistics")
+            self.log_message("Dashboard updated with latest blockchain statistics", "INFO")
 
         except Exception as e:
-            print(f"[Dashboard ERROR] ❌ Failed to update: {e}")
-
-
-
-    def show_right_click_menu(self, event):
-        """Show a right-click menu to copy selected text."""
-        widget = event.widget
-        if not isinstance(widget, tk.Text):
-            return
-
-        try:
-            menu = tk.Menu(widget, tearoff=0)
-            menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-
+            self.log_message(f"Failed to update dashboard: {e}", "ERROR")
 
     def load_recent_blocks(self):
         """Load recent blocks into the blockchain tab"""
@@ -816,9 +2022,9 @@ class BlockchainUI:
                     len(block_data.get('transactions', []))
                 ))
             
-            self.log_message("[Blockchain] Loaded recent blocks")
+            self.log_message("Loaded recent blocks into explorer", "INFO")
         except Exception as e:
-            self.log_message(f"[ERROR] Failed to load recent blocks: {e}")
+            self.log_message(f"Failed to load recent blocks: {e}", "ERROR")
 
     def search_block(self):
         """Search for a block by height or hash"""
@@ -845,15 +2051,15 @@ class BlockchainUI:
                     block_data = block
                     
                 self.block_results.insert(tk.END, json.dumps(block_data, indent=4))
-                self.log_message(f"[Block Explorer] Found block: {search_value}")
+                self.log_message(f"Found block: {search_value}", "SUCCESS")
             else:
                 self.block_results.insert(tk.END, "Block not found")
-                self.log_message(f"[Block Explorer] Block not found: {search_value}")
+                self.log_message(f"Block not found: {search_value}", "WARNING")
                 
             self.block_results.configure(state='disabled')
             
         except Exception as e:
-            self.log_message(f"[ERROR] Error searching block: {e}")
+            self.log_message(f"Error searching block: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to search block: {e}")
 
     def start_mining(self):
@@ -862,34 +2068,64 @@ class BlockchainUI:
             return
             
         self.mining_active = True
-        self.mining_status.config(text="Mining: Running", foreground="green")
+        self.mining_status.config(text="⛏️ Mining: Running", bootstyle="success")
         self.start_mining_btn.config(state='disabled')
         self.stop_mining_btn.config(state='normal')
         
         # Start mining in a separate thread
-        self.mining_thread = threading.Thread(target=self.mining_loop, daemon=True)
+        self.mining_thread = threading.Thread(
+            target=self.mining_loop, 
+            daemon=True,
+            name="MiningThread"
+        )
         self.mining_thread.start()
         
-        self.log_message("[Miner] Mining started")
+        self.log_message("Mining started", "SUCCESS")
 
     def stop_mining(self):
         """Stop the mining process"""
         if not self.mining_active:
             return
             
-        self.mining_active = False
-        self.mining_status.config(text="Mining: Stopped", foreground="red")
-        self.start_mining_btn.config(state='normal')
-        self.stop_mining_btn.config(state='disabled')
-        
-        self.log_message("[Miner] Mining stopped")
+        try:
+            # Stop the miner
+            if hasattr(self, 'miner') and self.miner:
+                if hasattr(self.miner, 'stop'):
+                    self.miner.stop()
+                else:
+                    self.log_message("Miner doesn't have stop method", "WARNING")
+                    self.mining_active = False
+                    return
+            
+            # Update state
+            self.mining_active = False
+            self.mining_status.config(text="⛏️ Mining: Stopped", bootstyle="danger")
+            self.start_mining_btn.config(state='normal')
+            self.stop_mining_btn.config(state='disabled')
+            
+            # Wait for thread to finish (with timeout)
+            if hasattr(self, 'mining_thread') and self.mining_thread.is_alive():
+                self.mining_thread.join(timeout=2.0)
+                if self.mining_thread.is_alive():
+                    self.log_message("Mining thread didn't stop gracefully", "WARNING")
+            
+            self.log_message("Mining stopped", "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error stopping miner: {e}", "ERROR")
+            # Force state update even if error occurred
+            self.mining_active = False
+            self.mining_status.config(text="⛏️ Mining: Error", bootstyle="danger")
+            self.start_mining_btn.config(state='normal')
+            self.stop_mining_btn.config(state='disabled')
+
 
     def mining_loop(self):
         """Mining loop that runs in a separate thread"""
         blocks_mined = 0
         start_time = time.time()
         
-        while self.mining_active:
+        while self.mining_active and hasattr(self, 'miner'):
             try:
                 # Mine a block
                 result = self.miner.mine_block()
@@ -899,10 +2135,10 @@ class BlockchainUI:
                     block_hash = result.get('block_hash', '')
                     
                     # Update UI in main thread
-                    self.root.after(0, self.update_mining_stats, blocks_mined, block_hash)
+                    self.root.after(0, lambda: self.update_mining_stats(blocks_mined, block_hash))
                     
                     # Log the mined block
-                    self.log_message(f"[Miner] Mined block {block_hash}")
+                    self.log_message(f"Mined block {block_hash}", "SUCCESS")
                     
                     # Update recent blocks
                     self.root.after(0, self.load_recent_blocks)
@@ -910,17 +2146,24 @@ class BlockchainUI:
                     # Update dashboard
                     self.root.after(0, self.update_dashboard)
                     
+                elif result and not result.get('success'):
+                    if result.get('message') == 'Mining stopped':
+                        break
+                        
             except Exception as e:
-                self.log_message(f"[ERROR] Mining error: {e}")
+                self.log_message(f"Mining error: {e}", "ERROR")
                 time.sleep(1)
                 
             # Small delay to prevent CPU overload
             time.sleep(0.1)
+        
+        # Clean up when loop ends
+        self.root.after(0, lambda: self.stop_mining())
 
     def update_mining_stats(self, blocks_mined, block_hash):
         """Update mining statistics"""
-        self.blocks_mined_label.config(text=f"Blocks Mined: {blocks_mined}")
-        self.last_block_time_label.config(text=f"Last Block Time: {datetime.now().strftime('%H:%M:%S')}")
+        self.blocks_mined_label.config(text=f"📦 Blocks Mined: {blocks_mined}")
+        self.last_block_time_label.config(text=f"🕒 Last Block Time: {datetime.now().strftime('%H:%M:%S')}")
         
         # Add to mining log
         self.mining_log.configure(state='normal')
@@ -933,13 +2176,76 @@ class BlockchainUI:
         def monitor_loop():
             while True:
                 if self.mining_active:
-                    # Update hashrate (simulated for now)
-                    self.root.after(0, self.hashrate_label.config, {"text": "Hashrate: Calculating..."})
-                
+                    hashrate = self.calculate_hashrate()
+                    self.root.after(0, self.hashrate_label.config, 
+                                   {"text": f"⚡ Hashrate: {hashrate:.2f} H/s"})
                 time.sleep(5)
         
         monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
         monitor_thread.start()
+
+
+
+
+
+
+    def clean_up(self):
+        """Clean up and safely close all resources before exiting"""
+        try:
+            print("[CleanUp] 🧹 Closing blockchain components...")
+
+            # Stop mining and background threads if active
+            if hasattr(self, 'miner') and self.miner:
+                self.miner.stop()
+                print("[CleanUp] 🛑 Miner stopped.")
+
+            # Close LMDB environments
+            if hasattr(self, 'blockchain') and self.blockchain:
+                self.blockchain.close()
+                print("[CleanUp] 📦 LMDB environments closed.")
+
+            # Clear UI elements
+            if hasattr(self, 'loading_screen') and self.loading_screen:
+                self.loading_screen.destroy()
+
+            # Stop log thread or handlers
+            if hasattr(self, 'log_thread') and self.log_thread.is_alive():
+                self.log_thread.join(timeout=2)
+                print("[CleanUp] 📝 Log thread terminated.")
+
+            print("[CleanUp] ✅ All systems closed successfully.")
+
+        except Exception as e:
+            print(f"[CleanUp] ❌ Error during shutdown: {e}")
+
+
+
+
+
+
+    def view_wallet(self):
+        """Display wallet balance and address info in UI or console"""
+        try:
+            address = self.key_manager.get_address()
+            utxos = self.utxo_manager.get_utxos_by_address(address)
+            total_balance = sum(u.amount for u in utxos)
+
+            print("\n===== 👜 WALLET VIEW =====")
+            print(f"Address: {address}")
+            print(f"Balance: {total_balance} ZYC")
+            print(f"Total UTXOs: {len(utxos)}")
+            for i, utxo in enumerate(utxos, 1):
+                print(f"{i}. Amount: {utxo.amount} | TXID: {utxo.tx_out_id.hex()}")
+            print("==========================\n")
+
+            # Optional: push this info to a wallet panel in the UI
+            # self.wallet_display_panel.update(address, total_balance, utxos)
+
+        except Exception as e:
+            print(f"[view_wallet] ❌ Failed to load wallet: {e}")
+
+
+
 
     def send_payment(self):
         """Send a payment transaction"""
@@ -964,7 +2270,7 @@ class BlockchainUI:
         ]["private_key"]
         pub_key = self.wallet_address
         
-        self.log_message(f"\n[Payment] Starting transaction: {amount} ZYC to {recipient}")
+        self.log_message(f"Starting transaction: {amount} ZYC to {recipient}", "INFO")
         
         tx_id = self.payment_processor.send_payment(
             sender_priv_key=priv_key,
@@ -975,8 +2281,8 @@ class BlockchainUI:
         )
         
         if tx_id:
-            self.send_status.config(text=f"✅ Transaction sent! TXID: {tx_id}", foreground="green")
-            self.log_message(f"[Payment] Transaction sent: {tx_id}")
+            self.send_status.config(text=f"✅ Transaction sent! TXID: {tx_id}", style='success.TLabel')
+            self.log_message(f"Transaction sent: {tx_id}", "SUCCESS")
             
             # Refresh pending transactions
             self.refresh_pending_tx()
@@ -984,8 +2290,8 @@ class BlockchainUI:
             # Refresh wallet balance
             self.refresh_wallet()
         else:
-            self.send_status.config(text="❌ Failed to send transaction", foreground="red")
-            self.log_message("[ERROR] Transaction failed")
+            self.send_status.config(text="❌ Failed to send transaction", style='danger.TLabel')
+            self.log_message("Transaction failed", "ERROR")
 
     def view_transaction_details(self):
         """View details of a transaction"""
@@ -994,7 +2300,7 @@ class BlockchainUI:
             messagebox.showerror("Error", "Please enter a transaction ID")
             return
             
-        self.log_message(f"\n[Transaction] Looking up transaction {tx_id}")
+        self.log_message(f"Looking up transaction {tx_id}", "INFO")
         tx_data = self.tx_storage.get_transaction(tx_id)
         
         self.tx_details_text.configure(state='normal')
@@ -1002,11 +2308,11 @@ class BlockchainUI:
         
         if not tx_data:
             self.tx_details_text.insert(tk.END, "Transaction not found")
-            self.log_message("[Transaction] TX not found")
+            self.log_message("Transaction not found", "WARNING")
         else:
             for key, value in tx_data.items():
                 self.tx_details_text.insert(tk.END, f"{key}: {value}\n")
-            self.log_message(f"[Transaction] Found transaction with {len(tx_data)} details")
+            self.log_message(f"Found transaction with {len(tx_data)} details", "SUCCESS")
             
         self.tx_details_text.configure(state='disabled')
 
@@ -1021,7 +2327,7 @@ class BlockchainUI:
             pending_tx_list = self.mempool_storage.get_pending_transactions()
 
             if not pending_tx_list:
-                self.log_message("[Pending TX] No pending transactions")
+                self.log_message("No pending transactions", "INFO")
                 return
 
             count = 0
@@ -1038,17 +2344,21 @@ class BlockchainUI:
                     self.pending_tx_tree.insert('', 'end', values=(tx_id, tx_type, f"{amount} ZYC", f"{fee} ZYC"))
                     count += 1
                 except Exception as tx_error:
-                    self.log_message(f"[Pending TX] ⚠️ Skipped malformed transaction: {tx_error}")
+                    self.log_message(f"Skipped malformed transaction: {tx_error}", "WARNING")
 
-            self.log_message(f"[Pending TX] ✅ Loaded {count} pending transactions")
+            self.log_message(f"Loaded {count} pending transactions", "SUCCESS")
 
         except Exception as e:
-            self.log_message(f"[ERROR] Failed to refresh pending transactions: {e}")
-
+            self.log_message(f"Failed to refresh pending transactions: {e}", "ERROR")
 
     def refresh_wallet(self):
         """Refresh the wallet balance and UTXOs"""
         try:
+            # Check if UI elements exist before trying to use them
+            if not hasattr(self, "utxo_tree") or not hasattr(self, "balance_label"):
+                self.log_message("UI not fully initialized. Skipping wallet refresh.", "WARNING")
+                return
+
             # Clear existing items
             for item in self.utxo_tree.get_children():
                 self.utxo_tree.delete(item)
@@ -1058,10 +2368,10 @@ class BlockchainUI:
             total = Decimal("0")
 
             for u in utxos:
-                amt = Decimal(u.get("amount", "0"))
+                amt = Decimal(str(u.get("amount", "0")))
                 total += amt
 
-                tx_out_index = u.get("tx_out_index", u.get("output_index", 0))  # ✅ fallback to 'output_index' or 0
+                tx_out_index = u.get("tx_out_index", u.get("output_index", 0))
 
                 self.utxo_tree.insert('', 'end', values=(
                     u.get("tx_out_id", "N/A"),
@@ -1070,12 +2380,12 @@ class BlockchainUI:
                     "Yes" if u.get('locked', False) else "No"
                 ))
 
-            # Update balance
+            # Update balance display
             self.balance_label.config(text=f"{total} ZYC")
-            self.log_message(f"[Wallet] Refreshed balance: {total} ZYC")
+            self.log_message(f"Refreshed balance: {total} ZYC", "SUCCESS")
 
         except Exception as e:
-            self.log_message(f"[ERROR] Failed to refresh wallet: {e}")
+            self.log_message(f"Failed to refresh wallet: {e}", "ERROR")
 
 
     def generate_new_address(self):
@@ -1084,15 +2394,16 @@ class BlockchainUI:
             # Generate new key pair
             new_key = self.key_manager.generate_new_keypair()
             self.wallet_address = new_key['hashed_public_key']
+            self.wallet_address_label.config(text=f"Your Address: {self.wallet_address}")
             
             # Update UI
             self.refresh_wallet()
             
-            self.log_message(f"[Wallet] Generated new address: {self.wallet_address}")
+            self.log_message(f"Generated new address: {self.wallet_address}", "SUCCESS")
             messagebox.showinfo("New Address", f"New address generated:\n{self.wallet_address}")
             
         except Exception as e:
-            self.log_message(f"[ERROR] Failed to generate new address: {e}")
+            self.log_message(f"Failed to generate new address: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to generate new address: {e}")
 
     def search_transaction(self):
@@ -1118,10 +2429,10 @@ class BlockchainUI:
                         tx_data = tx
                         
                     self.tx_results.insert(tk.END, json.dumps(tx_data, indent=4))
-                    self.log_message(f"[TX Explorer] Found transaction: {search_value}")
+                    self.log_message(f"Found transaction: {search_value}", "SUCCESS")
                 else:
                     self.tx_results.insert(tk.END, "Transaction not found")
-                    self.log_message(f"[TX Explorer] Transaction not found: {search_value}")
+                    self.log_message(f"Transaction not found: {search_value}", "WARNING")
                     
             else:  # Search by height
                 txs = self.tx_storage.get_transactions_by_block(int(search_value))
@@ -1139,15 +2450,15 @@ class BlockchainUI:
                             
                         self.tx_results.insert(tk.END, json.dumps(tx_data, indent=4))
                         self.tx_results.insert(tk.END, "\n\n")
-                    self.log_message(f"[TX Explorer] Found {len(txs)} transactions at height {search_value}")
+                    self.log_message(f"Found {len(txs)} transactions at height {search_value}", "SUCCESS")
                 else:
                     self.tx_results.insert(tk.END, f"No transactions found at height {search_value}")
-                    self.log_message(f"[TX Explorer] No transactions at height: {search_value}")
+                    self.log_message(f"No transactions at height: {search_value}", "WARNING")
                     
             self.tx_results.configure(state='disabled')
             
         except Exception as e:
-            self.log_message(f"[ERROR] Error searching transaction: {e}")
+            self.log_message(f"Error searching transaction: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to search transaction: {e}")
 
     def find_utxos(self):
@@ -1172,12 +2483,12 @@ class BlockchainUI:
                         str(utxo.get('amount', '0')),
                         "Yes" if utxo.get('locked', False) else "No"
                     ))
-                self.log_message(f"[UTXO Explorer] Found {len(utxos)} UTXOs for address {address}")
+                self.log_message(f"Found {len(utxos)} UTXOs for address {address}", "SUCCESS")
             else:
-                self.log_message(f"[UTXO Explorer] No UTXOs found for address {address}")
+                self.log_message(f"No UTXOs found for address {address}", "WARNING")
                 
         except Exception as e:
-            self.log_message(f"[ERROR] Error finding UTXOs: {e}")
+            self.log_message(f"Error finding UTXOs: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to find UTXOs: {e}")
 
     def calculate_utxo_balance(self):
@@ -1191,11 +2502,11 @@ class BlockchainUI:
             utxos = self.utxo_storage.get_utxos_by_address(address)
             total_balance = sum(Decimal(utxo.get("amount", "0")) for utxo in utxos) if utxos else Decimal("0")
             
-            self.utxo_balance_label.config(text=f"Balance: {total_balance} ZYC")
-            self.log_message(f"[UTXO Explorer] Balance for {address}: {total_balance} ZYC")
+            self.utxo_balance_label.config(text=f"💵 Balance: {total_balance} ZYC")
+            self.log_message(f"Balance for {address}: {total_balance} ZYC", "SUCCESS")
             
         except Exception as e:
-            self.log_message(f"[ERROR] Error calculating balance: {e}")
+            self.log_message(f"Error calculating balance: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to calculate balance: {e}")
 
     def refresh_orphan_blocks(self):
@@ -1220,12 +2531,12 @@ class BlockchainUI:
                         block_data.get('height', ''),
                         len(block_data.get('transactions', []))
                     ))
-                self.log_message(f"[Orphan Blocks] Displayed {len(orphan_blocks)} orphan blocks")
+                self.log_message(f"Displayed {len(orphan_blocks)} orphan blocks", "SUCCESS")
             else:
-                self.log_message("[Orphan Blocks] No orphan blocks found")
+                self.log_message("No orphan blocks found", "INFO")
                 
         except Exception as e:
-            self.log_message(f"[ERROR] Error fetching orphan blocks: {e}")
+            self.log_message(f"Error fetching orphan blocks: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to get orphan blocks: {e}")
 
     def export_last_500_blocks(self):
@@ -1251,14 +2562,14 @@ class BlockchainUI:
                 json.dump(block_data, f, indent=4)
 
             self.export_status.config(text=f"✅ Export complete: {len(block_data)} blocks saved to {output_path}")
-            self.log_message(f"[Export] Exported {len(block_data)} blocks to {output_path}")
+            self.log_message(f"Exported {len(block_data)} blocks to {output_path}", "SUCCESS")
             
             # Open the export folder
             os.startfile(os.path.abspath(self.export_folder))
             
         except Exception as e:
             self.export_status.config(text=f"❌ Export failed: {e}")
-            self.log_message(f"[ERROR] Export failed: {e}")
+            self.log_message(f"Export failed: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to export blocks: {e}")
 
     def select_export_folder(self):
@@ -1267,7 +2578,7 @@ class BlockchainUI:
         if folder:
             self.export_folder = folder
             self.export_status.config(text=f"Export folder set to: {folder}")
-            self.log_message(f"[Export] Set export folder to: {folder}")
+            self.log_message(f"Set export folder to: {folder}", "INFO")
 
     def validate_blockchain(self):
         """Validate the blockchain integrity"""
@@ -1275,84 +2586,146 @@ class BlockchainUI:
             valid = self.blockchain.validate_chain()
             if valid is None:
                 messagebox.showwarning("Validation", "Validation returned None. Possible corruption detected.")
-                self.log_message("[Validation] WARNING: Validation returned None")
+                self.log_message("WARNING: Validation returned None", "WARNING")
             elif valid:
                 messagebox.showinfo("Validation", "Blockchain validation passed.")
-                self.log_message("[Validation] Blockchain validation passed")
+                self.log_message("Blockchain validation passed", "SUCCESS")
             else:
                 messagebox.showerror("Validation", "Blockchain validation failed!")
-                self.log_message("[Validation] ERROR: Blockchain validation failed")
+                self.log_message("ERROR: Blockchain validation failed", "ERROR")
         except Exception as e:
             messagebox.showerror("Error", f"Blockchain validation failed: {e}")
-            self.log_message(f"[ERROR] Validation failed: {e}")
+            self.log_message(f"Validation failed: {e}", "ERROR")
 
-    def cleanup(self):
-        """Cleanup resources on exit"""
-        self.log_message("[System] Shutting down...")
-        self.stop_mining()
+    def show_stats(self):
+        """Show statistics in a new window with actual data"""
+        stats_window = tk.Toplevel(self.root)
+        stats_window.title("Blockchain Statistics")
+        stats_window.geometry("600x400")
+
+        ttk.Label(stats_window, text="Blockchain Statistics", font=('Helvetica', 16)).pack(pady=10)
+
+        try:
+            latest_block = self.block_storage.get_latest_block()
+            block_height = getattr(latest_block, 'index', latest_block.get('index', 0)) if latest_block else 0
+            total_tx = self.tx_storage.get_transaction_count()
+            mempool_size = self.mempool_storage.get_pending_transaction_count()
+            utxo_count = len(self.utxo_storage.get_all_utxos())
+            orphan_count = len(self.orphan_blocks.get_all_orphans())
+
+            blocks = self.block_storage.get_all_blocks()[-10:]
+            avg_block_time = "N/A"
+            if len(blocks) >= 2:
+                timestamps = []
+                for b in blocks:
+                    if hasattr(b, 'timestamp'):
+                        timestamps.append(b.timestamp)
+                    elif isinstance(b, dict) and 'timestamp' in b:
+                        timestamps.append(b['timestamp'])
+
+                if len(timestamps) >= 2:
+                    intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
+                    avg_block_time = f"{sum(intervals) / len(intervals):.2f} sec"
+
+            stats = [
+                f"Block Height: {block_height}",
+                f"Total Transactions: {total_tx}",
+                f"Mempool Size: {mempool_size}",
+                f"UTXO Count: {utxo_count}",
+                f"Orphan Blocks: {orphan_count}",
+                f"Avg Block Time (last 10): {avg_block_time}"
+            ]
+
+            for stat in stats:
+                ttk.Label(stats_window, text=stat).pack(anchor='w', padx=20, pady=2)
+
+        except Exception as e:
+            ttk.Label(stats_window, text=f"Error loading stats: {e}").pack()
+
+
+    def on_contact_double_click(self, event):
+        """Handle contact double-click to populate Send tab"""
+        selected = self.contacts_tree.selection()
+        if selected:
+            item = self.contacts_tree.item(selected[0])
+            address = item['values'][1]  # Assuming address is the second column
+            self.recipient_entry.delete(0, tk.END)
+            self.recipient_entry.insert(0, address)
+            # Switch to Send tab (index may vary)
+            self.notebook.select(3)  # Adjust based on your tab order
+
+
+    def calculate_hashrate(self):
+            """
+            Calculate approximate hash rate based on number of attempts per second.
+            This is just an estimate based on block mining timestamps.
+            """
+            try:
+                timestamps = []
+                blocks = self.block_storage.get_all_blocks()[-10:]  # last 10 blocks
+                for block in blocks:
+                    if hasattr(block, 'timestamp'):
+                        timestamps.append(block.timestamp)
+                    elif isinstance(block, dict) and 'timestamp' in block:
+                        timestamps.append(block['timestamp'])
+
+                if len(timestamps) < 2:
+                    return 0.0
+
+                timestamps.sort()
+                time_deltas = [t2 - t1 for t1, t2 in zip(timestamps, timestamps[1:])]
+                avg_time = sum(time_deltas) / len(time_deltas)
+
+                # Simulated hash difficulty as a placeholder (real mining algorithm would provide this)
+                hashes_per_block = 1_000_000  # example: assume this many hash attempts per block
+                return hashes_per_block / avg_time if avg_time > 0 else 0.0
+
+            except Exception as e:
+                self.log_message(f"Failed to calculate hashrate: {e}", "ERROR")
+                return 0.0
         
-        # Close LMDB environments
-        self.utxo_db.close()
-        self.utxo_history_db.close()
-        
-        self.log_message("[System] Cleanup complete")
-
-
     def auto_refresh_ui(self):
-        """Auto-refresh all dynamic UI sections every 3 seconds"""
+        """Auto-refresh all dynamic UI sections"""
         while True:
             try:
                 self.root.after(0, self.update_dashboard)
                 self.root.after(0, self.load_recent_blocks)
                 self.root.after(0, self.refresh_wallet)
-                self.root.after(0, self.update_mining_stats_display)  # ✅ NEW: full refresh
-                time.sleep(60)
+                self.root.after(0, self.update_mining_stats_display)
+                time.sleep(300)
             except Exception as e:
-                self.log_message(f"[AutoRefresh] ❌ UI update error: {e}")
+                self.log_message(f"UI update error: {e}", "ERROR")
                 break
 
     def update_mining_stats_display(self):
         """Refresh hash rate and last mined block stats"""
         try:
             hashrate = self.calculate_hashrate()
-            self.hashrate_label.config(text=f"Hashrate: {hashrate:.2f} H/s")
-            # You could also refresh other miner-related data here if desired
+            self.hashrate_label.config(text=f"⚡ Hashrate: {hashrate:.2f} H/s")
         except Exception as e:
-            self.log_message(f"[Mining Stats] ❌ Failed to update mining stats: {e}")
+            self.log_message(f"Failed to update mining stats: {e}", "ERROR")
 
-
-    def calculate_hashrate(self):
-        """
-        Calculate approximate hash rate based on number of attempts per second.
-        This is just an estimate based on block mining timestamps.
-        """
-        try:
-            timestamps = []
-            blocks = self.block_storage.get_all_blocks()[-10:]  # last 10 blocks
-            for block in blocks:
-                if hasattr(block, 'timestamp'):
-                    timestamps.append(block.timestamp)
-                elif isinstance(block, dict) and 'timestamp' in block:
-                    timestamps.append(block['timestamp'])
-
-            if len(timestamps) < 2:
-                return 0.0
-
-            timestamps.sort()
-            time_deltas = [t2 - t1 for t1, t2 in zip(timestamps, timestamps[1:])]
-            avg_time = sum(time_deltas) / len(time_deltas)
-
-            # Simulated hash difficulty as a placeholder (real mining algorithm would provide this)
-            hashes_per_block = 1_000_000  # example: assume this many hash attempts per block
-            return hashes_per_block / avg_time if avg_time > 0 else 0.0
-
-        except Exception as e:
-            self.log_message(f"[HashrateCalc] ❌ Failed to calculate hashrate: {e}")
-            return 0.0
+    def cleanup(self):
+        """Cleanup resources on exit"""
+        self.log_message("Shutting down...", "INFO")
+        self.stop_mining()
+        
+        # Close LMDB environments
+        if hasattr(self, 'utxo_db'):
+            self.utxo_db.close()
+        if hasattr(self, 'utxo_history_db'):
+            self.utxo_history_db.close()
+        
+        self.log_message("Cleanup complete", "INFO")
 
 
 
-class PaymentProcessor:
+class UIPaymentProcessor:
+    """
+    Handles payment processing for the UI layer with enhanced logging and validation.
+    This should be used for UI interactions while the core PaymentProcessor handles backend logic.
+    """
+    
     def __init__(self, utxo_manager, tx_storage, standard_mempool, smart_mempool, key_manager, fee_model=None):
         self.utxo_manager = utxo_manager
         self.tx_storage = tx_storage
@@ -1362,11 +2735,31 @@ class PaymentProcessor:
 
         if fee_model is not None:
             self.fee_model = fee_model
-            print("[PaymentProcessor] ✅ Using provided fee_model.")
+            print("[UIPaymentProcessor] ✅ Using provided fee_model.")
         else:
-            from Zyiron_Chain.transactions.fees import FeeModel
             self.fee_model = FeeModel(Constants.MAX_SUPPLY)
-            print("[PaymentProcessor] ✅ Created internal FeeModel.")
+            print("[UIPaymentProcessor] ✅ Created internal FeeModel.")
+
+
+
+    
+    @staticmethod
+    def is_main_thread():
+        """Check if we're in the main thread"""
+        import threading
+        return isinstance(threading.current_thread(), threading._MainThread)
+
+
+    @staticmethod
+    def is_window_alive(window):
+        """Safely check if a tkinter window exists"""
+        try:
+            return window.winfo_exists()
+        except (tk.TclError, RuntimeError):
+            return False
+
+
+
 
 
 
@@ -1403,7 +2796,7 @@ class PaymentProcessor:
             print(f"[PaymentProcessorUI] ❌ Insufficient funds. Total input: {total_input}, Required: {amount + fee}")
             return None
 
-        # ✅ Step 3: Build placeholder inputs for initial tx signing
+        # ✅ Step 3: Build placeholder inputs
         inputs = [TransactionIn(tx_out_id=u.tx_out_id, script_sig="placeholder") for u in utxos]
         outputs = [TransactionOut(script_pub_key=recipient_address, amount=amount)]
 
@@ -1415,11 +2808,11 @@ class PaymentProcessor:
         tx = Transaction(inputs=inputs, outputs=outputs, tx_type=tx_type)
         tx.sign(sender_priv_key, sender_pub_key)
 
-        # ✅ Step 5: Replace placeholder script_sigs with real signature
+        # ✅ Step 5: Replace placeholders with real signature
         for tx_input in tx.inputs:
             tx_input.script_sig = tx.signature.hex()
 
-        # ✅ Step 6: Verify signature using KeyManager
+        # ✅ Step 6: Verify signature
         if not self.key_manager.verify_transaction(
             message=tx.hash.encode("utf-8") if isinstance(tx.hash, str) else tx.hash,
             signature=tx.signature,
@@ -1429,7 +2822,7 @@ class PaymentProcessor:
             print("[PaymentProcessorUI] ❌ Signature verification failed.")
             return None
 
-        # ✅ Step 7: Lock UTXOs and add to mempool
+        # ✅ Step 7: Lock UTXOs and route to mempool
         self.utxo_manager.lock_selected_utxos([u.tx_out_id for u in utxos])
 
         if not self._route_to_mempool(tx):
@@ -1439,6 +2832,7 @@ class PaymentProcessor:
 
         print(f"[PaymentProcessorUI] ✅ Transaction sent. TXID: {tx.tx_id}")
         return tx.tx_id
+
 
     def _select_utxos(self, address, required_amount):
         """Select UTXOs for a transaction"""
@@ -1508,18 +2902,30 @@ class PaymentProcessor:
             return False
 
 
+
 if __name__ == "__main__":
     import tkinter as tk
     from threading import Thread
 
-    # ✅ Initialize the root Tkinter window
-    root = tk.Tk()
+    try:
+        # Initialize the root Tkinter window with themed style
+        root = ttkbs.Window(themename="darkly")
+        root.title("Zyiron Chain Explorer")
 
-    # ✅ Launch the Blockchain UI
-    app = BlockchainUI(root)
+        # Optional: Set window icon
+        try:
+            root.iconbitmap('zyiron_icon.ico')
+        except Exception as e:
+            print(f"[Icon Warning] Could not set icon: {e}")
 
-    # ✅ Start auto-refresh UI thread (updates dashboard, mining stats, wallet every 3s)
-    Thread(target=app.auto_refresh_ui, daemon=True).start()
+        # Create the UI
+        app = BlockchainUI(root)
 
-    # ✅ Run the Tkinter event loop
-    root.mainloop()
+        # Force immediate widget rendering before mainloop
+        root.update_idletasks()
+
+        # Start main event loop
+        root.mainloop()
+
+    except Exception as e:
+        print(f"[Startup Error] UI crashed: {e}")

@@ -385,6 +385,7 @@ class BlockStorage:
     def get_block_by_hash(self, block_hash: str) -> Optional[dict]:
         """
         Retrieve a full block dictionary using its hash.
+        Falls back to full block storage if metadata is missing.
 
         Args:
             block_hash (str): The hash of the block (hexadecimal).
@@ -395,38 +396,42 @@ class BlockStorage:
         try:
             print(f"[BlockStorage.get_block_by_hash] 🔍 Looking up block hash: {block_hash}")
 
-            # Convert to proper key for LMDB
+            # Try metadata first
             key = f"block_hash:{block_hash}".encode()
             metadata_bytes = self.block_metadata_db.get(key)
 
-            if not metadata_bytes:
-                print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: No metadata found for block hash {block_hash}.")
-                return None
+            if metadata_bytes:
+                try:
+                    metadata = json.loads(metadata_bytes.decode())
+                    height = metadata.get("height")
+                    if height is None:
+                        print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Metadata missing block height for hash {block_hash}.")
+                        return None
+                    block_data = self.get_block_by_height(height)
+                    if block_data:
+                        print(f"[BlockStorage.get_block_by_hash] ✅ SUCCESS: Block {height} loaded via metadata.")
+                        return block_data
+                    else:
+                        print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Block at height {height} not found in full storage.")
+                except Exception as decode_error:
+                    print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Failed to decode metadata: {decode_error}")
 
-            # Load metadata to get height or offset
-            try:
-                metadata = json.loads(metadata_bytes.decode())
-            except Exception as decode_error:
-                print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Failed to decode metadata: {decode_error}")
-                return None
+            # Fallback: Scan all full blocks
+            print(f"[BlockStorage.get_block_by_hash] ⚠️ Metadata missing or invalid. Scanning full block store for {block_hash}...")
+            all_blocks = self.get_all_blocks()
+            for block in all_blocks:
+                block_hash_check = block.get("hash") if isinstance(block, dict) else getattr(block, "hash", None)
+                if block_hash_check == block_hash:
+                    print(f"[BlockStorage.get_block_by_hash] 🔁 Fallback match: Found block in full storage.")
+                    return block
 
-            height = metadata.get("height")
-            if height is None:
-                print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Metadata missing block height for hash {block_hash}.")
-                return None
-
-            # Retrieve full block from height
-            block_data = self.get_block_by_height(height)
-            if not block_data:
-                print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Block at height {height} could not be loaded.")
-                return None
-
-            print(f"[BlockStorage.get_block_by_hash] ✅ SUCCESS: Block {height} loaded using hash.")
-            return block_data
+            print(f"[BlockStorage.get_block_by_hash] ❌ Block not found in full storage for hash {block_hash}")
+            return None
 
         except Exception as e:
             print(f"[BlockStorage.get_block_by_hash] ❌ ERROR: Unexpected failure during block hash lookup: {e}")
             return None
+
 
 
     def store_block(self, block: Block) -> bool:
