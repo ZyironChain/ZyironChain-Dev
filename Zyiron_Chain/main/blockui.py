@@ -1,7 +1,8 @@
+from functools import wraps
 import sys
 import os
 import traceback
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 #!/usr/bin/env python3
 
@@ -92,12 +93,11 @@ class BlockchainUI:
         # Set dark theme
         sv_ttk.set_theme("dark")
 
-        # Track loading popup
+        # Track loading popup state
         self.loading_popup = None
-
-        # Show loading screen
-        self.create_loading_screen()
-        self.root.update()
+        self.loading_complete = False
+        self.last_progress = 0  # Initialize progress tracking
+        self.last_message = ""  # Initialize message tracking
 
         # Setup basic state and threading
         self.mining_active = False
@@ -106,32 +106,105 @@ class BlockchainUI:
         self.log_queue = queue.Queue()
         self.root.configure(bg=self.bg_color)
 
-        # Start the main UI load after short delay (prevent freeze)
+        # Create and show loading screen
+        self.create_loading_screen()
+        self.root.update()
+
+        # Start the main UI load
         self.root.after(100, self.initialize_ui_async)
 
-        # Register cleanup
+        # Register cleanup and window close handler
         atexit.register(self.cleanup)
+        self.root.protocol("WM_DELETE_WINDOW", self.exit_cleanly)
 
         # Bind right-click menu
         self.root.bind_class("Text", "<Button-3><ButtonRelease-3>", self.show_right_click_menu)
 
+    def _load_ui_background(self):
+        """Load UI components in the background with proper progress updates"""
+        try:
+            stages = [
+                ("Initializing Blockchain", 30, self._safe_initialize_blockchain),
+                ("Setting Up UI", 40, self._safe_setup_ui),
+                ("Loading Wallet", 20, self._safe_load_wallet),
+                ("Starting Services", 10, self._start_background_services)
+            ]
+
+            total_weight = sum(weight for _, weight, _ in stages)
+            progress = 0
+
+            for name, weight, func in stages:
+                self.root.after(0, lambda p=progress, n=name: self.update_loading_screen(p, n))
+                func()  # Runs in background
+                progress += (weight / total_weight) * 100
+                self.root.after(0, lambda p=min(100, progress), n=name: self.update_loading_screen(p, n))
+
+            self.root.after(0, self.finalize_ui_loading)
+            
+        except Exception as e:
+            self.root.after(0, lambda e=e: self._handle_loading_failure(f"Loading failed: {e}"))
+
+    def create_loading_screen(self):
+        """Create and show the loading screen with proper error handling"""
+        try:
+            if self.loading_popup and self.loading_popup.winfo_exists():
+                return
+
+            self.loading_popup = tk.Toplevel(self.root)
+            self.loading_popup.title("Loading...")
+            self.loading_popup.geometry("400x200")
+            self.loading_popup.resizable(False, False)
+            self.loading_popup.attributes('-topmost', True)
+            self.loading_popup.grab_set()  # Make it modal
+            
+            # Center the window
+            self._center_loading_screen()
+
+            # Loading content
+            ttk.Label(self.loading_popup, 
+                     text="⚡ Zyiron Chain", 
+                     font=('Helvetica', 18, 'bold')).pack(pady=20)
+            
+            self.loading_label = ttk.Label(self.loading_popup, 
+                                          text="Initializing...",
+                                          font=('Helvetica', 10))
+            self.loading_label.pack()
+            
+            self.loading_progress_bar = ttk.Progressbar(self.loading_popup, 
+                                                       orient='horizontal',
+                                                       length=300,
+                                                       mode='determinate')
+            self.loading_progress_bar.pack(pady=10)
+            
+            self.loading_percent = ttk.Label(self.loading_popup, 
+                                            text="0%",
+                                            font=('Helvetica', 10))
+            self.loading_percent.pack()
+            
+            self.root.update()  # Force immediate UI update
+            
+        except Exception as e:
+            print(f"Error creating loading screen: {e}")
+            # Fallback to console output if UI fails
+            print("Initializing Zyiron Chain...")
 
 
 
+
+
+    def destroy_loading_screen(self):
+        """Safely destroy the loading screen"""
+        if self.loading_popup and self.loading_popup.winfo_exists():
+            try:
+                self.loading_popup.grab_release()
+                self.loading_popup.destroy()
+            except Exception as e:
+                print(f"Error closing loading screen: {e}")
+        self.loading_popup = None
 
     def initialize_ui_async(self):
         """Safely initialize UI components in background with proper error handling"""
         try:
-            # Ensure we're in the main thread for Tkinter operations
-            if not self.is_main_thread():
-                self.root.after(0, self.initialize_ui_async)
-                return
-
-            # Setup loading screen first
-            if not hasattr(self, "loading_screen") or not self.loading_screen.winfo_exists():
-                self.create_loading_screen()
-            self.update_loading_screen(5, "Starting initialization...")
-
             # Start background thread with proper error propagation
             self._loading_thread = threading.Thread(
                 target=self._load_ui_background,
@@ -145,6 +218,94 @@ class BlockchainUI:
 
         except Exception as e:
             self._handle_loading_failure(f"Initialization failed: {str(e)}")
+
+
+
+
+
+
+
+
+    def finalize_ui_loading(self):
+        """Finalize UI with proper cleanup and validation"""
+        try:
+            # Verify critical components
+            required_components = [
+                'blockchain', 'miner', 'wallet_address',
+                'notebook', 'status_bar'
+            ]
+            missing = [comp for comp in required_components if not hasattr(self, comp)]
+            if missing:
+                raise RuntimeError(f"Missing critical components: {', '.join(missing)}")
+
+            print("[FINALIZE] All critical components are present.")
+
+            # Safely destroy the loading screen
+            if self.loading_popup and self.loading_popup.winfo_exists():
+                print("[FINALIZE] Destroying loading screen...")
+                self.destroy_loading_screen()
+            else:
+                print("[FINALIZE] Loading screen already destroyed or missing.")
+
+            # Initial UI content population
+            self.update_dashboard()
+            self.load_recent_blocks()
+            self.refresh_wallet()
+
+            print("[FINALIZE] Dashboard, blocks, and wallet loaded.")
+            self.log_output("UI initialization completed successfully", "SUCCESS")
+
+        except Exception as e:
+            print(f"[ERROR] UI finalization failed: {str(e)}")
+            self._handle_loading_failure(f"Finalization failed: {str(e)}")
+
+    def _handle_loading_failure(self, error_msg):
+        """Handle loading failures with proper cleanup"""
+        try:
+            # Attempt to remove loading screen if it exists
+            self.destroy_loading_screen()
+
+            # Show error message
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                messagebox.showerror(
+                    "Initialization Error",
+                    f"Failed to initialize application:\n\n{error_msg}",
+                    parent=self.root
+                )
+                self.root.destroy()
+            else:
+                print(f"Critical error: {error_msg}")
+                sys.exit(1)
+
+        except Exception as e:
+            print(f"Error during failure handling: {str(e)}")
+            sys.exit(1)
+
+    def exit_cleanly(self):
+        """Clean exit handler"""
+        try:
+            self.log_message("Shutting down...", "INFO")
+            self.stop_mining()
+            
+            # Close LMDB environments
+            if hasattr(self, 'tx_storage') and self.tx_storage:
+                self.tx_storage.close()
+            if hasattr(self, 'utxo_storage') and self.utxo_storage:
+                self.utxo_storage.close()
+            if hasattr(self, 'block_storage') and self.block_storage:
+                self.block_storage.close()
+                
+            self.log_message("Cleanup complete", "INFO")
+            self.destroy_loading_screen()
+            self.root.destroy()
+        except Exception as e:
+            self.log_message(f"Cleanup error: {e}", "ERROR")
+            self.root.destroy()
+
+
+
+
+
 
 
     def _monitor_loading_progress(self):
@@ -163,27 +324,9 @@ class BlockchainUI:
 
     def _on_tab_change(self, event):
         selected_tab = event.widget.select()
-        tab_text = event.widget.tab(selected_tab, option="text")
-
-        print(f"Tab switched to: {tab_text}")  # Debug output
-
-        if "wallet" in tab_text.lower():
-            print("Refreshing Wallet tab...")
-            if hasattr(self, "refresh_wallet"):
-                self.refresh_wallet()
-            else:
-                print("⚠️ Warning: refresh_wallet method is missing.")
-
-
-    def destroy_loading_screen(self):
-        """Destroy the loading screen popup once initialization is complete"""
-        if hasattr(self, "loading_popup") and self.loading_popup:
-            try:
-                self.loading_popup.destroy()
-                self.loading_popup = None
-                print("[UI] Loading screen destroyed.")
-            except Exception as e:
-                print(f"[UI] Failed to destroy loading screen: {e}")
+        tab_text = event.widget.tab(selected_tab, "text")
+        if tab_text == "💳 Wallet":  # Match exact tab text
+            self.refresh_wallet()
 
 
 
@@ -197,7 +340,7 @@ class BlockchainUI:
                     raise ValueError("Failed to generate wallet address")
             
             # Verify wallet components
-            if not all(hasattr(self, attr) for attr in ['key_manager', 'utxo_storage']):
+            if not all(hasattr(self, attr) for attr in ['key_manager', 'utxo_manager']):
                 raise RuntimeError("Missing required wallet components")
                 
             # Load wallet data
@@ -212,38 +355,6 @@ class BlockchainUI:
 
 
 
-    def _load_ui_background(self):
-        """Background thread for loading components with proper resource management"""
-        try:
-            # Track initialization stages with weights
-            stages = [
-                ("Initializing Blockchain", 30, self._safe_initialize_blockchain),
-                ("Setting Up UI", 40, self._safe_setup_ui),
-                ("Loading Wallet", 20, self._safe_load_wallet),
-                ("Starting Services", 10, self._start_background_services)
-            ]
-
-            total_weight = sum(weight for _, weight, _ in stages)
-            progress = 0
-
-            for name, weight, func in stages:
-                self.update_loading_screen(progress, name)
-                func()
-                progress += (weight / total_weight) * 100
-                self.update_loading_screen(min(100, progress), name)
-
-            # Final completion
-            self._loading_complete = True
-
-            # Ensure loading screen closes on success
-            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
-                self.root.after(0, self.loading_screen.destroy)
-
-        except Exception as e:
-            self._loading_failed = True
-            error_msg = f"Background loading failed: {str(e)}\n{traceback.format_exc()}"
-            self.log_queue.put((error_msg, "ERROR"))
-            print(error_msg)
 
 
     def _start_background_services(self):
@@ -253,14 +364,12 @@ class BlockchainUI:
             ("Log Handler", self.start_log_handler),
             ("Auto-Refresh", self.auto_refresh_ui)
         ]
-        
+
         for name, service in services:
             try:
                 service()
-                self.update_loading_screen(
-                    self.loading_progress['value'],
-                    f"Started {name}"
-                )
+                progress_value = self.loading_progress_bar['value'] if self.loading_progress_bar else 0
+                self.update_loading_screen(progress_value, f"Started {name}")
             except Exception as e:
                 self.log_output(f"Failed to start {name}: {str(e)}", "WARNING")
 
@@ -268,54 +377,7 @@ class BlockchainUI:
 
 
 
-    def finalize_ui_loading(self):
-        """Finalize UI with proper cleanup and validation"""
-        try:
-            # Verify critical components
-            required_components = [
-                'blockchain', 'miner', 'wallet_address',
-                'notebook', 'status_bar'
-            ]
-            missing = [comp for comp in required_components if not hasattr(self, comp)]
-            if missing:
-                raise RuntimeError(f"Missing critical components: {', '.join(missing)}")
 
-            # Update UI elements
-            self.remove_loading_screen()
-            self.animate_loading_complete()
-            
-            # Initial data load
-            self.update_dashboard()
-            self.load_recent_blocks()
-            self.refresh_wallet()
-            
-            self.log_output("UI initialization completed successfully", "SUCCESS")
-
-        except Exception as e:
-            self._handle_loading_failure(f"Finalization failed: {str(e)}")
-
-    def _handle_loading_failure(self, error_msg):
-        """Handle loading failures with proper cleanup"""
-        try:
-            # Attempt to remove loading screen if it exists
-            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
-                self.loading_screen.destroy()
-
-            # Show error message
-            if hasattr(self, 'root') and self.root.winfo_exists():
-                messagebox.showerror(
-                    "Initialization Error",
-                    f"Failed to initialize application:\n\n{error_msg}",
-                    parent=self.root
-                )
-                self.root.destroy()
-            else:
-                print(f"Critical error: {error_msg}")
-                sys.exit(1)
-
-        except Exception as e:
-            print(f"Error during failure handling: {str(e)}")
-            sys.exit(1)
 
     def log_output(self, message, level="INFO"):
         """Enhanced thread-safe logging with UI updates"""
@@ -360,86 +422,7 @@ class BlockchainUI:
         """Check if current thread is the main thread"""
         return isinstance(threading.current_thread(), threading._MainThread)
 
-    def create_loading_screen(self):
-        """Create a modern loading screen with enhanced functionality"""
-        # Create loading screen window
-        self.loading_screen = tk.Toplevel(self.root)
-        self.loading_screen.overrideredirect(True)
-        self._center_loading_screen()
-        self.loading_screen.configure(bg=self.bg_color)
-        
-        # Configure window close behavior
-        self.loading_screen.protocol("WM_DELETE_WINDOW", self._confirm_close_loading)
-        
-        # Create loading screen content
-        self._setup_loading_content()
-        
-        # Make sure it stays on top
-        self.loading_screen.lift()
-        self.loading_screen.attributes('-topmost', True)
-        self.root.update()
 
-    def _center_loading_screen(self):
-        """Center the loading screen on the display"""
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        window_width = 400
-        window_height = 300
-        position_x = (screen_width // 2) - (window_width // 2)
-        position_y = (screen_height // 2) - (window_height // 2)
-        self.loading_screen.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-
-    def _setup_loading_content(self):
-        """Create all loading screen UI elements"""
-        # Logo and title
-        logo_label = ttk.Label(
-            self.loading_screen,
-            text="⚡ Zyiron Chain",
-            font=('Helvetica', 24, 'bold'),
-            foreground=self.accent_color,
-            background=self.bg_color
-        )
-        logo_label.pack(pady=40)
-
-        # Progress bar
-        self.loading_progress = ttkbs.Progressbar(
-            self.loading_screen,
-            bootstyle="striped",
-            maximum=100,
-            mode='determinate',
-            length=300
-        )
-        self.loading_progress.pack(pady=20)
-
-        # Status label
-        self.loading_label = ttk.Label(
-            self.loading_screen,
-            text="Initializing blockchain components...",
-            font=('Helvetica', 10),
-            foreground=self.text_color,
-            background=self.bg_color
-        )
-        self.loading_label.pack(pady=10)
-
-        # Percentage indicator
-        self.loading_percent = ttk.Label(
-            self.loading_screen,
-            text="0%",
-            font=('Helvetica', 10, 'bold'),
-            foreground=self.accent_color,
-            background=self.bg_color
-        )
-        self.loading_percent.pack()
-
-        # Close button (styled to match theme)
-        close_btn = ttkbs.Button(
-            self.loading_screen,
-            text="✕",
-            command=self._confirm_close_loading,
-            bootstyle="danger-link",
-            width=2
-        )
-        close_btn.place(relx=0.95, rely=0.05, anchor='ne')
 
     def _confirm_close_loading(self):
         """Handle confirmation when trying to close loading screen"""
@@ -453,11 +436,12 @@ class BlockchainUI:
 
 
     def _safe_initialize_blockchain(self):
-        """Wrapper for blockchain initialization with error handling"""
-        try:
-            self.initialize_blockchain()
-        except Exception as e:
-            raise RuntimeError(f"Blockchain initialization failed: {str(e)}")
+        self.initialize_blockchain()
+        
+        # Wait until key components are ready
+        while not hasattr(self, "mempool_storage") or not hasattr(self, "orphan_blocks") or not hasattr(self, "utxo_manager"):
+            time.sleep(0.2)  # short delay to allow background thread to finish setup
+
 
     def _safe_setup_ui(self):
         """Wrapper for UI setup with thread safety checks"""
@@ -473,32 +457,71 @@ class BlockchainUI:
 
 
 
+    def _center_loading_screen(self):
+        """Center the loading screen on parent window"""
+        if not self.loading_popup:
+            return
+            
+        self.loading_popup.update_idletasks()
+        width = self.loading_popup.winfo_width()
+        height = self.loading_popup.winfo_height()
+        x = (self.loading_popup.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.loading_popup.winfo_screenheight() // 2) - (height // 2)
+        self.loading_popup.geometry(f'{width}x{height}+{x}+{y}')
+
+
+ 
+    def update_loading_screen(self, progress, message):
+        """Update loading screen progress safely"""
+        try:
+            if not self.loading_popup or not self.loading_popup.winfo_exists():
+                return
+
+            # Only update if significant change
+            if abs(progress - self.last_progress) > 2 or message != self.last_message:
+                # ✅ Ensure we update the actual loading progress bar
+                self.loading_progress_bar['value'] = progress
+                self.loading_label.config(text=message)
+                self.loading_percent.config(text=f"{int(progress)}%")
+                self.loading_popup.update_idletasks()
+
+                self.last_progress = progress
+                self.last_message = message
+
+        except Exception as e:
+            print(f"Error updating loading screen: {e}")
+
+
 
     def _safe_close_loading(self):
         """Safely close the loading screen without animation"""
         try:
-            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
-                self.loading_screen.destroy()
+            # Corrected from self.loading_screen to self.loading_popup
+            if hasattr(self, 'loading_popup') and self.loading_popup.winfo_exists():
+                self.loading_popup.destroy()
         except Exception as e:
             print(f"Error closing loading screen: {e}")
 
-    def update_loading_screen(self, progress, message):
-        """Update loading screen progress and message"""
-        try:
-            if hasattr(self, 'loading_screen') and self.loading_screen.winfo_exists():
-                progress = max(0, min(100, progress))  # Clamp between 0-100
-                self.loading_progress['value'] = progress
-                self.loading_label.config(text=message)
-                self.loading_percent.config(text=f"{progress}%")
-                self.loading_screen.update()
-        except Exception as e:
-            print(f"Error updating loading screen: {e}")
+
+
+
+
 
     def remove_loading_screen(self):
-        """Remove loading screen with animation"""
-        self._update_loading_screen(100, "Initialization complete!")
-        time.sleep(0.5)  # Brief pause at 100%
-        self._safe_close_loading()
+        if self.loading_screen and tk.Toplevel.winfo_exists(self.loading_screen):
+            self.loading_message.config(text="Initialization complete!")
+            self.loading_percentage.config(text="100%")
+            self.root.after(1500, self._safe_close_loading)
+
+
+    def _safe_close_loading(self):
+        try:
+            if self.loading_screen:
+                self.loading_screen.destroy()
+                self.loading_screen = None
+        except Exception as e:
+            print("Failed to destroy loading screen:", e)
+
 
     def is_mainloop_running(self):
         """Check if the main Tkinter loop is running"""
@@ -558,38 +581,75 @@ class BlockchainUI:
 
     def initialize_blockchain(self):
         """Run blockchain initialization in background thread to avoid UI freeze"""
+        # Create a queue for UI updates
+        self.update_queue = queue.Queue()
+        
+        # Start the monitor for UI updates
+        self.root.after(100, self.process_ui_updates)
+        
+        # Start initialization in background
         threading.Thread(target=self._initialize_blockchain_thread, daemon=True).start()
 
+    def process_ui_updates(self):
+        """Process UI updates from the queue"""
+        try:
+            while True:
+                # Get all pending updates (non-blocking)
+                try:
+                    callback = self.update_queue.get_nowait()
+                    callback()
+                except queue.Empty:
+                    break
+        finally:
+            # Schedule next check
+            self.root.after(100, self.process_ui_updates)
 
     def _initialize_blockchain_thread(self):
         try:
-            self.root.after(0, lambda: self.update_loading_screen(5, "🔑 Initializing Key Manager..."))
+            # Major milestones for updates
+            milestones = [
+                (5, "🔑 Initializing Key Manager..."),
+                (25, "📦 Setting up Storage..."),
+                (50, "⛓️ Building Blockchain Core..."),
+                (75, "⚒️ Initializing Miner..."),
+                (100, "✅ Finalizing Setup...")
+            ]
+            
+            # Update via queue instead of direct after(0)
+            def update_loading(progress, message):
+                self.update_queue.put(lambda: self.update_loading_screen(progress, message))
+            
+            # Key Manager
+            update_loading(*milestones[0])
             self.key_manager = KeyManager()
 
-            self.root.after(0, lambda: self.update_loading_screen(12, "💸 Setting up Fee Model..."))
+            # Fee Model
             self.fee_model = FeeModel(Constants.MAX_SUPPLY)
 
-            self.root.after(0, lambda: self.update_loading_screen(20, "📦 Preparing Transaction Storage..."))
+            # Transaction Storage
             self.tx_storage = TxStorage(fee_model=self.fee_model)
 
-            self.root.after(0, lambda: self.update_loading_screen(30, "📚 Configuring Block Storage..."))
+            # Block Storage
+            update_loading(*milestones[1])
             self.block_storage = BlockStorage(
                 tx_storage=self.tx_storage,
                 key_manager=self.key_manager,
                 utxo_storage=None
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(40, "💾 Setting up UTXO Storage..."))
+            # UTXO Storage
             self.utxo_storage = UTXOStorage(
                 utxo_manager=None,
                 block_storage=self.block_storage
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(50, "🔗 Initializing UTXO Manager..."))
-            self.utxo_manager = UTXOManager(self.utxo_storage)
+            # UTXO Manager
+            self.utxo_storage.utxo_manager = UTXOManager(self.utxo_storage)
+            self.utxo_manager = self.utxo_storage.utxo_manager
             self.block_storage.utxo_storage = self.utxo_storage
 
-            self.root.after(0, lambda: self.update_loading_screen(60, "📤 Creating Transaction Manager..."))
+            # Transaction Manager
+            update_loading(*milestones[2])
             self.transaction_manager = TransactionManager(
                 block_storage=self.block_storage,
                 tx_storage=self.tx_storage,
@@ -597,10 +657,10 @@ class BlockchainUI:
                 key_manager=self.key_manager
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(68, "📥 Preparing Mempool Storage..."))
+            # Mempool Storage
             self.mempool_storage = MempoolStorage(self.transaction_manager)
 
-            self.root.after(0, lambda: self.update_loading_screen(75, "⛓️ Building Blockchain Core..."))
+            # Blockchain Core
             self.blockchain = Blockchain(
                 tx_storage=self.tx_storage,
                 utxo_storage=self.utxo_storage,
@@ -609,7 +669,8 @@ class BlockchainUI:
                 full_block_store=self.block_storage
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(82, "🧱 Creating Block Manager..."))
+            # Block Manager
+            update_loading(*milestones[3])
             self.block_manager = BlockManager(
                 blockchain=self.blockchain,
                 block_storage=self.block_storage,
@@ -618,7 +679,7 @@ class BlockchainUI:
                 transaction_manager=self.transaction_manager
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(88, "🌱 Setting up Genesis Block Manager..."))
+            # Genesis Block
             self.genesis_block_manager = GenesisBlockManager(
                 block_storage=self.block_storage,
                 key_manager=self.key_manager,
@@ -626,7 +687,7 @@ class BlockchainUI:
                 block_manager=self.block_manager
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(93, "⚒️ Launching Miner..."))
+            # Miner
             self.miner = Miner(
                 blockchain=self.blockchain,
                 block_manager=self.block_manager,
@@ -638,11 +699,11 @@ class BlockchainUI:
                 genesis_block_manager=self.genesis_block_manager
             )
 
-            self.root.after(0, lambda: self.update_loading_screen(96, "💡 Initializing Mempools..."))
+            # Mempools
             self.standard_mempool = StandardMempool(utxo_storage=self.utxo_storage)
             self.smart_mempool = SmartMempool(utxo_storage=self.utxo_storage)
 
-            self.root.after(0, lambda: self.update_loading_screen(98, "🧮 Starting Payment Processor..."))
+            # Payment Processor
             self.payment_processor = PaymentProcessor(
                 utxo_manager=self.utxo_manager,
                 tx_storage=self.tx_storage,
@@ -651,21 +712,17 @@ class BlockchainUI:
                 key_manager=self.key_manager,
             )
 
+            # Final setup
+            update_loading(*milestones[4])
             self.orphan_blocks = OrphanBlocks()
             self.wallet_address = self.key_manager.get_default_public_key()
 
-            self.root.after(0, lambda: self.update_loading_screen(100, "✅ Finalizing Setup..."))
             self.log_message("[System] Blockchain components initialized successfully", "INFO")
 
         except Exception as e:
             error_msg = f"[ERROR] Failed to initialize blockchain: {str(e)}"
-            self.log_message(error_msg, "ERROR")
-            messagebox.showerror("Initialization Error", "Failed to initialize blockchain components")
-            raise RuntimeError("Blockchain initialization failed") from e
-
-
-
-
+            self.update_queue.put(lambda: self.log_message(error_msg, "ERROR"))
+            self.update_queue.put(lambda: messagebox.showerror("Initialization Error", "Failed to initialize blockchain components"))
 
 
     def close_loading_popup(self):
@@ -1288,11 +1345,10 @@ class BlockchainUI:
     def create_wallet_tab(self):
         """Create the wallet tab with modern layout and contact management"""
         self.wallet_tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.wallet_tab_frame, text="💳 Wallet")      
+        self.notebook.add(self.wallet_tab_frame, text="💳 Wallet")
 
         # Main container with scrollbar
         container = ScrolledFrame(self.wallet_tab_frame, autohide=True)
-
         container.pack(fill='both', expand=True)
 
         # Address display
@@ -1302,6 +1358,14 @@ class BlockchainUI:
             bootstyle="info"
         )
         address_card.pack(fill='x', padx=10, pady=5)
+
+        # Initialize wallet address if not exists
+        if not hasattr(self, 'wallet_address'):
+            try:
+                self.wallet_address = self.key_manager.get_default_public_key()
+            except Exception as e:
+                self.log_message(f"Failed to get wallet address: {e}", "ERROR")
+                self.wallet_address = "Address Unavailable"
 
         self.wallet_address_label = ttk.Label(
             address_card, 
@@ -1325,7 +1389,7 @@ class BlockchainUI:
         ttk.Label(balance_frame, text="Balance:", font=('Helvetica', 12)).pack(side='left', padx=5)
         self.balance_label = ttk.Label(
             balance_frame, 
-            text="0 ZYC", 
+            text="Loading...", 
             font=('Helvetica', 12, 'bold'),
             style='success.TLabel'
         )
@@ -1444,10 +1508,59 @@ class BlockchainUI:
 
         # Load initial data
         self.load_contacts()
-        self.refresh_wallet()
         self.contacts_tree.bind("<Double-1>", self.on_contact_double_click)
 
+        # Bind tab change event
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
+    def on_tab_changed(self, event):
+        """Handle tab change events"""
+        selected_tab = self.notebook.select()
+        tab_text = self.notebook.tab(selected_tab, "text")
+        
+        if tab_text == "💳 Wallet":
+            self.refresh_wallet()
+
+    def refresh_wallet(self):
+        """Refresh the wallet balance and UTXOs"""
+        try:
+            # Clear existing items
+            for item in self.utxo_tree.get_children():
+                self.utxo_tree.delete(item)
+
+            # Get UTXOs with error handling
+            if not hasattr(self, 'utxo_manager') or not hasattr(self.utxo_manager, 'get_utxos_by_address'):
+                self.log_message("UTXO Manager not initialized", "ERROR")
+                self.balance_label.config(text="Balance: Error")
+                return
+
+            utxos = self.utxo_manager.get_utxos_by_address(self.wallet_address)
+            total = Decimal("0")
+
+            for u in utxos:
+                try:
+                    amt = Decimal(str(u.get("amount", "0")))
+                    total += amt
+
+                    tx_out_index = u.get("tx_out_index", u.get("output_index", 0))
+
+                    self.utxo_tree.insert('', 'end', values=(
+                        u.get("tx_out_id", "N/A"),
+                        tx_out_index,
+                        str(amt),
+                        "Yes" if u.get('locked', False) else "No"
+                    ))
+                except Exception as e:
+                    self.log_message(f"Skipping invalid UTXO: {e}", "WARNING")
+                    continue
+
+            # Update balance display
+            self.balance_label.config(text=f"{total} ZYC")
+            self.log_message(f"Wallet refreshed. Balance: {total} ZYC", "SUCCESS")
+
+        except Exception as e:
+            self.log_message(f"Failed to refresh wallet: {e}", "ERROR")
+            self.balance_label.config(text="Balance: Error")
 
     def add_contact(self):
         """Add a new contact to the address book"""
@@ -1560,24 +1673,6 @@ class BlockchainUI:
 
 
 
-
-
-
-    def exit_cleanly(self):
-        try:
-            # Stop mining, threads, mempool processing
-            if hasattr(self, "miner"):
-                self.miner.stop()
-
-            # Close LMDB safely
-            if hasattr(self, "tx_storage"):
-                self.tx_storage.close()
-
-            # Properly destroy root window
-            self.root.destroy()
-        except Exception as e:
-            print(f"[EXIT ERROR] ❌ {e}")
-            self.root.destroy()
 
 
 
@@ -1809,12 +1904,11 @@ class BlockchainUI:
         )
         log_card.pack(fill='both', expand=True, padx=10, pady=5)
         
-        self.log_output = ttkbs.ScrolledText(
+        self.log_output = scrolledtext.ScrolledText(  # ✅ Use correct ScrolledText
             log_card, 
             height=20, 
             wrap=tk.WORD
         )
-
         self.log_output.pack(fill='both', expand=True, padx=5, pady=5)
         self.log_output.configure(state='disabled')
         
@@ -2188,36 +2282,23 @@ class BlockchainUI:
 
 
 
-
-    def clean_up(self):
-        """Clean up and safely close all resources before exiting"""
+    def cleanup(self):
+        """Cleanup resources on exit"""
         try:
-            print("[CleanUp] 🧹 Closing blockchain components...")
-
-            # Stop mining and background threads if active
-            if hasattr(self, 'miner') and self.miner:
-                self.miner.stop()
-                print("[CleanUp] 🛑 Miner stopped.")
-
+            self.log_message("Shutting down...", "INFO")
+            self.stop_mining()
+            
             # Close LMDB environments
-            if hasattr(self, 'blockchain') and self.blockchain:
-                self.blockchain.close()
-                print("[CleanUp] 📦 LMDB environments closed.")
-
-            # Clear UI elements
-            if hasattr(self, 'loading_screen') and self.loading_screen:
-                self.loading_screen.destroy()
-
-            # Stop log thread or handlers
-            if hasattr(self, 'log_thread') and self.log_thread.is_alive():
-                self.log_thread.join(timeout=2)
-                print("[CleanUp] 📝 Log thread terminated.")
-
-            print("[CleanUp] ✅ All systems closed successfully.")
-
+            if hasattr(self, 'tx_storage') and self.tx_storage:
+                self.tx_storage.close()
+            if hasattr(self, 'utxo_storage') and self.utxo_storage:
+                self.utxo_storage.close()
+            if hasattr(self, 'block_storage') and self.block_storage:
+                self.block_storage.close()
+                
+            self.log_message("Cleanup complete", "INFO")
         except Exception as e:
-            print(f"[CleanUp] ❌ Error during shutdown: {e}")
-
+            self.log_message(f"Cleanup error: {e}", "ERROR")
 
 
 
@@ -2351,41 +2432,7 @@ class BlockchainUI:
         except Exception as e:
             self.log_message(f"Failed to refresh pending transactions: {e}", "ERROR")
 
-    def refresh_wallet(self):
-        """Refresh the wallet balance and UTXOs"""
-        try:
-            # Check if UI elements exist before trying to use them
-            if not hasattr(self, "utxo_tree") or not hasattr(self, "balance_label"):
-                self.log_message("UI not fully initialized. Skipping wallet refresh.", "WARNING")
-                return
 
-            # Clear existing items
-            for item in self.utxo_tree.get_children():
-                self.utxo_tree.delete(item)
-
-            # Get UTXOs
-            utxos = self.utxo_storage.get_utxos_by_address(self.wallet_address)
-            total = Decimal("0")
-
-            for u in utxos:
-                amt = Decimal(str(u.get("amount", "0")))
-                total += amt
-
-                tx_out_index = u.get("tx_out_index", u.get("output_index", 0))
-
-                self.utxo_tree.insert('', 'end', values=(
-                    u.get("tx_out_id", "N/A"),
-                    tx_out_index,
-                    str(amt),
-                    "Yes" if u.get('locked', False) else "No"
-                ))
-
-            # Update balance display
-            self.balance_label.config(text=f"{total} ZYC")
-            self.log_message(f"Refreshed balance: {total} ZYC", "SUCCESS")
-
-        except Exception as e:
-            self.log_message(f"Failed to refresh wallet: {e}", "ERROR")
 
 
     def generate_new_address(self):
@@ -2763,75 +2810,7 @@ class UIPaymentProcessor:
 
 
 
-    def send_payment(self, sender_priv_key, sender_pub_key, recipient_address, amount, tx_type="STANDARD"):
-        """Send a payment transaction"""
-        if amount <= 0:
-            print("[PaymentProcessorUI] ❌ Invalid amount. Must be greater than 0.")
-            return None
 
-        if tx_type not in Constants.TRANSACTION_MEMPOOL_MAP:
-            print(f"[PaymentProcessorUI] ❌ Unsupported transaction type: {tx_type}")
-            return None
-
-        # ✅ Step 1: Select UTXOs
-        utxos, total_input = self._select_utxos(sender_pub_key, amount + Decimal("0.00000001"))
-        if not utxos:
-            print("[PaymentProcessorUI] ❌ No suitable UTXOs found.")
-            return None
-
-        # ✅ Step 2: Calculate correct fee using full block context
-        try:
-            fee = self.fee_model.calculate_fee(
-                block_size=Constants.INITIAL_BLOCK_SIZE_MB,
-                payment_type=tx_type,
-                amount=amount,
-                tx_size=512
-            )
-            print(f"[PaymentProcessorUI] ✅ Fee calculated: {fee}")
-        except Exception as e:
-            print(f"[PaymentProcessorUI] ❌ Fee calculation failed: {e}")
-            return None
-
-        if total_input < amount + fee:
-            print(f"[PaymentProcessorUI] ❌ Insufficient funds. Total input: {total_input}, Required: {amount + fee}")
-            return None
-
-        # ✅ Step 3: Build placeholder inputs
-        inputs = [TransactionIn(tx_out_id=u.tx_out_id, script_sig="placeholder") for u in utxos]
-        outputs = [TransactionOut(script_pub_key=recipient_address, amount=amount)]
-
-        change = total_input - amount - fee
-        if change > 0:
-            outputs.append(TransactionOut(script_pub_key=sender_pub_key, amount=change))
-
-        # ✅ Step 4: Create and sign the transaction
-        tx = Transaction(inputs=inputs, outputs=outputs, tx_type=tx_type)
-        tx.sign(sender_priv_key, sender_pub_key)
-
-        # ✅ Step 5: Replace placeholders with real signature
-        for tx_input in tx.inputs:
-            tx_input.script_sig = tx.signature.hex()
-
-        # ✅ Step 6: Verify signature
-        if not self.key_manager.verify_transaction(
-            message=tx.hash.encode("utf-8") if isinstance(tx.hash, str) else tx.hash,
-            signature=tx.signature,
-            network=self.key_manager.network,
-            identifier=self.key_manager.keys[self.key_manager.network]["defaults"]["miner"]
-        ):
-            print("[PaymentProcessorUI] ❌ Signature verification failed.")
-            return None
-
-        # ✅ Step 7: Lock UTXOs and route to mempool
-        self.utxo_manager.lock_selected_utxos([u.tx_out_id for u in utxos])
-
-        if not self._route_to_mempool(tx):
-            self.utxo_manager.unlock_selected_utxos([u.tx_out_id for u in utxos])
-            print("[PaymentProcessorUI] ❌ Failed to route transaction to mempool.")
-            return None
-
-        print(f"[PaymentProcessorUI] ✅ Transaction sent. TXID: {tx.tx_id}")
-        return tx.tx_id
 
 
     def _select_utxos(self, address, required_amount):

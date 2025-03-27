@@ -171,10 +171,14 @@ class FeeModel:
         print(f"[FeeModel.calculate_fee_and_tax] ✅ Computed fee and tax: {result}")
         return result
 
-    def calculate_fee(self, block_size, payment_type, amount, tx_size):
+    def calculate_fee(self, block_size, amount, tx_size, tx_type=None, payment_type=None):
         """
-        Calculate the transaction fee based on block size, payment type, transaction amount, and transaction size.
+        Calculate the transaction fee based on block size, transaction type, transaction amount, and transaction size.
+        Accepts either `payment_type` or `tx_type` (alias for the same concept).
         """
+        # Normalize tx_type or payment_type
+        payment_type = (payment_type or tx_type or "STANDARD").upper()
+
         congestion_level = self.get_congestion_level(block_size, payment_type, amount)
 
         # ✅ Map simplified levels to internal fee tiers
@@ -191,12 +195,13 @@ class FeeModel:
             return Decimal(self.min_transaction_fee)
 
         # Calculate base fee percentage
-        base_fee_percentage = self.fee_percentages.get(internal_level, {}).get(payment_type.upper(), Decimal("0"))
+        base_fee_percentage = self.fee_percentages.get(internal_level, {}).get(payment_type, Decimal("0"))
         fee = max(Decimal(self.min_transaction_fee), base_fee_percentage * Decimal(tx_size))
 
         print(f"[FeeModel.calculate_fee] ✅ Block Size: {block_size}, Payment Type: {payment_type}, "
             f"Congestion Level: {congestion_level}, Internal Tier: {internal_level}, Fee: {fee}")
         return fee
+
 
 
     def store_fee(self, transaction_id: str, block_hash: str, base_fee: Decimal, tax_fee: Decimal, miner_fee: Decimal, congestion_level: str) -> bool:

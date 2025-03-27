@@ -838,6 +838,15 @@ class KeyManager:
             print(f"❌ Verification failed: {str(e)}")
             return False
 
+    def get_address(self, network=None, identifier=None):
+        """Get the hashed public key address for the default or specified key"""
+        network = network or self.network
+        if not identifier:
+            identifier = self.keys[network]["defaults"].get("miner")
+        return self.public_key(network, identifier)
+
+
+
     def export_keys(self):
         """
         Export a specific key set (miner, validator, channel) based on user selection.

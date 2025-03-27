@@ -83,6 +83,11 @@ class TxStorage:
         except Exception as e:
             print(f"[TxStorage.__init__] ❌ ERROR: Failed to initialize TxStorage: {e}")
             raise
+        self.block_storage = None
+        self.block_metadata = None
+
+
+
 
     def reopen(self):
         """
@@ -121,58 +126,56 @@ class TxStorage:
 
     def get_transaction_count(self) -> int:
         """
-        Returns the total number of stored transactions in txindex.lmdb.
-        Falls back to full block storage if metadata is missing or is a dict.
+        Returns the total number of stored transactions on a per-block basis.
+        Uses metadata via BlockStorage, and falls back to full block store if needed.
         """
         try:
-            count = 0
+            if not self.block_storage:
+                print("[TxStorage] ❌ Error: block_storage not initialized.")
+                return 0
+
+            total_count = 0
             seen_blocks = set()
 
-            with self.txindex_db.env.begin(write=False) as txn:
+            # Step 1: Use block_storage metadata DB
+            with self.block_storage.block_metadata_db.env.begin() as txn:
                 cursor = txn.cursor()
-                for key, _ in cursor:
-                    if key.startswith(b"block_tx:"):
-                        block_hash = key.split(b":")[1]
-                        if block_hash in seen_blocks:
-                            continue
-                        seen_blocks.add(block_hash)
+                for key, value in cursor:
+                    if key.startswith(b"blockmeta:"):
+                        try:
+                            meta = json.loads(value.decode("utf-8"))
+                            height = meta.get("index", "??")
+                            tx_count = meta.get("transaction_count", 0)
+                            total_count += int(tx_count)
+                            seen_blocks.add(height)
+                            print(f"[TxStorage] 📘 Block {height} via metadata: {tx_count} txs")
+                        except Exception as e:
+                            print(f"[TxStorage] ⚠️ Failed to parse metadata for {key}: {e}")
 
-                        # Try block metadata first
-                        block_metadata = self.block_metadata.get_block_by_hash(block_hash)
-
-                        if isinstance(block_metadata, dict):
-                            tx_count = block_metadata.get("transaction_count")
-                            block_index = block_metadata.get("index", "??")
-                            if tx_count is not None:
-                                count += int(tx_count)
-                                print(f"[TxStorage] 📘 Block {block_index} ({block_hash.hex()[:8]}...) from metadata (dict): {tx_count} txs")
+            # Step 2: Fallback to full block store if any are missing
+            with self.block_storage.full_block_store.env.begin() as txn:
+                cursor = txn.cursor()
+                for key, value in cursor:
+                    if key.startswith(b"block:"):
+                        try:
+                            block_index = int(key.decode().split(":")[1])
+                            if block_index in seen_blocks:
                                 continue
-                        elif block_metadata and hasattr(block_metadata, "transaction_count"):
-                            count += int(block_metadata.transaction_count)
-                            block_index = getattr(block_metadata, "index", "??")
-                            print(f"[TxStorage] 📗 Block {block_index} ({block_hash.hex()[:8]}...) from metadata (obj): {block_metadata.transaction_count} txs")
-                            continue
 
-                        # Fallback to full block
-                        full_block = self.block_storage.get_block_by_hash(block_hash)
-                        if isinstance(full_block, dict):
-                            txs = full_block.get("transactions", [])
-                            index = full_block.get("index", "??")
-                            count += len(txs)
-                            print(f"[TxStorage] 📙 Block {index} ({block_hash.hex()[:8]}...) from full block (dict): {len(txs)} txs")
-                        elif full_block and hasattr(full_block, "transactions"):
-                            count += len(full_block.transactions)
-                            index = getattr(full_block, "index", "??")
-                            print(f"[TxStorage] 📕 Block {index} ({block_hash.hex()[:8]}...) from full block (obj): {len(full_block.transactions)} txs")
-                        else:
-                            print(f"[TxStorage] ⚠️ Block {block_hash.hex()[:8]} not found in metadata or full block storage.")
+                            block_data = json.loads(value.decode("utf-8"))
+                            txs = block_data.get("transactions", [])
+                            total_count += len(txs)
+                            print(f"[TxStorage] 📕 Block {block_index} via full block: {len(txs)} txs")
+                        except Exception as e:
+                            print(f"[TxStorage] ⚠️ Failed to parse block {key}: {e}")
 
-            print(f"[TxStorage] ✅ Total transaction count: {count}")
-            return count
+            print(f"[TxStorage] ✅ Total transaction count: {total_count}")
+            return total_count
 
         except Exception as e:
-            print(f"[TxStorage] ❌ Error counting transactions: {e}")
+            print(f"[TxStorage] ❌ Error calculating transaction count: {e}")
             return 0
+
 
 
 

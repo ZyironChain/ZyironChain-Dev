@@ -6,7 +6,7 @@ from Zyiron_Chain.blockchain.block import Block
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from decimal import Decimal
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 # Import your PeerConstants from the network folder
 from Zyiron_Chain. network.peerconstant import PeerConstants
@@ -44,6 +44,21 @@ class UTXOManager:
 
         print(f"[UTXOManager INIT] UTXOManager created for peer_id={self.peer_id} with provided UTXOStorage.")
 
+    def get_utxos_by_address(self, address: str) -> List[dict]:
+        """
+        Lazy-imports UTXOStorage and delegates the UTXO lookup to it.
+        Avoids early import conflicts and ensures dynamic fallback access.
+        """
+        try:
+            if not hasattr(self, "utxo_storage") or self.utxo_storage is None:
+                from Zyiron_Chain.storage.utxostorage import UTXOStorage
+                self.utxo_storage = UTXOStorage(block_storage=self.block_storage)
+
+            return self.utxo_storage.get_utxos_by_address(address)
+
+        except Exception as e:
+            print(f"[UTXOManager] ❌ ERROR: Failed to retrieve UTXOs for {address}: {e}")
+            return []
 
 
     def get_utxo(self, tx_out_id: str) -> Optional[TransactionOut]:
