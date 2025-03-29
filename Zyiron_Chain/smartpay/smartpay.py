@@ -13,6 +13,7 @@ from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.transactions.txin import TransactionIn
 from Zyiron_Chain.transactions.txout import TransactionOut
 from Zyiron_Chain.transactions.utxo_manager import UTXOManager
+
 class SmartTransaction:
     """Represents a Smart Transaction with enhanced validation and priority handling."""
 

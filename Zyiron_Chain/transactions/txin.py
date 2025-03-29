@@ -19,19 +19,25 @@ class TransactionIn:
         Initialize a Transaction Input.
 
         :param tx_out_id: The UTXO being referenced.
-        :param script_sig: The unlocking script (signature).
+        :param script_sig: The unlocking script (signature) or placeholder.
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
             print("[TransactionIn ERROR] ❌ tx_out_id must be a non-empty string.")
             raise ValueError("tx_out_id must be a non-empty string.")
 
-        if not isinstance(script_sig, str) or not script_sig.strip():
+        if not isinstance(script_sig, str):
+            print("[TransactionIn ERROR] ❌ script_sig must be a string.")
+            raise ValueError("script_sig must be a string.")
+
+        script_sig = script_sig.strip()
+
+        # ✅ Allow "SIGN_PENDING" as a temporary placeholder (will be replaced later)
+        if not script_sig:
             print("[TransactionIn ERROR] ❌ script_sig must be a non-empty string.")
             raise ValueError("script_sig must be a non-empty string.")
 
-        # ✅ Ensure valid format (fallback to ZERO_HASH if needed)
-        self.tx_out_id = tx_out_id.strip() if tx_out_id.strip() else Constants.ZERO_HASH
-        self.script_sig = script_sig.strip()
+        self.tx_out_id = tx_out_id.strip()
+        self.script_sig = script_sig
 
         print(f"[TransactionIn INFO] ✅ Created TransactionIn: tx_out_id={self.tx_out_id}")
 

@@ -5,7 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 import hashlib
 import time
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Dict
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.utils.hashing import Hashing
@@ -98,62 +98,131 @@ class TransactionOut:
             result["tx_out_index"] = self.tx_out_index
 
         return result
+
+
     @classmethod
     def from_dict(cls, data: Dict) -> "TransactionOut":
         """
-        Create a TransactionOut instance from a dictionary.
-
-        :param data: Dictionary containing transaction output data.
-        :return: A TransactionOut instance.
+        Create a TransactionOut instance from a dictionary with robust error handling
+        and backward compatibility support.
+        
+        Args:
+            data: Dictionary containing transaction output data. Supports both new and legacy formats.
+            
+        Returns:
+            TransactionOut: A properly initialized TransactionOut instance.
+            
+        Raises:
+            TypeError: If input is not a dictionary
+            ValueError: If required fields are missing or invalid
         """
+        # Input validation
+        if not isinstance(data, dict):
+            error_msg = f"Expected dictionary, got {type(data).__name__}"
+            print(f"[TransactionOut.from_dict] ❌ {error_msg}")
+            raise TypeError(error_msg)
+
         try:
-            if not isinstance(data, dict):
-                print("[TransactionOut.from_dict] ❌ Input data must be a dictionary.")
-                raise TypeError("Input data must be a dictionary.")
-
-            # 🔁 Convert 'address' to 'script_pub_key' if needed
-            if "address" in data:
-                print("[TransactionOut.from_dict] 🔄 Detected 'address'. Converting to 'script_pub_key'.")
-                data["script_pub_key"] = data.pop("address")
-
-            if "script_pub_key" not in data or "amount" not in data:
-                print("[TransactionOut.from_dict] ❌ Missing required fields: 'script_pub_key' or 'amount'.")
-                raise KeyError("Missing required fields: 'script_pub_key' or 'amount'.")
-
-            script_pub_key = str(data.get("script_pub_key", "")).strip()
-
-            # ✅ Parse amount safely
-            try:
-                amount = Decimal(str(data.get("amount", "0")))
-            except Exception as e:
-                print(f"[TransactionOut.from_dict] ❌ Invalid amount format: {e}")
-                raise ValueError(f"Invalid amount format: {e}")
-
-            # ✅ Ensure minimum value
-            if amount < Constants.COIN:
-                print(f"[TransactionOut.from_dict] ⚠️ Amount below minimum {Constants.COIN}. Adjusting to minimum.")
-                amount = Constants.COIN
-
-            # ✅ Handle optional fields
-            locked = bool(data.get("locked", False))
-            if locked:
-                print(f"[TransactionOut.from_dict] 🔒 This UTXO is locked.")
-            tx_out_id = data.get("tx_out_id")
-            tx_out_index = data.get("tx_out_index")
-
-            # ✅ Create instance safely
-            obj = cls(script_pub_key=script_pub_key, amount=amount, locked=locked)
-            if tx_out_id is not None:
-                obj.tx_out_id = tx_out_id
-            if tx_out_index is not None:
-                obj.tx_out_index = tx_out_index
-
-            print(f"[TransactionOut.from_dict] ✅ Parsed TransactionOut for script: {script_pub_key}, Amount: {amount}")
+            # Field normalization and backward compatibility
+            normalized_data = cls._normalize_input_data(data)
+            
+            # Validate required fields
+            cls._validate_required_fields(normalized_data)
+            
+            # Parse and validate amount
+            amount = cls._parse_and_validate_amount(normalized_data['amount'])
+            
+            # Create instance with core fields
+            obj = cls(
+                script_pub_key=normalized_data['script_pub_key'],
+                amount=amount,
+                locked=normalized_data.get('locked', False)
+            )
+            
+            # Set optional fields if present
+            cls._set_optional_fields(obj, normalized_data)
+            
+            print(f"[TransactionOut.from_dict] ✅ Created TransactionOut: "
+                f"script={normalized_data['script_pub_key'][:20]}..., "
+                f"amount={amount}, locked={obj.locked}")
             return obj
-
+            
         except Exception as e:
-            print(f"[TransactionOut.from_dict] ❌ Failed to parse TransactionOut: {e}")
+            print(f"[TransactionOut.from_dict] ❌ Failed to create TransactionOut: {e}")
+            print(f"[TransactionOut.from_dict] 📌 Problematic data: {data}")
             raise
+
+    @classmethod
+    def _normalize_input_data(cls, data: Dict) -> Dict:
+        """Normalize input data and handle backward compatibility."""
+        normalized = data.copy()
+        
+        # Handle legacy field names
+        if 'address' in normalized and 'script_pub_key' not in normalized:
+            print("[TransactionOut] 🔄 Converting legacy 'address' to 'script_pub_key'")
+            normalized['script_pub_key'] = normalized.pop('address')
+            
+        # Handle both 'locked' and 'is_locked' for backward compatibility
+        if 'is_locked' in normalized and 'locked' not in normalized:
+            normalized['locked'] = normalized['is_locked']
+            
+        return normalized
+
+    @classmethod
+    def _validate_required_fields(cls, data: Dict):
+        """Validate that required fields exist and are valid."""
+        required_fields = {
+            'script_pub_key': (str, "Non-empty string"),
+            'amount': (object, "Numeric or string representation of number")
+        }
+        
+        missing = []
+        invalid = []
+        
+        for field, (type_hint, description) in required_fields.items():
+            if field not in data:
+                missing.append(field)
+                continue
+                
+            if type_hint is str and not isinstance(data[field], str):
+                invalid.append(f"{field} (expected {description})")
+            elif type_hint is object and data[field] is None:
+                invalid.append(f"{field} (cannot be None)")
+                
+        if missing or invalid:
+            error_msg = []
+            if missing:
+                error_msg.append(f"Missing fields: {', '.join(missing)}")
+            if invalid:
+                error_msg.append(f"Invalid fields: {', '.join(invalid)}")
+            full_msg = ". ".join(error_msg)
+            print(f"[TransactionOut] ❌ Validation failed: {full_msg}")
+            raise ValueError(full_msg)
+
+    @classmethod
+    def _parse_and_validate_amount(cls, amount) -> Decimal:
+        """Parse and validate amount field."""
+        try:
+            amount_decimal = Decimal(str(amount))
+            if amount_decimal < Constants.COIN:
+                print(f"[TransactionOut] ⚠️ Amount {amount_decimal} below minimum {Constants.COIN}. Adjusting.")
+                amount_decimal = Constants.COIN
+            return amount_decimal
+        except (ValueError, TypeError, InvalidOperation) as e:
+            print(f"[TransactionOut] ❌ Invalid amount '{amount}': {e}")
+            raise ValueError(f"Invalid amount format: {amount}") from e
+
+    @classmethod
+    def _set_optional_fields(cls, obj: "TransactionOut", data: Dict):
+        """Set optional fields if they exist in the input data."""
+        if 'tx_out_id' in data and data['tx_out_id'] is not None:
+            obj.tx_out_id = str(data['tx_out_id'])
+            
+        if 'tx_out_index' in data and data['tx_out_index'] is not None:
+            try:
+                obj.tx_out_index = int(data['tx_out_index'])
+            except (ValueError, TypeError) as e:
+                print(f"[TransactionOut] ⚠️ Invalid tx_out_index: {e}. Skipping.")
 
     @classmethod
     def from_serialized(cls, data: Dict) -> "TransactionOut":

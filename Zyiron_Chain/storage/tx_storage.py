@@ -48,12 +48,14 @@ class TxStorage:
       - Provide detailed print statements for every operation and error.
     """
 
-    def __init__(self, fee_model: Optional["FeeModel"] = None):
+    def __init__(self, fee_model: Optional["FeeModel"] = None, block_storage=None, block_metadata=None):
         """
         Initialize the TxStorage with LMDB backend and fee model.
 
         Args:
             fee_model (FeeModel): Instance of FeeModel for transaction fee calculations
+            block_storage: Optional BlockStorage instance (for fallback)
+            block_metadata: Optional BlockMetadata instance (for indexing support)
 
         Raises:
             ValueError: If database path is not defined or fee_model is missing
@@ -78,13 +80,15 @@ class TxStorage:
                 raise ValueError("[TxStorage.__init__] ERROR: FeeModel instance is required.")
             self.fee_model = fee_model
 
+            # ✅ Backward-compatible support for optional fallback sources
+            self.block_storage = block_storage
+            self.block_metadata = block_metadata
+
             print(f"[TxStorage.__init__] ✅ SUCCESS: TxStorage initialized at: {txindex_path}")
 
         except Exception as e:
             print(f"[TxStorage.__init__] ❌ ERROR: Failed to initialize TxStorage: {e}")
             raise
-        self.block_storage = None
-        self.block_metadata = None
 
 
 

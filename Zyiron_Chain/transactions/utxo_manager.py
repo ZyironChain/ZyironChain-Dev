@@ -1,6 +1,7 @@
 import json
 import sys
 import os
+import time
 
 from Zyiron_Chain.blockchain.block import Block
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -351,52 +352,193 @@ class UTXOManager:
             print(f"[UTXOManager ERROR] ❌ consume_utxo: Failed to delete UTXO {tx_out_id}: {e}")
 
 
-    def lock_utxo(self, tx_out_id: str):
+    def lock_utxo(self, tx_out_id: str) -> bool:
         """
         Lock a UTXO for transaction processing. Falls back to lock all outputs for a given tx_id if format is invalid.
-        :param tx_out_id: The UTXO ID to lock. Format: '<tx_id>:<output_index>' or fallback to '<tx_id>'.
+        Handles both 'locked' and 'is_locked' key formats for backward compatibility.
+        
+        Args:
+            tx_out_id: The UTXO ID to lock. Format: '<tx_id>:<output_index>' or fallback to '<tx_id>'.
+            
+        Returns:
+            bool: True if locking was successful (or already locked), False otherwise.
         """
+        # Validate input format
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
             print(f"[UTXOManager.lock_utxo] ❌ Invalid UTXO ID format: {tx_out_id}")
-            return
+            return False
+
+        tx_out_id = tx_out_id.strip()
+        success = False
 
         with self.lock:
-            if ":" in tx_out_id:
-                # ✅ Standard format
-                utxo = self.get_utxo(tx_out_id)
-                if not utxo:
-                    print(f"[UTXOManager.lock_utxo] ⚠️ Cannot lock non-existent UTXO {tx_out_id}.")
-                    return
-                if utxo.locked:
-                    print(f"[UTXOManager.lock_utxo] ⚠️ UTXO {tx_out_id} is already locked.")
-                    return
-                try:
-                    utxo.locked = True
-                    self.utxo_storage.put(tx_out_id, utxo.to_dict())
-                    print(f"[UTXOManager.lock_utxo] 🔒 Successfully locked UTXO {tx_out_id}.")
-                except Exception as e:
-                    print(f"[UTXOManager.lock_utxo] ❌ Failed to update UTXO {tx_out_id}: {e}")
+            try:
+                if ":" in tx_out_id:
+                    # Standard format with output index
+                    success = self._lock_single_utxo(tx_out_id)
+                else:
+                    # Fallback for raw tx_id format
+                    print(f"[UTXOManager.lock_utxo] ⚠️ Raw tx_id format, locking all UTXOs for {tx_out_id}")
+                    success = self._lock_all_utxos_for_tx(tx_out_id)
+                    
+            except Exception as e:
+                print(f"[UTXOManager.lock_utxo] ❌ Critical error locking UTXO(s): {e}")
+                return False
+                
+        return success
+
+    def _lock_single_utxo(self, tx_out_id: str) -> bool:
+        """Lock a single UTXO with standard tx_id:output_index format."""
+        try:
+            # Validate UTXO ID structure
+            parts = tx_out_id.split(':')
+            if len(parts) != 2:
+                print(f"[UTXOManager] ❌ Malformed UTXO ID: {tx_out_id}")
+                return False
+                
+            tx_id, output_index = parts
+            try:
+                output_index = int(output_index)
+            except ValueError:
+                print(f"[UTXOManager] ❌ Invalid output index in {tx_out_id}")
+                return False
+
+            # Retrieve the UTXO
+            utxo = self.get_utxo(tx_out_id)
+            if not utxo:
+                print(f"[UTXOManager] ⚠️ UTXO not found: {tx_out_id}")
+                return False
+
+            # Check lock status
+            if isinstance(utxo, dict):
+                is_locked = utxo.get('locked', utxo.get('is_locked', False))
             else:
-                # 🔁 Fallback: Try to lock all UTXOs with this tx_id
-                print(f"[UTXOManager.lock_utxo] ⚠️ Invalid tx_out_id format: {tx_out_id}. Attempting fallback using raw tx_id...")
+                is_locked = getattr(utxo, 'locked', False)
+
+            if is_locked:
+                print(f"[UTXOManager] ⚠️ UTXO already locked: {tx_out_id}")
+                return True  # Consider already locked as success
+
+            # Update lock status
+            if isinstance(utxo, dict):
+                utxo['locked'] = True
+                utxo['is_locked'] = True  # Maintain backward compatibility
+            else:
+                utxo.locked = True
+
+            # Store updated UTXO
+            self.utxo_storage.put(
+                tx_out_id,
+                utxo.to_dict() if hasattr(utxo, 'to_dict') else utxo
+            )
+            print(f"[UTXOManager] 🔒 Locked UTXO: {tx_out_id}")
+            return True
+
+        except Exception as e:
+            print(f"[UTXOManager] ❌ Failed to lock UTXO {tx_out_id}: {e}")
+            return False
+
+    def _lock_all_utxos_for_tx(self, tx_id: str) -> bool:
+        """
+        Lock all UTXOs for a given transaction ID with comprehensive error recovery
+        and transaction type awareness.
+        """
+        try:
+            # Convert bytes to hex if needed
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.hex()
+                print(f"[UTXOManager] ℹ️ Converted bytes tx_id to hex: {tx_id}")
+
+            # Determine transaction type
+            tx_type = None
+            for t_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+                for prefix in config["prefixes"]:
+                    if tx_id.startswith(prefix):
+                        tx_type = t_type
+                        break
+                if tx_type:
+                    break
+
+            print(f"[UTXOManager] 🔒 Locking UTXOs for {tx_type or 'STANDARD'} tx: {tx_id}")
+            
+            # Get all UTXOs (handles both raw tx_id and utxo:tx_id:index formats)
+            utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_id)
+            if not utxos:
+                print(f"[UTXOManager] ❌ No UTXOs found for {tx_id}")
+                return False
+
+            success_count = 0
+            for utxo in utxos:
+                utxo_id = None
                 try:
-                    utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  
-                    if not utxos:
-                        print(f"[UTXOManager.lock_utxo] ❌ No UTXOs found for tx_id={tx_out_id}.")
-                        return
-                    for utxo_dict in utxos:
-                        try:
-                            if isinstance(utxo_dict, TransactionOut):
-                                utxo_obj = utxo_dict
-                            else:
-                                utxo_obj = TransactionOut.from_dict(utxo_dict)
-                            utxo_obj.locked = True
-                            self.utxo_storage.put(utxo_obj.tx_out_id, utxo_obj.to_dict())
-                            print(f"[UTXOManager.lock_utxo] 🔒 Fallback locked UTXO {utxo_obj.tx_out_id}.")
-                        except Exception as inner_err:
-                            print(f"[UTXOManager.lock_utxo] ❌ Fallback lock failed for {utxo_dict.get('tx_out_id', '?')}: {inner_err}")
+                    # Handle both dict and object UTXO formats
+                    if isinstance(utxo, dict):
+                        utxo_id = f"utxo:{utxo['tx_id']}:{utxo['output_index']}"
+                        if utxo.get('locked', False):
+                            print(f"[UTXOManager] ⚠️ UTXO {utxo_id} already locked")
+                            continue
+                            
+                        # Add type-specific metadata
+                        if tx_type:
+                            utxo['lock_reason'] = f"{tx_type} transaction"
+                            utxo['lock_time'] = int(time.time())
+                        utxo['locked'] = True
+                    else:
+                        utxo_id = utxo.tx_out_id
+                        if utxo.locked:
+                            print(f"[UTXOManager] ⚠️ UTXO {utxo_id} already locked")
+                            continue
+                        utxo.locked = True
+                        if tx_type:
+                            if not hasattr(utxo, 'metadata'):
+                                utxo.metadata = {}
+                            utxo.metadata.update({
+                                'lock_reason': f"{tx_type} transaction",
+                                'lock_time': int(time.time())
+                            })
+
+                    # Update UTXO in storage
+                    if isinstance(utxo, dict):
+                        self.utxo_storage.put(utxo_id, utxo)
+                    else:
+                        self.utxo_storage.put(utxo_id, utxo.to_dict())
+                    
+                    print(f"[UTXOManager] 🔒 Locked UTXO {utxo_id}")
+                    success_count += 1
+                    
                 except Exception as e:
-                    print(f"[UTXOManager.lock_utxo] ❌ Fallback failed while scanning UTXOs for tx_id={tx_out_id}: {e}")
+                    print(f"[UTXOManager] ⚠️ Failed to lock UTXO {utxo_id or 'UNKNOWN'}: {e}")
+                    continue
+
+            print(f"[UTXOManager] ✅ Locked {success_count}/{len(utxos)} UTXOs for {tx_id}")
+            return success_count > 0
+
+        except Exception as e:
+            print(f"[UTXOManager] ❌ Failed to lock UTXOs for {tx_id}: {e}")
+            return False
+
+    def lock_selected_utxos(self, tx_out_ids: list):
+        """
+        Lock multiple UTXOs given a list of tx_out_ids (supporting both full and raw tx_id formats).
+        Maintains backward compatibility with both 'locked' and 'is_locked' key formats.
+        
+        :param tx_out_ids: List of UTXO IDs to lock
+        """
+        if not isinstance(tx_out_ids, list) or not tx_out_ids:
+            print("[UTXOManager ERROR] ❌ lock_selected_utxos: Invalid list of UTXO IDs.")
+            return
+
+        print(f"[UTXOManager INFO] 🔒 Locking {len(tx_out_ids)} UTXOs...")
+        
+        success_count = 0
+        for tx_out_id in tx_out_ids:
+            try:
+                self.lock_utxo(tx_out_id)
+                success_count += 1
+            except Exception as e:
+                print(f"[UTXOManager ERROR] ❌ Failed to lock UTXO {tx_out_id}: {e}")
+        
+        print(f"[UTXOManager INFO] ✅ Successfully locked {success_count}/{len(tx_out_ids)} UTXOs")
 
 
     def unlock_utxo(self, tx_out_id: str):
@@ -445,94 +587,147 @@ class UTXOManager:
 
 
 
-    def lock_selected_utxos(self, tx_out_ids: list):
-        """
-        Lock multiple UTXOs given a list of tx_out_ids (supporting both full and raw tx_id formats).
-        """
-        if not isinstance(tx_out_ids, list) or not tx_out_ids:
-            print("[UTXOManager ERROR] ❌ lock_selected_utxos: Invalid list of UTXO IDs.")
-            return
 
-        print(f"[UTXOManager INFO] 🔒 Locking selected UTXOs: {tx_out_ids}")
-        for tx_out_id in tx_out_ids:
-            self.lock_utxo(tx_out_id)
 
 
 
     def unlock_selected_utxos(self, tx_out_ids: list):
         """
         Unlock multiple UTXOs given a list of tx_out_ids (supporting both full and raw tx_id formats).
+        Handles both 'locked' and 'is_locked' key formats for backward compatibility.
+        
+        :param tx_out_ids: List of UTXO IDs to unlock
         """
         if not isinstance(tx_out_ids, list) or not tx_out_ids:
             print("[UTXOManager ERROR] ❌ unlock_selected_utxos: Invalid list of UTXO IDs.")
             return
 
-        print(f"[UTXOManager INFO] 🔓 Unlocking selected UTXOs: {tx_out_ids}")
+        print(f"[UTXOManager INFO] 🔓 Unlocking {len(tx_out_ids)} UTXOs...")
+        
+        success_count = 0
         for tx_out_id in tx_out_ids:
-            self.unlock_utxo(tx_out_id)
-
-
+            try:
+                if ":" in tx_out_id:  # Standard format
+                    utxo = self.get_utxo(tx_out_id)
+                    if not utxo:
+                        print(f"[UTXOManager] ⚠️ Cannot unlock non-existent UTXO {tx_out_id}")
+                        continue
+                        
+                    if isinstance(utxo, dict):
+                        # Handle both key formats in dictionary
+                        if 'locked' in utxo or 'is_locked' in utxo:
+                            if not utxo.get('locked', utxo.get('is_locked', True)):
+                                print(f"[UTXOManager] ⚠️ UTXO {tx_out_id} is already unlocked")
+                                continue
+                                
+                            utxo['locked'] = False
+                            utxo['is_locked'] = False
+                            self.utxo_storage.put(tx_out_id, utxo)
+                        else:
+                            print(f"[UTXOManager] ❌ UTXO {tx_out_id} missing lock status fields")
+                            continue
+                    else:
+                        # TransactionOut object
+                        if not utxo.locked:
+                            print(f"[UTXOManager] ⚠️ UTXO {tx_out_id} is already unlocked")
+                            continue
+                        utxo.locked = False
+                        self.utxo_storage.put(tx_out_id, utxo.to_dict())
+                        
+                    success_count += 1
+                    print(f"[UTXOManager] ✅ Unlocked UTXO {tx_out_id}")
+                else:
+                    # Fallback for raw tx_id
+                    print(f"[UTXOManager] ⚠️ Raw tx_id format, unlocking all UTXOs for {tx_out_id}")
+                    utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
+                    for utxo in utxos:
+                        try:
+                            if isinstance(utxo, dict):
+                                if 'locked' in utxo or 'is_locked' in utxo:
+                                    utxo['locked'] = False
+                                    utxo['is_locked'] = False
+                                    self.utxo_storage.put(
+                                        f"{utxo['tx_id']}:{utxo['output_index']}",
+                                        utxo
+                                    )
+                            else:
+                                utxo.locked = False
+                                self.utxo_storage.put(utxo.tx_out_id, utxo.to_dict())
+                            success_count += 1
+                        except Exception as e:
+                            print(f"[UTXOManager] ❌ Failed to unlock UTXO: {e}")
+            except Exception as e:
+                print(f"[UTXOManager] ❌ Error processing UTXO {tx_out_id}: {e}")
+        
+        print(f"[UTXOManager] ✅ Successfully unlocked {success_count}/{len(tx_out_ids)} UTXOs")
 
     def validate_utxo(self, tx_out_id: str, amount: Decimal) -> bool:
         """
         Validate that a UTXO exists, is unlocked, and has sufficient balance.
-        Supports fallback using tx_id only.
+        Supports both 'locked' and 'is_locked' key formats and handles raw tx_id fallback.
         """
         if not isinstance(tx_out_id, str) or not tx_out_id.strip():
-            print(f"[UTXOManager.validate_utxo] ❌ Invalid UTXO ID format: {tx_out_id}")
+            print(f"[UTXOManager] ❌ Invalid UTXO ID format: {tx_out_id}")
             return False
 
         if not isinstance(amount, Decimal) or amount <= 0:
-            print(f"[UTXOManager.validate_utxo] ❌ Invalid amount: {amount}")
+            print(f"[UTXOManager] ❌ Invalid amount: {amount}")
             return False
 
-        # ✅ Handle full tx_out_id format directly
+        # Handle full tx_out_id format
         if ":" in tx_out_id:
             utxo = self.get_utxo(tx_out_id)
             if not utxo:
-                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} does not exist.")
+                print(f"[UTXOManager] ❌ UTXO {tx_out_id} not found")
                 return False
-            if utxo.locked:
-                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} is locked.")
+                
+            # Handle both object and dict formats
+            if isinstance(utxo, dict):
+                is_locked = utxo.get('locked', utxo.get('is_locked', False))
+                utxo_amount = Decimal(str(utxo.get('amount', 0)))
+            else:
+                is_locked = utxo.locked
+                utxo_amount = Decimal(str(utxo.amount))
+
+            if is_locked:
+                print(f"[UTXOManager] ❌ UTXO {tx_out_id} is locked")
                 return False
-            try:
-                utxo_balance = Decimal(str(utxo.amount))
-            except Exception as e:
-                print(f"[UTXOManager.validate_utxo] ❌ Failed to parse UTXO balance: {e}")
+                
+            if utxo_amount < amount:
+                print(f"[UTXOManager] ❌ Insufficient balance. Needed: {amount}, Available: {utxo_amount}")
                 return False
-            if utxo_balance < amount:
-                print(f"[UTXOManager.validate_utxo] ❌ UTXO {tx_out_id} has insufficient balance. "
-                    f"Required: {amount}, Available: {utxo.amount}")
-                return False
-            print(f"[UTXOManager.validate_utxo] ✅ UTXO {tx_out_id} is valid. Required: {amount}, Available: {utxo.amount}")
+                
             return True
 
-        # 🔁 Fallback using raw tx_id (aggregate all matching UTXOs)
-        print(f"[UTXOManager.validate_utxo] ⚠️ Raw tx_id provided. Checking all UTXOs under tx_id={tx_out_id}")
+        # Fallback for raw tx_id
+        print(f"[UTXOManager] ⚠️ Raw tx_id format, validating all UTXOs for {tx_out_id}")
         try:
-            utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)  # ✅ FIXED: removed invalid keyword arg
+            utxos = self.utxo_storage.get_all_utxos_by_tx_id(tx_out_id)
+            if not utxos:
+                print(f"[UTXOManager] ❌ No UTXOs found for tx_id={tx_out_id}")
+                return False
+
+            total = Decimal(0)
+            for utxo in utxos:
+                try:
+                    if isinstance(utxo, dict):
+                        is_locked = utxo.get('locked', utxo.get('is_locked', False))
+                        utxo_amount = Decimal(str(utxo.get('amount', 0)))
+                    else:
+                        is_locked = utxo.locked
+                        utxo_amount = Decimal(str(utxo.amount))
+                        
+                    if not is_locked:
+                        total += utxo_amount
+                        if total >= amount:
+                            return True
+                except Exception as e:
+                    print(f"[UTXOManager] ⚠️ Skipping invalid UTXO: {e}")
+                    continue
+
+            print(f"[UTXOManager] ❌ Combined balance insufficient. Needed: {amount}, Available: {total}")
+            return False
+            
         except Exception as e:
-            print(f"[UTXOManager.validate_utxo] ❌ Fallback retrieval failed for tx_id={tx_out_id}: {e}")
+            print(f"[UTXOManager] ❌ Validation failed: {e}")
             return False
-
-        if not utxos:
-            print(f"[UTXOManager.validate_utxo] ❌ No UTXOs found for tx_id={tx_out_id}")
-            return False
-
-        total_available = Decimal("0")
-        for utxo_dict in utxos:
-            try:
-                utxo = TransactionOut.from_dict(utxo_dict)
-                if not utxo.locked:
-                    total_available += Decimal(str(utxo.amount))
-            except Exception as e:
-                print(f"[UTXOManager.validate_utxo] ⚠️ Skipping fallback UTXO due to parse error: {e}")
-                continue
-
-        if total_available < amount:
-            print(f"[UTXOManager.validate_utxo] ❌ Combined UTXOs under tx_id={tx_out_id} insufficient. "
-                f"Required: {amount}, Available: {total_available}")
-            return False
-
-        print(f"[UTXOManager.validate_utxo] ✅ Combined UTXOs under tx_id={tx_out_id} are valid. Available: {total_available}")
-        return True

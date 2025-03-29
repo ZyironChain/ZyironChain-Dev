@@ -2333,11 +2333,11 @@ class BlockchainUI:
         recipient = self.recipient_entry.get().strip()
         amount_str = self.amount_entry.get().strip()
         tx_type = self.tx_type_var.get()
-        
+
         if not recipient or not amount_str:
             messagebox.showerror("Error", "Recipient and amount are required")
             return
-            
+
         try:
             amount = Decimal(amount_str)
             if amount <= 0:
@@ -2345,34 +2345,42 @@ class BlockchainUI:
         except:
             messagebox.showerror("Error", "Invalid amount")
             return
-            
-        priv_key = self.key_manager.keys["mainnet"]["keys"][
-            self.key_manager.keys["mainnet"]["defaults"]["miner"]
-        ]["private_key"]
-        pub_key = self.wallet_address
-        
+
+        try:
+            priv_key = self.key_manager.keys["mainnet"]["keys"][
+                self.key_manager.keys["mainnet"]["defaults"]["miner"]
+            ]["private_key"]
+            pub_key = self.wallet_address
+        except Exception as e:
+            messagebox.showerror("Key Error", f"Failed to load keys: {e}")
+            return
+
         self.log_message(f"Starting transaction: {amount} ZYC to {recipient}", "INFO")
-        
-        tx_id = self.payment_processor.send_payment(
-            sender_priv_key=priv_key,
-            sender_pub_key=pub_key,
-            recipient_address=recipient,
-            amount=amount,
-            tx_type=tx_type
-        )
-        
+
+        try:
+            tx_id = self.payment_processor.send_payment(
+                sender_priv_key=priv_key,
+                sender_pub_key=pub_key,
+                recipient_address=recipient,
+                amount=amount,
+                tx_type=tx_type,
+                block_size=1,     # Default block size (can be made dynamic)
+                tx_size=512       # Default estimated transaction size
+            )
+        except Exception as e:
+            self.send_status.config(text="❌ Failed to send transaction", style='danger.TLabel')
+            self.log_message(f"Transaction failed: {e}", "ERROR")
+            return
+
         if tx_id:
             self.send_status.config(text=f"✅ Transaction sent! TXID: {tx_id}", style='success.TLabel')
             self.log_message(f"Transaction sent: {tx_id}", "SUCCESS")
-            
-            # Refresh pending transactions
             self.refresh_pending_tx()
-            
-            # Refresh wallet balance
             self.refresh_wallet()
         else:
             self.send_status.config(text="❌ Failed to send transaction", style='danger.TLabel')
             self.log_message("Transaction failed", "ERROR")
+
 
     def view_transaction_details(self):
         """View details of a transaction"""

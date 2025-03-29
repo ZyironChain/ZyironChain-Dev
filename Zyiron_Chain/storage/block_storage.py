@@ -438,18 +438,19 @@ class BlockStorage:
         """
         Store a block in the blockchain with robust fallback logic, transaction serialization,
         and total supply cache invalidation. Ensures UTXO updates are synchronized with block storage.
-        Also attempts to store metadata and recovers it from full block store if metadata fails.
+        Handles both hex and bytes transaction IDs for backward compatibility.
         """
         try:
             print(f"[BlockStorage.store_block] INFO: Storing Block {block.index}...")
             self._set_latest_block_file()
 
+            # ===== Block Validation =====
             if not block.mined_hash:
-                print(f"[BlockStorage.store_block] ❌ ERROR: Mined hash missing for Block {block.index}. Cannot store an unverified block!")
+                print(f"[BlockStorage.store_block] ❌ ERROR: Mined hash missing for Block {block.index}")
                 return False
 
             if not block.hash or block.hash != block.mined_hash:
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Hash mismatch for Block {block.index}. Using mined hash instead.")
+                print(f"[BlockStorage.store_block] ⚠️ WARNING: Hash mismatch for Block {block.index}")
                 block.hash = block.mined_hash
 
             if block.index == 0:
@@ -457,61 +458,73 @@ class BlockStorage:
             else:
                 prev_block = self.get_block_by_height(block.index - 1)
                 if prev_block and prev_block.mined_hash != block.previous_hash:
-                    print(f"[BlockStorage.store_block] ❌ ERROR: Block {block.index} previous_hash mismatch.")
+                    print(f"[BlockStorage.store_block] ❌ ERROR: Block {block.index} previous_hash mismatch")
                     print(f"Expected: {prev_block.mined_hash}, Found: {block.previous_hash}")
                     return False
 
-            if not hasattr(block, "metadata") or not isinstance(block.metadata, dict):
-                block.metadata = {}
-                print(f"[BlockStorage.store_block] INFO: Added fallback metadata for Block {block.index}")
-
-            # 🔄 Prepare block data
+            # ===== Block Data Preparation =====
             try:
                 block_data = block.to_dict()
+                # Convert difficulty to consistent format
                 diff_int = int(block.difficulty, 16) if isinstance(block.difficulty, str) else int(block.difficulty)
                 block_data["difficulty"] = DifficultyConverter.to_hex(diff_int)
                 block_data["hash"] = block.mined_hash
                 block_data["size"] = len(json.dumps(block_data, separators=(',', ':')).encode("utf-8"))
-                print(f"[BlockStorage.store_block] INFO: Block size: {block_data['size']} bytes.")
+                print(f"[BlockStorage.store_block] INFO: Block size: {block_data['size']} bytes")
             except Exception as e:
                 print(f"[BlockStorage.store_block] ❌ ERROR: Failed block serialization: {e}")
-                block_data = {}
-                block_data["size"] = 0
-
-            # 🔁 Ensure block_height is attached to all txs
-            for tx in block_data.get("transactions", []):
-                if isinstance(tx, dict) and tx.get("tx_id"):
-                    if "block_height" not in tx or tx["block_height"] != block.index:
-                        tx["block_height"] = block.index
-
-            # 🔒 Encode for LMDB
-            try:
-                block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
-                block_bytes = block_json.encode("utf-8")
-            except Exception as e:
-                print(f"[BlockStorage.store_block] ❌ ERROR: Failed to encode block JSON: {e}")
                 return False
 
+            # ===== Transaction Processing =====
+            for tx in block_data.get("transactions", []):
+                if isinstance(tx, dict) and tx.get("tx_id"):
+                    # Ensure block height is attached
+                    tx["block_height"] = block.index
+                    # Convert tx_id to hex if it's bytes
+                    if isinstance(tx["tx_id"], bytes):
+                        tx["tx_id"] = tx["tx_id"].hex()
+
+            # ===== LMDB Storage =====
             block_key = f"block:{block.index}".encode("utf-8")
             block_hash_key = f"block_hash:{block.mined_hash}".encode("utf-8")
 
-            # ❗Prevent overwrite (now returns True if already exists)
+            # Check for existing block
             with self.full_block_store.env.begin() as txn:
                 if txn.get(block_key):
-                    print(f"[BlockStorage.store_block] ⚠️ Block {block.index} already exists. Skipping.")
-                    return True  # ✅ CHANGED: Now returns True instead of False
+                    print(f"[BlockStorage.store_block] ⚠️ Block {block.index} already exists")
+                    return True  # Consider existing block as success
 
-            # 🧾 Index transactions BEFORE UTXO update
+            # Store serialized block
+            try:
+                block_json = json.dumps(block_data, separators=(',', ':'), ensure_ascii=False)
+                block_bytes = block_json.encode("utf-8")
+                
+                with self.full_block_store.env.begin(write=True) as txn:
+                    txn.put(block_key, block_bytes)
+                    txn.put(block_hash_key, block_key)
+                    txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
+            except Exception as e:
+                print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block: {e}")
+                return False
+
+            # ===== Transaction Indexing =====
             for tx in block.transactions:
                 try:
+                    # Convert transaction to proper object if it's a dict
                     if isinstance(tx, dict):
                         from Zyiron_Chain.transactions.coinbase import CoinbaseTx
                         from Zyiron_Chain.transactions.tx import Transaction
                         tx = CoinbaseTx.from_dict(tx) if tx.get("type") == "COINBASE" else Transaction.from_dict(tx)
 
                     tx_dict = tx.to_dict()
+                    
+                    # Ensure tx_id is in hex format
+                    tx_id = tx_dict.get("tx_id")
+                    if isinstance(tx_id, bytes):
+                        tx_dict["tx_id"] = tx_id.hex()
+
                     self.tx_storage.store_transaction(
-                        tx_id=tx_dict.get("tx_id"),
+                        tx_id=tx_dict["tx_id"],
                         block_hash=block.mined_hash,
                         tx_data=tx_dict,
                         outputs=tx_dict.get("outputs", []),
@@ -519,52 +532,48 @@ class BlockStorage:
                         tx_signature=getattr(tx, "tx_signature", b""),
                         falcon_signature=getattr(tx, "falcon_signature", b"")
                     )
-                    print(f"[BlockStorage.store_block] ✅ Indexed transaction {tx_dict.get('tx_id')}.")
+                    print(f"[BlockStorage.store_block] ✅ Indexed transaction {tx_dict['tx_id']}")
                 except Exception as tx_err:
                     print(f"[BlockStorage.store_block] ⚠️ TX indexing failed: {tx_err}")
                     continue
 
-            # 💾 Store full block
-            try:
-                with self.full_block_store.env.begin(write=True) as txn:
-                    txn.put(block_key, block_bytes)
-                    txn.put(block_hash_key, block_key)
-                    txn.put(b"latest_block_index", str(block.index).encode("utf-8"))
-
-                if self.utxo_storage:
+            # ===== UTXO Updates =====
+            if self.utxo_storage:
+                try:
+                    # Ensure all tx_ids in block are hex strings for UTXO storage
+                    for tx in block.transactions:
+                        if hasattr(tx, 'tx_id') and isinstance(tx.tx_id, bytes):
+                            tx.tx_id = tx.tx_id.hex()
+                    
                     if not self.utxo_storage.update_utxos(block):
-                        print(f"[BlockStorage.store_block] ❌ ERROR: Failed to update UTXOs for Block {block.index}.")
+                        print(f"[BlockStorage.store_block] ❌ ERROR: Failed to update UTXOs")
                         return False
-                else:
-                    print(f"[BlockStorage.store_block] ⚠️ WARNING: UTXOStorage not attached. Skipping UTXO update.")
-            except Exception as e:
-                print(f"[BlockStorage.store_block] ❌ ERROR: Failed to store block or update UTXOs: {e}")
-                return False
+                except Exception as e:
+                    print(f"[BlockStorage.store_block] ❌ ERROR: UTXO update exception: {e}")
+                    return False
+            else:
+                print(f"[BlockStorage.store_block] ⚠️ WARNING: UTXOStorage not attached")
 
-            # 🧠 Store block metadata
+            # ===== Metadata Handling =====
             if not self.store_block_metadata(block):
-                print(f"[BlockStorage.store_block] ⚠️ WARNING: Failed to store metadata for Block {block.index}.")
-                print("[BlockStorage.store_block] 🔁 Attempting fallback to rebuild metadata from full block store...")
+                print(f"[BlockStorage.store_block] ⚠️ WARNING: Failed to store metadata")
                 try:
                     fallback_block = self.get_block_by_height(block.index)
                     if fallback_block and self.store_block_metadata(fallback_block):
-                        print(f"[BlockStorage.store_block] ✅ Fallback: Metadata restored for Block {block.index}")
-                    else:
-                        print(f"[BlockStorage.store_block] ❌ Fallback failed: Metadata not restored for Block {block.index}")
+                        print(f"[BlockStorage.store_block] ✅ Fallback metadata restored")
                 except Exception as rebuild_e:
-                    print(f"[BlockStorage.store_block] ❌ Fallback exception during metadata restore: {rebuild_e}")
+                    print(f"[BlockStorage.store_block] ❌ Fallback metadata failed: {rebuild_e}")
 
-            # 🔁 Invalidate supply cache
+            # ===== Cache Invalidation =====
             with self.block_metadata_db.env.begin(write=True) as txn:
                 txn.delete(b"total_mined_supply")
 
-            print(f"[BlockStorage.store_block] ✅ SUCCESS: Block {block.index} stored with hash {block.hash}")
+            print(f"[BlockStorage.store_block] ✅ SUCCESS: Block {block.index} stored")
             return True
 
         except Exception as e:
             print(f"[BlockStorage.store_block] ❌ ERROR: Block store exception: {e}")
             return False
-
 
     def initialize_txindex(self):
         """

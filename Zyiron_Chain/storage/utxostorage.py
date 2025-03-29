@@ -235,7 +235,8 @@ class UTXOStorage:
                 "output_index": output_index,
                 "amount": str(amount),  # Store amount as a string for precision
                 "script_pub_key": script_pub_key,
-                "is_locked": is_locked,
+                "is_locked": is_locked,  # Old key for backward compatibility
+                "locked": is_locked,     # New key for TransactionOut compatibility
                 "block_height": block_height,
                 "spent_status": spent_status
             }
@@ -260,11 +261,29 @@ class UTXOStorage:
 
             utxo_dict = json.loads(utxo_data)
 
-            required_fields = {"tx_id", "output_index", "amount", "script_pub_key", "is_locked", "block_height", "spent_status"}
+            # Backward compatible field checking
+            required_fields = {"tx_id", "output_index", "amount", "script_pub_key", "block_height", "spent_status"}
             if not required_fields.issubset(utxo_dict.keys()):
                 raise ValueError(f"[UTXOStorage._deserialize_utxo] ERROR: Missing required UTXO fields: {utxo_dict.keys()}.")
 
-            utxo_dict["amount"] = Decimal(utxo_dict["amount"])  # Ensure precision for stored amounts
+            # Handle both "is_locked" (old) and "locked" (new) keys
+            if "locked" in utxo_dict:
+                lock_status = utxo_dict["locked"]
+            elif "is_locked" in utxo_dict:
+                lock_status = utxo_dict["is_locked"]
+            else:
+                raise ValueError("[UTXOStorage._deserialize_utxo] ERROR: Missing lock status field (neither 'locked' nor 'is_locked' found)")
+
+            # Ensure all keys are present in the returned dict
+            utxo_dict = {
+                "tx_id": utxo_dict["tx_id"],
+                "output_index": utxo_dict["output_index"],
+                "amount": Decimal(utxo_dict["amount"]),  # Ensure precision for stored amounts
+                "script_pub_key": utxo_dict["script_pub_key"],
+                "locked": lock_status,  # Standardized to "locked" key
+                "block_height": utxo_dict["block_height"],
+                "spent_status": utxo_dict["spent_status"]
+            }
 
             print(f"[UTXOStorage._deserialize_utxo] INFO: Deserialized UTXO {utxo_dict['tx_id']} at index {utxo_dict['output_index']}.")
             return utxo_dict
@@ -276,8 +295,6 @@ class UTXOStorage:
         except Exception as e:
             print(f"[UTXOStorage._deserialize_utxo] ERROR: Failed to deserialize UTXO: {e}")
             return {}
-
-
     def store_utxo(self, tx_id: str, output_index: int, amount: Decimal, script_pub_key: str, is_locked: bool, block_height: int) -> bool:
         """
         Stores a UTXO in `utxo.lmdb` with full fallback validation, key standardization, and duplicate protection.
@@ -618,170 +635,356 @@ class UTXOStorage:
 
 
     def get_all_utxos_by_tx_id(self, tx_id: str) -> List[Dict]:
-        import inspect
-        import traceback
-        from transactions.txout import TransactionOut  # Adjust if needed
+        """
+        Retrieve all UTXOs for a given transaction ID with comprehensive format handling
+        and transaction type awareness.
+        Backward compatibility improvements:
+        - Handles both old and new UTXO formats
+        - Supports legacy storage methods
+        - Provides detailed error recovery
+        """
+        self._log_call_origin()
+        
+        # Validate and normalize input
+        if not isinstance(tx_id, (str, bytes)):
+            error_msg = f"Invalid tx_id type (expected string or bytes): {type(tx_id)}"
+            print(f"[UTXOStorage] ❌ {error_msg}")
+            raise ValueError(error_msg)
 
-        print(f"[get_all_utxos_by_tx_id] ✅ Called from: {__file__}")
-        print("[get_all_utxos_by_tx_id] 🔍 Call Trace:")
-        traceback.print_stack(limit=3)
+        # Convert bytes to hex if needed (backward compatibility)
+        if isinstance(tx_id, bytes):
+            try:
+                tx_id = tx_id.hex()
+                print(f"[UTXOStorage] ℹ️ Converted bytes tx_id to hex: {tx_id}")
+            except Exception as e:
+                print(f"[UTXOStorage] ❌ Failed to convert bytes tx_id: {e}")
+                return []
 
-        if not isinstance(tx_id, str) or len(tx_id) != 96:
-            print(f"[get_all_utxos_by_tx_id] ❌ Invalid tx_id format: {tx_id}")
-            return []
+        try:
+            # Determine transaction type for special handling (new feature)
+            tx_type = None
+            if hasattr(Constants, "TRANSACTION_MEMPOOL_MAP"):
+                for t_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+                    for prefix in config.get("prefixes", []):
+                        if tx_id.startswith(prefix):
+                            tx_type = t_type
+                            print(f"[UTXOStorage] ℹ️ Identified {tx_type} transaction")
+                            break
 
+            # Try primary LMDB lookup with backward compatibility
+            results = []
+            if hasattr(self, "_get_utxos_from_lmdb"):
+                try:
+                    # New version with tx_type parameter
+                    if tx_type is not None:
+                        results = self._get_utxos_from_lmdb(tx_id, tx_type)
+                    else:
+                        results = self._get_utxos_from_lmdb(tx_id)
+                except TypeError as e:
+                    if "unexpected keyword argument 'tx_type'" in str(e):
+                        # Fallback to old version without tx_type
+                        print("[UTXOStorage] ⚠️ Using legacy _get_utxos_from_lmdb")
+                        results = self._get_utxos_from_lmdb(tx_id)
+                    else:
+                        raise
+            else:
+                # Very old version - direct LMDB access
+                print("[UTXOStorage] ⚠️ Using direct LMDB access (legacy)")
+                with self.utxo_db.env.begin() as txn:
+                    cursor = txn.cursor()
+                    prefix = f"utxo:{tx_id}:".encode('utf-8')
+                    cursor.set_range(prefix)
+                    for key, value in cursor:
+                        if not key.startswith(prefix):
+                            break
+                        try:
+                            results.append(json.loads(value.decode('utf-8')))
+                        except Exception as e:
+                            print(f"[UTXOStorage] ⚠️ Failed to decode UTXO: {e}")
+
+            if results:
+                print(f"[UTXOStorage] ✅ Found {len(results)} UTXOs in LMDB")
+                # Normalize results to common format
+                return self._normalize_utxo_results(results)
+                
+            # Fallback to block storage
+            print(f"[UTXOStorage] ⚠️ No LMDB UTXOs found, falling back to block storage")
+            block_results = []
+            if hasattr(self, "_get_utxos_from_block_storage"):
+                block_results = self._get_utxos_from_block_storage(tx_id)
+            else:
+                print("[UTXOStorage] ⚠️ Block storage fallback not available")
+                
+            # Cache found UTXOs in LMDB for future access (if available)
+            if block_results and hasattr(self, "utxo_db"):
+                try:
+                    with self.utxo_db.env.begin(write=True) as txn:
+                        for utxo in block_results:
+                            key = f"utxo:{utxo['tx_id']}:{utxo['output_index']}".encode('utf-8')
+                            txn.put(key, json.dumps(utxo).encode('utf-8'))
+                    print(f"[UTXOStorage] 💾 Cached {len(block_results)} UTXOs to LMDB")
+                except Exception as cache_err:
+                    print(f"[UTXOStorage] ⚠️ Failed to cache UTXOs: {cache_err}")
+            
+            return self._normalize_utxo_results(block_results)
+                
+        except Exception as e:
+            print(f"[UTXOStorage] ❌ Critical error fetching UTXOs for {tx_id}: {e}")
+            return []  # Return empty list instead of raising to allow operation to continue
+
+    def _normalize_utxo_results(self, utxos: List[Dict]) -> List[Dict]:
+        """Normalize UTXO data to common format for backward compatibility"""
+        normalized = []
+        for utxo in utxos:
+            try:
+                # Handle both old and new field names
+                normalized.append({
+                    "tx_id": utxo.get("tx_id", ""),
+                    "output_index": utxo.get("output_index", utxo.get("index", 0)),
+                    "amount": utxo.get("amount", utxo.get("value", "0")),
+                    "script_pub_key": utxo.get("script_pub_key", utxo.get("address", "")),
+                    "locked": utxo.get("locked", utxo.get("is_locked", False)),
+                    "block_height": utxo.get("block_height", 0),
+                    "spent_status": utxo.get("spent_status", False)
+                })
+            except Exception as e:
+                print(f"[UTXOStorage] ⚠️ Failed to normalize UTXO: {e}")
+        return normalized
+    
+    def _determine_tx_type(self, tx_id: str) -> str:
+        """Determine transaction type based on Constants.TRANSACTION_MEMPOOL_MAP"""
+        for tx_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+            for prefix in config["prefixes"]:
+                if tx_id.startswith(prefix):
+                    return tx_type
+        return "STANDARD"  # Default to standard if no prefix matches
+
+    def _get_utxos_from_lmdb(self, tx_id: str, tx_type: str) -> List[Dict]:
+        """LMDB lookup with transaction type awareness"""
         results = []
         try:
             with self.utxo_db.env.begin() as txn:
+                # Handle different lookup patterns based on transaction type
+                if tx_type == "COINBASE":
+                    # COINBASE transactions have special handling
+                    prefix = f"utxo:coinbase:{tx_id}".encode('utf-8')
+                elif ':' in tx_id:
+                    # Already in utxo:tx_id:index format
+                    prefix = tx_id.encode('utf-8')
+                else:
+                    # Standard transaction format
+                    prefix = f"utxo:{tx_id}:".encode('utf-8')
+                
                 cursor = txn.cursor()
-                prefix = f"utxo:{tx_id}:".encode("utf-8")
-
                 for key_bytes, value_bytes in cursor.iternext(prefix=prefix):
                     try:
-                        key_str = key_bytes.decode("utf-8")
-                        parts = key_str.split(":")
-                        if len(parts) != 3 or parts[0] != "utxo":
-                            continue
-
-                        output_index = int(parts[2])
-                        value_str = value_bytes.decode("utf-8")
-                        utxo_data = json.loads(value_str)
-
-                        standardized = {
-                            "tx_id": tx_id,
-                            "output_index": output_index,
-                            "amount": str(Decimal(utxo_data.get("amount", "0"))),
-                            "script_pub_key": utxo_data.get("script_pub_key", ""),
-                            "is_locked": bool(utxo_data.get("locked", False)),
-                            "block_height": int(utxo_data.get("block_height", 0)),
-                            "spent_status": bool(utxo_data.get("spent_status", False))
-                        }
-                        results.append(standardized)
+                        utxo = json.loads(value_bytes.decode('utf-8'))
+                        results.append(self._standardize_utxo_format(utxo))
                     except Exception as e:
-                        print(f"[get_all_utxos_by_tx_id] ⚠️ Skipping corrupted UTXO entry {key_str}: {e}")
-                        continue
+                        print(f"[UTXOStorage] ⚠️ Skipping corrupt UTXO entry: {e}")
+        except Exception as e:
+            print(f"[UTXOStorage] ⚠️ LMDB lookup failed for {tx_id}: {e}")
+        return results
 
-            if results:
-                print(f"[get_all_utxos_by_tx_id] ✅ Found {len(results)} UTXOs in LMDB for tx_id={tx_id}")
-                return results
+    def _log_call_origin(self):
+        """Log the origin of the call for debugging purposes."""
+        import traceback
+        print(f"[UTXOStorage] 🔍 Called from: {__file__}")
+        print("[UTXOStorage] 📜 Call Trace:")
+        traceback.print_stack(limit=3)
 
-            print(f"[get_all_utxos_by_tx_id] ⚠️ No LMDB UTXOs found for tx_id={tx_id}. Scanning full block storage...")
 
-            if not hasattr(self, "block_storage") or not self.block_storage:
-                print("[get_all_utxos_by_tx_id] ❌ ERROR: Block storage not available for fallback.")
-                return []
+    def _parse_lmdb_utxo_entry(self, key_bytes: bytes, value_bytes: bytes) -> Optional[Dict]:
+        """Parse a single UTXO entry from LMDB."""
+        try:
+            key_str = key_bytes.decode("utf-8")
+            parts = key_str.split(":")
+            if len(parts) != 3 or parts[0] != "utxo":
+                return None
 
-            expected_params = list(inspect.signature(TransactionOut.__init__).parameters.keys())
-            print(f"[get_all_utxos_by_tx_id] 🧠 TransactionOut expected parameters: {expected_params}")
+            output_index = int(parts[2])
+            utxo_data = json.loads(value_bytes.decode("utf-8"))
+            
+            return self._standardize_utxo_format(
+                tx_id=parts[1],  # Original tx_id from key
+                output_index=output_index,
+                raw_data=utxo_data
+            )
+            
+        except Exception as e:
+            print(f"[UTXOStorage] ❌ Failed to parse LMDB entry: {e}")
+            raise
 
-            for block in self.block_storage.get_all_blocks():
+    def _get_utxos_from_block_storage(self, tx_id: str) -> List[Dict]:
+        """Fallback to retrieve UTXOs from block storage with enhanced error handling"""
+        print(f"[UTXOStorage] ⚠️ No LMDB UTXOs found for {tx_id}, scanning block storage...")
+        
+        if not hasattr(self, "block_storage") or not self.block_storage:
+            print("[UTXOStorage] ❌ Block storage fallback not available")
+            return []
+
+        results = []
+        blocks_scanned = 0
+        try:
+            print(f"[UTXOStorage] 🔍 Starting block scan for tx_id: {tx_id}")
+            all_blocks = self.block_storage.get_all_blocks()
+            
+            for block in all_blocks:
+                blocks_scanned += 1
                 try:
-                    transactions = []
-                    block_height = 0
-                    if isinstance(block, dict):
-                        transactions = block.get("transactions", [])
-                        block_height = block.get("index", 0)
-                    elif hasattr(block, "transactions"):
-                        transactions = block.transactions
-                        block_height = getattr(block, "index", 0)
-                    else:
-                        print("[get_all_utxos_by_tx_id] ⚠️ Unknown block format, skipping...")
-                        continue
-
-                    for tx in transactions:
+                    # Normalize block format (handles both dict and Block objects)
+                    block_data = self._normalize_block(block)
+                    block_index = block_data.get("index", blocks_scanned)
+                    
+                    # Process all transactions in the block
+                    for tx in block_data.get("transactions", []):
                         try:
-                            tx_dict = tx if isinstance(tx, dict) else tx.to_dict()
-                            if tx_dict.get("tx_id") != tx_id:
-                                continue
-
-                            outputs = tx_dict.get("outputs", [])
-                            for idx, output in enumerate(outputs):
-                                try:
-                                    output_dict = output if isinstance(output, dict) else output.to_dict()
-                                    print(f"\n[get_all_utxos_by_tx_id] 🔍 Processing output index {idx}")
-                                    print(f"[get_all_utxos_by_tx_id] 📦 Output dict keys: {list(output_dict.keys())}")
-                                    print(f"[get_all_utxos_by_tx_id] 📦 Output dict values: {output_dict}")
-
-                                    invalid_keys = [k for k in output_dict if k not in expected_params]
-                                    if invalid_keys:
-                                        print("\n[get_all_utxos_by_tx_id] ❌❌ TypeError: Unrecognized keyword(s) when constructing TransactionOut!")
-                                        print(f"[get_all_utxos_by_tx_id] ➤ Invalid keys: {invalid_keys}")
-                                        print(f"[get_all_utxos_by_tx_id] ➤ Expected keys: {expected_params}")
-                                        print(f"[get_all_utxos_by_tx_id] ➤ Received dict:")
-                                        for key, value in output_dict.items():
-                                            print(f"    • {key}: {value} (type: {type(value).__name__})")
-
-                                        raise TypeError(f"Unrecognized keyword argument(s): {invalid_keys}")
-
-                                    utxo_entry = {
-                                        "tx_id": tx_id,
-                                        "output_index": idx,
-                                        "amount": str(Decimal(output_dict.get("amount", "0"))),
-                                        "script_pub_key": output_dict.get("script_pub_key", ""),
-                                        "is_locked": bool(output_dict.get("locked", False)),
-                                        "block_height": block_height,
-                                        "spent_status": False
-                                    }
-                                    results.append(utxo_entry)
-                                except Exception as output_err:
-                                    print(f"[get_all_utxos_by_tx_id] ⚠️ Output parse error at index {idx}: {output_err}")
-                                    continue
+                            tx_data = tx if isinstance(tx, dict) else tx.to_dict()
+                            
+                            # Match transaction ID (handling both bytes and hex formats)
+                            current_tx_id = tx_data.get("tx_id", "")
+                            if isinstance(current_tx_id, bytes):
+                                current_tx_id = current_tx_id.hex()
+                                
+                            if current_tx_id == tx_id:
+                                # Extract all outputs as UTXOs
+                                for idx, output in enumerate(tx_data.get("outputs", [])):
+                                    try:
+                                        output_data = output if isinstance(output, dict) else output.to_dict()
+                                        utxo = {
+                                            "tx_id": tx_id,
+                                            "output_index": idx,
+                                            "amount": str(output_data.get("amount", 0)),
+                                            "script_pub_key": output_data.get("script_pub_key", ""),
+                                            "locked": output_data.get("locked", False),
+                                            "block_height": block_index,
+                                            "spent_status": False
+                                        }
+                                        results.append(utxo)
+                                    except Exception as output_err:
+                                        print(f"[UTXOStorage] ⚠️ Output processing error: {output_err}")
                         except Exception as tx_err:
-                            print(f"[get_all_utxos_by_tx_id] ⚠️ Transaction parse error: {tx_err}")
+                            print(f"[UTXOStorage] ⚠️ Transaction processing error: {tx_err}")
                             continue
-
+                            
                 except Exception as block_err:
-                    print(f"[get_all_utxos_by_tx_id] ⚠️ Block processing error: {block_err}")
+                    print(f"[UTXOStorage] ⚠️ Block {blocks_scanned} processing error: {block_err}")
                     continue
 
-            print(f"[get_all_utxos_by_tx_id] ✅ Fallback result: {len(results)} UTXOs recovered from block storage")
+            print(f"[UTXOStorage] ✅ Scanned {blocks_scanned} blocks, found {len(results)} UTXOs for {tx_id}")
             return results
-
-        except TypeError as e:
-            print(f"[get_all_utxos_by_tx_id] ❌ TypeError caught: {e}")
-            print("[get_all_utxos_by_tx_id] 📌 Hint: Double-check TransactionOut constructor and fallback data keys.")
-            raise
-
+            
         except Exception as e:
-            print(f"[get_all_utxos_by_tx_id] ❌ CRITICAL ERROR processing tx_id={tx_id}: {e}")
-            raise
+            print(f"[UTXOStorage] ❌ Block storage scan failed after {blocks_scanned} blocks: {e}")
+            return results  # Return whatever we found before the error
 
+    def _normalize_block(self, block) -> Dict:
+        """Convert block to standardized dictionary format."""
+        if isinstance(block, dict):
+            return block
+        return {
+            "transactions": block.transactions,
+            "index": getattr(block, "index", 0),
+            "timestamp": getattr(block, "timestamp", 0)
+        }
 
+    def _process_block_transactions(self, block: Dict, tx_id: str) -> List[Dict]:
+        """Process transactions within a single block."""
+        results = []
+        for tx in block.get("transactions", []):
+            try:
+                tx_dict = tx if isinstance(tx, dict) else tx.to_dict()
+                if tx_dict.get("tx_id") != tx_id:
+                    continue
+                    
+                results.extend(self._extract_utxos_from_tx(tx_dict, block["index"]))
+            except Exception as e:
+                print(f"[UTXOStorage] ⚠️ Transaction processing error: {e}")
+                
+        return results
 
-    def safe_deserialize_block(block_data) -> Optional["Block"]:
-        """
-        Robustly deserialize a block dict or object.
-        Ensures transactions are deserialized into full objects (CoinbaseTx / Transaction).
-        """
-        from Zyiron_Chain.blockchain.block import Block
-        from Zyiron_Chain.transactions.coinbase import CoinbaseTx
-        from Zyiron_Chain.transactions.tx import Transaction
+    def _extract_utxos_from_tx(self, tx: Dict, block_height: int) -> List[Dict]:
+        """Extract all UTXOs from a single transaction."""
+        results = []
+        for idx, output in enumerate(tx.get("outputs", [])):
+            try:
+                output_dict = output if isinstance(output, dict) else output.to_dict()
+                self._validate_output_structure(output_dict)
+                
+                results.append(self._standardize_utxo_format(
+                    tx_id=tx["tx_id"],
+                    output_index=idx,
+                    raw_data=output_dict,
+                    block_height=block_height
+                ))
+            except Exception as e:
+                print(f"[UTXOStorage] ⚠️ Output {idx} processing error: {e}")
+                
+        return results
 
-        try:
-            # If it's already a Block instance, just return it
-            if isinstance(block_data, Block):
-                return block_data
+    def _validate_output_structure(self, output_dict: Dict):
+        """Validate transaction output structure matches expected format."""
+        from transactions.txout import TransactionOut
+        expected_params = set(inspect.signature(TransactionOut.__init__).parameters.keys())
+        invalid_keys = [k for k in output_dict if k not in expected_params]
+        
+        if invalid_keys:
+            error_msg = f"Invalid output keys: {invalid_keys}. Expected: {expected_params}"
+            print(f"[UTXOStorage] ❌ {error_msg}")
+            print("Output data:", output_dict)
+            raise ValueError(error_msg)
 
-            block_obj = Block.from_dict(block_data)
-            tx_list = getattr(block_obj, "transactions", [])
+    def _standardize_utxo_format(self, tx_id: str, output_index: int, 
+                            raw_data: Dict, block_height: int = 0) -> Dict:
+        """Convert raw UTXO data to standardized format."""
+        # Handle both old and new field names
+        script_pub_key = raw_data.get("script_pub_key", raw_data.get("address", ""))
+        amount = str(Decimal(raw_data.get("amount", "0")))
+        lock_status = raw_data.get("locked", raw_data.get("is_locked", False))
+        
+        return {
+            "tx_id": tx_id,
+            "output_index": output_index,
+            "amount": amount,
+            "script_pub_key": script_pub_key,
+            "locked": bool(lock_status),
+            "block_height": int(raw_data.get("block_height", block_height)),
+            "spent_status": bool(raw_data.get("spent_status", False))
+        }
+        def safe_deserialize_block(block_data) -> Optional["Block"]:
+            """
+            Robustly deserialize a block dict or object.
+            Ensures transactions are deserialized into full objects (CoinbaseTx / Transaction).
+            """
+            from Zyiron_Chain.blockchain.block import Block
+            from Zyiron_Chain.transactions.coinbase import CoinbaseTx
+            from Zyiron_Chain.transactions.tx import Transaction
 
-            new_tx_list = []
-            for tx in tx_list:
-                if isinstance(tx, dict):
-                    if tx.get("type") == "COINBASE":
-                        tx_obj = CoinbaseTx.from_dict(tx)
+            try:
+                # If it's already a Block instance, just return it
+                if isinstance(block_data, Block):
+                    return block_data
+
+                block_obj = Block.from_dict(block_data)
+                tx_list = getattr(block_obj, "transactions", [])
+
+                new_tx_list = []
+                for tx in tx_list:
+                    if isinstance(tx, dict):
+                        if tx.get("type") == "COINBASE":
+                            tx_obj = CoinbaseTx.from_dict(tx)
+                        else:
+                            tx_obj = Transaction.from_dict(tx)
+                        new_tx_list.append(tx_obj)
                     else:
-                        tx_obj = Transaction.from_dict(tx)
-                    new_tx_list.append(tx_obj)
-                else:
-                    new_tx_list.append(tx)
+                        new_tx_list.append(tx)
 
-            block_obj.transactions = new_tx_list
-            return block_obj
+                block_obj.transactions = new_tx_list
+                return block_obj
 
-        except Exception as e:
-            print(f"[safe_deserialize_block] ❌ Failed to deserialize block: {e}")
-            return None
+            except Exception as e:
+                print(f"[safe_deserialize_block] ❌ Failed to deserialize block: {e}")
+                return None
 
 
 

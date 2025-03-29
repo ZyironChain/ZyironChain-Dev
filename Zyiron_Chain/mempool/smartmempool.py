@@ -1,6 +1,8 @@
 import json
 import sys
 import os
+
+from Zyiron_Chain.transactions.tx import Transaction
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
@@ -19,7 +21,7 @@ def get_fee_model():
 import logging
 from threading import Lock
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from Zyiron_Chain.blockchain.constants import Constants
 from Zyiron_Chain.smartpay.smartpay import SmartTransaction
 from Zyiron_Chain.storage.lmdatabase import LMDBManager
@@ -54,71 +56,92 @@ class SmartMempool:
         print(f"[MEMPOOL] ✅ Initialized Smart Mempool with max size {self.max_size_mb} MB and peer_id {self.peer_id}")
 
 
-    def add_transaction(self, transaction: SmartTransaction, current_block_height: int):
+    def add_transaction(self, transaction: Union["SmartTransaction", "Transaction"], 
+                    current_block_height: Optional[int] = None) -> bool:
         """
-        Add a Smart Transaction to the mempool if valid.
-
-        :param transaction: SmartTransaction object.
-        :param current_block_height: Current blockchain height.
-        :return: True if added, False otherwise.
+        Add a transaction to the appropriate mempool based on its type.
+        Supports all transaction types defined in Constants.TRANSACTION_MEMPOOL_MAP.
         """
         with self.lock:
             try:
-                print(f"[SmartMempool.add_transaction] 🔄 Attempting to add TX: {transaction.tx_id}")
+                tx_id = getattr(transaction, 'tx_id', '')
+                print(f"[Mempool] 🔄 Processing TX: {tx_id}")
 
-                # ✅ Validate transaction ID prefix
-                if not transaction.tx_id.startswith("S-"):
-                    print(f"[SmartMempool.add_transaction] ❌ Invalid Smart Transaction ID prefix for {transaction.tx_id}. Must start with 'S-'.")
-                    return False
-
-                # ✅ Check for duplicate transaction
-                if transaction.tx_id in self.transactions:
-                    print(f"[SmartMempool.add_transaction] ⚠️ Transaction {transaction.tx_id} already exists in the Smart Mempool.")
-                    return False
-
-                # ✅ Validate minimum transaction fee
-                if transaction.fee < Constants.MIN_TRANSACTION_FEE:
-                    print(f"[SmartMempool.add_transaction] ❌ Transaction {transaction.tx_id} has an insufficient fee: {transaction.fee}.")
-                    return False
-
-                # ✅ Prevent expired transactions based on block lock height
-                expiry_blocks = Constants.TRANSACTION_EXPIRY_TIME
-                tx_age_blocks = current_block_height - transaction.block_height_at_lock
-                if tx_age_blocks >= expiry_blocks:
-                    print(f"[SmartMempool.add_transaction] ⚠️ Transaction {transaction.tx_id} expired. Age: {tx_age_blocks} blocks (Limit: {expiry_blocks})")
-                    return False
-
-                # ✅ Check space in mempool
-                transaction_size = transaction.size
-                if self.current_size_bytes + transaction_size > self.max_size_bytes:
-                    print(f"[SmartMempool.add_transaction] ℹ️ Mempool full. Evicting low-priority transactions to free {transaction_size} bytes...")
-                    self.evict_transactions(transaction_size)
-
-                # ✅ Add transaction to in-memory pool
-                self.transactions[transaction.tx_id] = {
-                    "transaction": transaction,
-                    "fee_per_byte": float(transaction.fee / transaction_size),
-                    "block_added": current_block_height,
-                    "status": "Pending"
-                }
-                self.current_size_bytes += transaction_size
-
-                # ✅ Persist transaction to LMDB
-                if hasattr(self, "lmdb") and self.lmdb:
-                    self.lmdb.put(
-                        transaction.tx_id.encode(),
-                        json.dumps(transaction.to_dict(), sort_keys=True).encode("utf-8")
-                    )
-                    print(f"[SmartMempool.add_transaction] ✅ Persisted TX {transaction.tx_id} to LMDB.")
+                # Determine transaction type
+                tx_type = None
+                for t_type, config in Constants.TRANSACTION_MEMPOOL_MAP.items():
+                    for prefix in config["prefixes"]:
+                        if tx_id.startswith(prefix):
+                            tx_type = t_type
+                            break
+                    if tx_type:
+                        break
                 else:
-                    print(f"[SmartMempool.add_transaction] ⚠️ LMDB not initialized; transaction not persisted.")
+                    tx_type = "STANDARD"
 
-                print(f"[SmartMempool.add_transaction] ✅ Smart Transaction {transaction.tx_id} successfully added.")
+                # Type-specific validation
+                if tx_type == "SMART":
+                    if not tx_id.startswith("S-"):
+                        print(f"[Mempool] ❌ Invalid Smart TX ID format: {tx_id}")
+                        return False
+                    
+                    # Additional smart transaction validation
+                    if not hasattr(transaction, 'smart_contract_hash'):
+                        print("[Mempool] ❌ Smart transaction missing contract hash")
+                        return False
+
+                # Common validation for all types
+                if tx_id in self.transactions:
+                    print(f"[Mempool] ⚠️ Duplicate TX {tx_id} already in mempool")
+                    return False
+
+                if getattr(transaction, 'fee', 0) < Constants.MIN_TRANSACTION_FEE:
+                    print(f"[Mempool] ❌ Fee below minimum for {tx_type} TX")
+                    return False
+
+                # Handle expiration (if block height provided)
+                if current_block_height is not None:
+                    if hasattr(transaction, 'block_height_at_lock'):
+                        age = current_block_height - transaction.block_height_at_lock
+                        if age >= Constants.TRANSACTION_EXPIRY_TIME:
+                            print(f"[Mempool] ⚠️ {tx_type} TX expired: {age} blocks")
+                            return False
+
+                # Size management
+                tx_size = getattr(transaction, 'size', 512)
+                if self.current_size_bytes + tx_size > self.max_size_bytes:
+                    print(f"[Mempool] ℹ️ Evicting to make space for {tx_type} TX")
+                    self.evict_transactions(tx_size)
+
+                # Store transaction
+                self.transactions[tx_id] = {
+                    "transaction": transaction,
+                    "fee_per_byte": float(getattr(transaction, 'fee', 0)) / max(1, tx_size),
+                    "block_added": current_block_height or 0,
+                    "status": "Pending",
+                    "type": tx_type
+                }
+                self.current_size_bytes += tx_size
+
+                # Persist to LMDB if configured
+                if hasattr(self, "lmdb") and self.lmdb:
+                    try:
+                        tx_data = {
+                            **transaction.to_dict(),
+                            "tx_type": tx_type,
+                            "storage_time": int(time.time())
+                        }
+                        self.lmdb.put(tx_id.encode(), json.dumps(tx_data).encode('utf-8'))
+                    except Exception as e:
+                        print(f"[Mempool] ⚠️ Failed to persist {tx_type} TX: {e}")
+
+                print(f"[Mempool] ✅ Added {tx_type} TX: {tx_id}")
                 return True
 
             except Exception as e:
-                print(f"[SmartMempool.add_transaction] ❌ ERROR: Failed to add TX {getattr(transaction, 'tx_id', '?')}: {e}")
+                print(f"[Mempool] ❌ Failed to add TX {tx_id}: {e}")
                 return False
+
 
 
 

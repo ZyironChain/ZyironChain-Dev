@@ -22,13 +22,6 @@ from Zyiron_Chain.utils.deserializer import Deserializer
 
 
 class Transaction:
-    """
-    Represents a standard blockchain transaction in the new split-storage environment.
-
-    - Uses lazy imports for TxStorage and UTXOStorage to avoid circular imports.
-    - Uses single SHA3-384 hashing via Hashing.hash().
-    - Detailed print statements are provided for debugging.
-    """
     def __init__(
         self,
         inputs: List[TransactionIn],
@@ -38,20 +31,9 @@ class Transaction:
         tx_type: str = "STANDARD",
         fee_model: Optional[FeeModel] = None,
         block_height: Optional[int] = None,
+        metadata: Optional[dict] = None  # ✅ Metadata support
     ):
-        """
-        Initialize a transaction object.
-
-        :param inputs: List of TransactionIn objects.
-        :param outputs: List of TransactionOut objects.
-        :param tx_id: Optional transaction ID (auto-generated if not provided).
-        :param utxo_manager: Optional UTXOManager for retrieving UTXO data.
-        :param tx_type: Transaction type, e.g., "STANDARD" or "COINBASE".
-        :param fee_model: Optional FeeModel instance for dynamic fee calculation.
-        :param block_height: Optional block height for UTXO tracking.
-        """
         try:
-            # ✅ Validate inputs and outputs
             if not isinstance(inputs, list) or not all(isinstance(inp, TransactionIn) for inp in inputs):
                 print("[TRANSACTION ERROR] All inputs must be instances of TransactionIn.")
                 raise TypeError("All inputs must be instances of TransactionIn.")
@@ -62,29 +44,24 @@ class Transaction:
             self.inputs = inputs
             self.outputs = outputs
             self.utxo_manager = utxo_manager
+            self.metadata = metadata or {}
 
-            # ✅ Set and validate transaction type
             self.timestamp = int(time.time())
             self.type = tx_type.upper().strip()
             if self.type not in ["STANDARD", "SMART", "INSTANT", "COINBASE"]:
                 print(f"[TRANSACTION WARNING] Unknown transaction type '{self.type}'. Defaulting to STANDARD.")
                 self.type = "STANDARD"
 
-            self.tx_type = self.type  # ✅ Alias to avoid AttributeError in mempool and processors
+            self.tx_type = self.type
 
-            # ✅ Generate or assign tx_id
             self.tx_id = tx_id if tx_id else self._generate_tx_id()
             if not isinstance(self.tx_id, str):
                 raise TypeError("Transaction ID must be a valid string.")
 
-            # ✅ Compute hash using SHA3-384
-            self.hash = self.calculate_hash()
-
-            # ✅ Assign FeeModel and calculate size
+            self.tx_hash = self.calculate_hash()  # ✅ renamed from self.hash
             self.fee_model = fee_model
             self.size = self._calculate_size()
 
-            # ✅ Calculate fee if model provided
             self.fee = Decimal(Constants.MIN_TRANSACTION_FEE)
             if self.fee_model:
                 try:
@@ -100,7 +77,6 @@ class Transaction:
                 except Exception as fe:
                     print(f"[TRANSACTION FEE ERROR] Failed to calculate fee: {fe}")
 
-            # ✅ Set block height
             self.block_height = block_height
 
             print(f"[TRANSACTION INFO] Created transaction {self.tx_id} | Type: {self.type} | Fee: {self.fee} | Size: {self.size} bytes")
@@ -109,29 +85,43 @@ class Transaction:
             print(f"[TRANSACTION ERROR] Failed to initialize transaction: {e}")
             raise ValueError("Transaction initialization failed due to an unexpected error.")
 
+
+
     def _generate_tx_id(self) -> str:
         """
         Generate a unique transaction ID using single SHA3-384 hashing.
-        Returns a hex-encoded ID for LMDB key compatibility and display.
-        Includes fallback logic for any failure in generation.
+        Backward compatibility improvements:
+        - Maintains consistent ID generation across versions
+        - Handles missing type prefixes gracefully
+        - Provides robust fallback
         """
         try:
-            # ✅ Retrieve the transaction prefix with safe fallback
-            prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes") or [""]
-            prefix = prefixes[0]  # Always safe now
-
-            # ✅ Use nanosecond-level timestamp as a salt
+            # Get prefix with backward compatibility
+            prefix = ""
+            if hasattr(Constants, "TRANSACTION_MEMPOOL_MAP"):
+                prefixes = Constants.TRANSACTION_MEMPOOL_MAP.get(self.type, {}).get("prefixes", [])
+                prefix = prefixes[0] if prefixes else ""
+            
+            # Use consistent hashing method
             salt = str(time.time_ns())
             tx_data = f"{prefix}{self.timestamp}{salt}".encode("utf-8")
-
-            # ✅ Return SHA3-384 digest (hex string, for LMDB key compatibility)
-            tx_id = Hashing.hash(tx_data).hex()
+            
+            # Handle both Hashing class and direct hashlib
+            if hasattr(Hashing, "hash"):
+                tx_id = Hashing.hash(tx_data).hex()
+            else:
+                # Fallback to direct hashlib
+                tx_id = hashlib.sha3_384(tx_data).hexdigest()
+            
             print(f"[TRANSACTION _generate_tx_id INFO] ✅ Generated tx_id: {tx_id}")
             return tx_id
 
         except Exception as e:
             print(f"[TRANSACTION _generate_tx_id ERROR] ❌ Failed to generate tx_id: {e}")
-            return Constants.ZERO_HASH
+            # Fallback to sequential ID if hashing fails
+            fallback_id = f"fallback_{int(time.time() * 1000)}"
+            print(f"[TRANSACTION _generate_tx_id WARNING] Using fallback ID: {fallback_id}")
+            return fallback_id
 
 
     def calculate_hash(self) -> str:
@@ -160,8 +150,7 @@ class Transaction:
     def _calculate_size(self) -> int:
         """
         Estimate transaction size based on inputs, outputs, and standardized metadata.
-        For non-coinbase transactions, require at least one input and one output.
-        For coinbase, require at least one output.
+        Supports both .tx_hash (new) and .hash (legacy) for backward compatibility.
         """
         try:
             # ✅ Ensure valid input/output counts based on transaction type
@@ -178,21 +167,26 @@ class Transaction:
             input_size = sum(len(json.dumps(inp.to_dict(), sort_keys=True).encode()) for inp in self.inputs)
             output_size = sum(len(json.dumps(out.to_dict(), sort_keys=True).encode()) for out in self.outputs)
 
-            # ✅ Calculate metadata size (fixed fields: tx_id, hash, timestamp)
-            meta_size = len(self.tx_id.encode()) + len(self.hash.encode()) + 8  # 8 bytes for timestamp
+            # ✅ Safely get hash using tx_hash (new) or fallback to hash (legacy)
+            tx_hash_value = getattr(self, "tx_hash", None) or getattr(self, "hash", None)
+            if not isinstance(tx_hash_value, str):
+                raise TypeError("Transaction hash must be a string.")
+
+            # ✅ Calculate metadata size (tx_id + hash + timestamp)
+            meta_size = len(self.tx_id.encode()) + len(tx_hash_value.encode()) + 8  # 8 bytes = 64-bit timestamp
 
             # ✅ Compute total transaction size
             total_size = input_size + output_size + meta_size
 
             # ✅ Ensure transaction size does not exceed maximum allowed block size
-            max_size_bytes = Constants.MAX_BLOCK_SIZE_MB * 1024 * 1024  # Convert MB to bytes
+            max_size_bytes = Constants.MAX_BLOCK_SIZE_MB * 1024 * 1024
             if total_size > max_size_bytes:
                 print(f"[TRANSACTION _calculate_size WARN] Transaction size {total_size} exceeds max block size {max_size_bytes}. Clamping.")
                 total_size = max_size_bytes
 
-            # ✅ Print and return computed transaction size
             print(f"[TRANSACTION _calculate_size INFO] Computed size: {total_size} bytes for {self.tx_id}")
             return total_size
+
         except Exception as e:
             print(f"[TRANSACTION _calculate_size ERROR] {e}")
             return 0
@@ -276,15 +270,18 @@ class Transaction:
     def sign(self, sender_priv_key, sender_pub_key):
         """
         Sign the transaction using Falcon-512 and store it in script_sig of each input.
+        Supports both .tx_hash (new) and .hash (legacy) for backward compatibility.
         """
         try:
             # ✅ Ensure both keys are provided
             if not sender_priv_key or not sender_pub_key:
                 raise ValueError("Missing sender private or public key for signing.")
 
-            # ✅ Use existing transaction hash (already computed at init)
-            if isinstance(self.hash, str):
-                message = self.hash.encode("utf-8")
+            # ✅ Support both self.tx_hash (new) and self.hash (legacy)
+            tx_hash_value = getattr(self, "tx_hash", None) or getattr(self, "hash", None)
+
+            if isinstance(tx_hash_value, str):
+                message = tx_hash_value.encode("utf-8")
             else:
                 raise TypeError("Transaction hash must be a string before signing.")
 
@@ -318,6 +315,7 @@ class Transaction:
         except Exception as e:
             print(f"[TRANSACTION SIGN ERROR] ❌ {e}")
             raise
+
 
 
 
@@ -432,43 +430,66 @@ class Transaction:
         """
         Store each output of this transaction as a UTXO using UTXOStorage.
         Ensures all UTXOs are properly formatted and stored safely.
+        Backward compatibility improvements:
+        - Handles both old and new UTXOStorage implementations
+        - Supports legacy transaction formats
+        - Maintains consistent UTXO key formatting
         """
         try:
             print(f"[TRANSACTION store_utxos INFO] Storing UTXOs for transaction {self.tx_id}...")
 
             # ✅ Lazy import to prevent circular import issues
-            import importlib
             try:
-                utxo_storage_module = importlib.import_module("Zyiron_Chain.storage.utxostorage")
+                utxo_storage_module = __import__("Zyiron_Chain.storage.utxostorage", fromlist=["UTXOStorage"])
                 UTXOStorage = getattr(utxo_storage_module, "UTXOStorage")
-            except ImportError as e:
+            except (ImportError, AttributeError) as e:
                 print(f"[TRANSACTION store_utxos ERROR] Failed to import UTXOStorage module: {e}")
                 return
 
-            # ✅ Ensure UTXOStorage has the necessary method
-            if not hasattr(UTXOStorage, "store_utxo"):
-                print(f"[TRANSACTION store_utxos ERROR] UTXOStorage does not have a store_utxo method.")
+            # ✅ Initialize UTXOStorage with backward compatibility
+            try:
+                # New version with block_storage parameter
+                from Zyiron_Chain.storage.block_storage import BlockStorage
+                utxo_storage = UTXOStorage(block_storage=BlockStorage())
+            except TypeError:
+                # Fallback to old version without block_storage
+                print("[TRANSACTION store_utxos WARNING] Using legacy UTXOStorage initialization")
+                utxo_storage = UTXOStorage()
+            except Exception as e:
+                print(f"[TRANSACTION store_utxos ERROR] UTXOStorage initialization failed: {e}")
                 return
-
-            # ✅ Initialize UTXOStorage instance
-            utxo_storage = UTXOStorage()
 
             # ✅ Store each transaction output as a UTXO
             for idx, output in enumerate(self.outputs):
                 try:
+                    # Consistent UTXO key format (tx_id:output_index)
                     utxo_key = f"utxo:{self.tx_id}:{idx}"
+                    
+                    # Backward compatible UTXO data format
                     utxo_data = {
                         "tx_id": self.tx_id,
                         "output_index": idx,
-                        "amount": str(output.amount),  # Convert Decimal to string for storage
+                        "amount": str(output.amount),  # Decimal as string
                         "script_pub_key": output.script_pub_key,
-                        "is_locked": output.locked,
-                        "block_height": self.block_height,
-                        "spent_status": False,  # Initially, UTXOs are unspent
+                        # Handle both old and new lock field names
+                        "locked": getattr(output, "locked", False),
+                        "is_locked": getattr(output, "locked", False),
+                        "block_height": getattr(self, "block_height", 0),
+                        "spent_status": False,
+                        # Legacy support
+                        "address": getattr(output, "script_pub_key", ""),  # Old field name
+                        "value": str(output.amount)  # Old field name
                     }
 
-                    # ✅ Store UTXO safely
-                    utxo_storage.store_utxo(utxo_key, utxo_data)
+                    # Handle both old and new storage methods
+                    if hasattr(utxo_storage, "store_utxo"):
+                        utxo_storage.store_utxo(utxo_key, utxo_data)
+                    elif hasattr(utxo_storage, "put"):
+                        # Legacy method
+                        utxo_storage.put(utxo_key, utxo_data)
+                    else:
+                        raise AttributeError("No valid storage method found")
+
                     print(f"[TRANSACTION store_utxos INFO] Stored UTXO {utxo_key} successfully.")
 
                 except Exception as e:
@@ -482,6 +503,7 @@ class Transaction:
     def mark_utxos_spent(self, inputs: List[TransactionIn]):
         """
         Mark UTXOs as spent when they are used as inputs in a new transaction.
+        Supports both new and legacy input formats.
         """
         try:
             print(f"[TRANSACTION mark_utxos_spent INFO] Marking UTXOs as spent for transaction {self.tx_id}...")
@@ -506,11 +528,16 @@ class Transaction:
             # ✅ Mark each input UTXO as spent
             for inp in inputs:
                 try:
-                    utxo_key = f"utxo:{inp.tx_out_id}:{inp.output_index}"
+                    # ✅ Backward compatibility: check for output_index attribute
+                    if hasattr(inp, "output_index"):
+                        utxo_key = f"utxo:{inp.tx_out_id}:{inp.output_index}"
+                    else:
+                        utxo_key = f"utxo:{inp.tx_out_id}"
+
                     utxo_storage.mark_spent(utxo_key)
                     print(f"[TRANSACTION mark_utxos_spent INFO] Marked UTXO {utxo_key} as spent.")
                 except Exception as e:
-                    print(f"[TRANSACTION mark_utxos_spent ERROR] Failed to mark UTXO {utxo_key} as spent: {e}")
+                    print(f"[TRANSACTION mark_utxos_spent ERROR] Failed to mark UTXO {utxo_key}: {e}")
 
             print(f"[TRANSACTION mark_utxos_spent SUCCESS] All UTXOs for transaction {self.tx_id} marked as spent.")
 

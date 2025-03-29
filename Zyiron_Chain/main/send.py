@@ -65,12 +65,16 @@ class PaymentProcessor:
         print("[PaymentProcessor INIT] ✅ Initialized with KeyManager-based signing")
 
     def send_payment(self,
-                     sender_priv_key: str,
-                     sender_pub_key: str,
-                     recipient_address: str,
-                     amount: Decimal,
-                     tx_type: str = "STANDARD",
-                     metadata: Optional[dict] = None) -> Optional[str]:
+                    sender_priv_key: str,
+                    sender_pub_key: str,
+                    recipient_address: str,
+                    amount: Decimal,
+                    tx_type: str = "STANDARD",
+                    block_size: int = 1,
+                    tx_size: int = 512,
+                    metadata: Optional[dict] = None,
+                    current_block_height: int = 0  # ✅ Added for SmartMempool logic
+                    ) -> Optional[str]:
         print(f"\n[PaymentProcessor] 💸 Starting Payment TX")
         print(f"   ↳ Amount: {amount} ZYC | Type: {tx_type} | To: {recipient_address}")
 
@@ -88,7 +92,12 @@ class PaymentProcessor:
             print("[ERROR] ❌ No valid UTXOs available.")
             return None
 
-        fee = self.fee_model.calculate_fee(tx_type=tx_type, tx_size=512)
+        fee = self.fee_model.calculate_fee(
+            block_size=block_size,
+            payment_type=tx_type,
+            amount=total_input,
+            tx_size=tx_size
+        )
         print(f"[FeeModel] 💰 Estimated fee: {fee} ZYC")
 
         if total_input < amount + fee:
@@ -96,7 +105,7 @@ class PaymentProcessor:
             return None
 
         # Step 2: Build Inputs and Outputs
-        inputs = [TransactionIn(tx_out_id=u.tx_out_id, script_sig="") for u in utxos]
+        inputs = [TransactionIn(tx_out_id=u.tx_out_id, script_sig="SIGN_PENDING") for u in utxos]
         outputs = [TransactionOut(script_pub_key=recipient_address, amount=amount)]
         change = total_input - amount - fee
         if change > 0:
@@ -105,12 +114,18 @@ class PaymentProcessor:
 
         # Step 3: Create and sign transaction
         tx = Transaction(inputs=inputs, outputs=outputs, tx_type=tx_type, metadata=metadata or {})
+
+        # ✅ If SmartTransaction, apply block lock height
+        if tx_type.upper().startswith("S"):
+            tx.block_height_at_lock = current_block_height or 0
+            print(f"[SmartTX] ⛓️ Applied lock height: {tx.block_height_at_lock}")
+
         tx.sign(sender_priv_key, sender_pub_key)
         print(f"[TX] 🧾 Transaction created: {tx.tx_id} | Size: {tx.size} bytes")
 
         # Step 4: Verify with KeyManager
         if not self.key_manager.verify_transaction(
-            message=tx.hash(),
+            message=tx.tx_hash,
             signature=tx.signature,
             network=self.key_manager.network,
             identifier=self.key_manager.keys[self.key_manager.network]["defaults"]["miner"]
@@ -125,13 +140,14 @@ class PaymentProcessor:
         print(f"[UTXO] 🔒 Locked {len(utxos)} UTXOs")
 
         # Step 6: Add to Mempool
-        if not self._route_to_mempool(tx):
+        if not self._route_to_mempool(tx, current_block_height=current_block_height):
             print("[Mempool] ❌ Routing failed. Unlocking UTXOs...")
             self.utxo_manager.unlock_selected_utxos([u.tx_out_id for u in utxos])
             return None
 
         print(f"[Success] ✅ TX Sent: {tx.tx_id}")
         return tx.tx_id
+
 
     def _select_utxos(self, address: str, required_amount: Decimal) -> Tuple[List[TransactionOut], Decimal]:
         print(f"[UTXO] 🔍 Selecting UTXOs for {address} to cover {required_amount} ZYC")
@@ -151,21 +167,57 @@ class PaymentProcessor:
 
         return selected, total
 
-    def _route_to_mempool(self, tx: Transaction) -> bool:
+    def _route_to_mempool(self, tx: Transaction, current_block_height: Optional[int] = None) -> bool:
+        """
+        Route the transaction to the appropriate mempool based on its type.
+        Handles Smart, Standard, and Instant types (Instant not yet implemented).
+
+        Args:
+            tx (Transaction): The transaction to route.
+            current_block_height (Optional[int]): Used for SmartTransaction expiration.
+
+        Returns:
+            bool: True if successfully added to mempool, False otherwise.
+        """
         try:
             prefix = tx.tx_type.upper()
+
             if prefix.startswith("S"):
                 print("[Mempool] ➡️ Routing to SmartMempool...")
-                return self.smart_mempool.add_transaction(tx)
+
+                # ✅ Ensure current_block_height is available
+                if current_block_height is None:
+                    print("[Mempool] ⚠️ Missing block height. Attempting fallback...")
+                    if hasattr(self, "blockchain") and self.blockchain:
+                        try:
+                            latest_block = self.blockchain.get_latest_block()
+                            current_block_height = getattr(latest_block, "index", 0)
+                            print(f"[Mempool] ✅ Retrieved block height from metadata: {current_block_height}")
+                        except Exception as meta_err:
+                            print(f"[Mempool] ⚠️ Metadata failed: {meta_err}")
+                            try:
+                                latest_block = self.blockchain.full_block_storage.get_latest_block()
+                                current_block_height = getattr(latest_block, "index", 0)
+                                print(f"[Mempool] 🔄 Fallback to full block height: {current_block_height}")
+                            except Exception as fb_err:
+                                print(f"[Mempool] ❌ Failed to determine block height: {fb_err}")
+                                current_block_height = 0  # Final fallback
+
+                return self.smart_mempool.add_transaction(tx, current_block_height=current_block_height)
+
             elif prefix.startswith("I"):
                 print("[Mempool] ⚠️ Instant transactions not implemented yet.")
                 return False
+
             else:
                 print("[Mempool] ➡️ Routing to StandardMempool...")
                 return self.standard_mempool.add_transaction(tx)
+
         except Exception as e:
-            print(f"[Mempool] ❌ Failed: {e}")
+            print(f"[Mempool] ❌ Failed to route transaction {getattr(tx, 'tx_id', '?')}: {e}")
             return False
+
+
 
 
     def run_cli_send(self, key_manager):

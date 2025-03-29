@@ -757,19 +757,26 @@ class KeyManager:
     def sign_transaction(self, message: bytes, network: str, identifier: str) -> bytes:
         """Sign using the deserialize_falcon_key function"""
         try:
-            key_data = self.keys[network]["keys"].get(identifier)
+            if not isinstance(message, (str, bytes)):
+                raise TypeError("Message must be a string or bytes")
+
+            key_data = self.keys.get(network, {}).get("keys", {}).get(identifier)
             if not key_data:
-                raise ValueError(f"Key '{identifier}' not found")
-                
-            # Deserialize using centralized function
+                raise ValueError(f"Key '{identifier}' not found in network '{network}'")
+
+            # ✅ Deserialize keys
             secret_key, _ = self.deserialize_falcon_key(key_data)
-            
-            message_bytes = message.encode('utf-8') if isinstance(message, str) else message
+
+            # ✅ Ensure bytes format
+            message_bytes = message.encode("utf-8") if isinstance(message, str) else message
+
+            # ✅ Sign and return
             return secret_key.sign(message_bytes)
-            
+
         except Exception as e:
-            print(f"❌ Signing failed: {str(e)}")
+            print(f"❌ Signing failed [network={network}, id={identifier}]: {str(e)}")
             raise
+
 
 
 
